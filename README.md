@@ -452,7 +452,9 @@ Developed by Shreyas Patel.
 
 ## Demo
 
-https://github.com/user-attachments/assets/fe27f1b2-877c-4052-98d7-95a0983ee513
+
+https://github.com/user-attachments/assets/8119749f-b088-4221-86b2-9a9341b05857
 
 
-https://github.com/user-attachments/assets/4f6c97ae-8522-4dd3-ba43-20f34e15a712
+[simulation.webm](https://github.com/user-attachments/assets/fc0d2934-1fe8-4681-bb4a-53667f0bb681)
+
