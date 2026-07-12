@@ -1,0 +1,30 @@
+# MoveIt uses this configuration for controller management
+
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.2
+  allowed_goal_duration_margin: 0.5
+  allowed_start_tolerance: 0.03
+  execution_duration_monitoring: false # May lead to unexpectedly aborted goals with scaled JTC
+
+controller_names:
+  - rebel_arm_trajectory_controller
+  - rebel_gripper_controller
+
+rebel_arm_trajectory_controller:
+  type: FollowJointTrajectory
+  action_ns: follow_joint_trajectory
+  default: true
+  joints:
+    - joint1
+    - joint2
+    - joint3
+    - joint4
+    - joint5
+    - joint6
+
+rebel_gripper_controller:
+  type: FollowJointTrajectory
+  action_ns: follow_joint_trajectory
+  default: false
+  joints:
+    - gripper_gear_left_joint

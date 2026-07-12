@@ -1,0 +1,270 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+
+    <!-- C Differential Link -->
+    <link name="C_Differential_Link">
+        <inertial>
+        <origin xyz="0.00350817530861484 1.20766033728792E-06 -0.0216597567502624"
+                rpy="0 0 0" />
+        <mass value="0.516858674130235" />
+        <inertia
+            ixx="0.00950467728623936"
+            ixy="9.69021947979006E-05"
+            ixz="4.25918246240609E-06"
+            iyy="0.000110720858851356"
+            iyz="1.67676612725929E-07"
+            izz="0.009542612339157" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/C_Differential_Link.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.898039215686275 0.898039215686275 0.898039215686275 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/C_Differential_Link.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="C_Differential_Joint" type="fixed">
+        <origin xyz="-0.314999999999999 0 0.208999999999999"
+                rpy="0 0 0" />
+        <parent link="base_link" />
+        <child link="C_Differential_Link" />
+        <limit lower="-0.1865" upper="0.1865" effort="0.0" velocity="1"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 0 1" />
+    </joint>
+
+    <!-- Right Connecting Rod Diff Link -->
+    <link name="R_Connecting_Rod_Diff_Link">
+        <inertial>
+            <origin xyz="0.032210713015456 -0.0030801919431821 -0.00967580390694012"
+                    rpy="0 0 0" />
+            <mass value="0.153281569216742" />
+            <inertia
+                ixx="9.91193671630463E-06"
+                ixy="8.33349078508883E-06"
+                ixz="-9.39169130386108E-07"
+                iyy="9.62610197327712E-05"
+                iyz="8.55452869771066E-08"
+                izz="0.000101702451395249" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/L_Rod_link.stl" />
+            </geometry>
+            <material name="">
+                <color rgba="0.650980392156863 0.619607843137255 0.588235294117647 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/L_Rod_link.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Dummy links for R_Connecting_Rod_Diff_Joint ball joint emulation -->
+    <link name="R_Connecting_Rod_Diff_Joint_BALL_X_Link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+    <link name="R_Connecting_Rod_Diff_Joint_BALL_Y_Link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+
+    <!-- R_Connecting_Rod_Diff_Joint X axis of ball -->
+    <joint name="R_Connecting_Rod_Diff_Joint_X" type="fixed">
+        <origin xyz="0 0.281278 -0.035" rpy="0 0.100 0" />
+        <parent link="C_Differential_Link" />
+        <child link="R_Connecting_Rod_Diff_Joint_BALL_X_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="1 0 0" />
+    </joint>
+
+    <!-- R_Connecting_Rod_Diff_Joint Y axis of ball -->
+    <joint name="R_Connecting_Rod_Diff_Joint_Y" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="R_Connecting_Rod_Diff_Joint_BALL_X_Link" />
+        <child link="R_Connecting_Rod_Diff_Joint_BALL_Y_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint>
+
+    <!-- R_Connecting_Rod_Diff_Joint Z axis of ball -->
+    <joint name="R_Connecting_Rod_Diff_Joint_Z" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="R_Connecting_Rod_Diff_Joint_BALL_Y_Link" />
+        <child link="R_Connecting_Rod_Diff_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 0 1" />
+    </joint>
+
+
+    <!-- Right Virtual link -->
+    <link name="V1_R_Connecting_Rod_Diff_Link">
+        <inertial>
+            <origin xyz="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>    
+    </link>
+
+    <joint name="V1_R_Connecting_Rod_Diff_Joint" type="fixed">
+        <origin xyz="0.3169 0 0"
+                rpy="0 0 0" />
+        <parent link="R_Connecting_Rod_Diff_Link" />
+        <child link="V1_R_Connecting_Rod_Diff_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint>
+
+    <!-- <joint name="R_Rocker_rod_Joint" type="fixed">
+        <origin xyz="0 0 0"
+                rpy="0 0 0" />
+        <parent link="V1_R_Connecting_Rod_Diff_Link" />
+        <child link="aux_R_Rocker_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint> -->
+
+
+
+    <!-- Left Connecting Rod Diff Link -->
+    <link name="L_Connecting_Rod_Diff_Link">
+        <inertial>
+            <origin
+                xyz="0.0321951636978067 0.00325488336125307 -1.74543543801642E-06"
+                rpy="0 0 0" />
+            <mass
+                value="0.153281569216742" />
+            <inertia
+                ixx="1.00428307800447E-05"
+                ixy="-9.2540668070293E-06"
+                ixz="1.92184365790751E-08"
+                iyy="0.000100458539828128"
+                iyz="-1.67252024376079E-07"
+                izz="9.73740372361534E-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/R_Rod_link.stl" />
+            </geometry>
+            <material name="">
+                <color rgba="0.898039215686275 0.898039215686275 0.898039215686275 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/R_Rod_link.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Dummy links for L_Connecting_Rod_Diff_Joint ball joint emulation -->
+    <link name="L_Connecting_Rod_Diff_Joint_BALL_X_Link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+    <link name="L_Connecting_Rod_Diff_Joint_BALL_Y_Link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>
+    </link>
+
+    <!-- Left_Connecting_Rod_Diff_Joint X axis of ball -->
+    <joint name="L_Connecting_Rod_Diff_Joint_X" type="fixed">
+        <origin xyz="0 -0.281278 -0.035" rpy="0 0.100 0" />
+        <parent link="C_Differential_Link" />
+        <child link="L_Connecting_Rod_Diff_Joint_BALL_X_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="1 0 0" />
+    </joint>
+
+    <!-- L_Connecting_Rod_Diff_Joint Y axis of ball -->
+    <joint name="L_Connecting_Rod_Diff_Joint_Y" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="L_Connecting_Rod_Diff_Joint_BALL_X_Link" />
+        <child link="L_Connecting_Rod_Diff_Joint_BALL_Y_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint>
+
+    <!-- L_Connecting_Rod_Diff_Joint Z axis of ball -->
+    <joint name="L_Connecting_Rod_Diff_Joint_Z" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <parent link="L_Connecting_Rod_Diff_Joint_BALL_Y_Link" />
+        <child link="L_Connecting_Rod_Diff_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 0 1" />
+    </joint>
+
+
+    <!-- Left Virtual link -->
+    <link name="V1_L_Connecting_Rod_Diff_Link">
+        <inertial>
+            <origin xyz="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>    
+    </link>
+
+    <joint name="V1_L_Connecting_Rod_Diff_Joint" type="fixed">
+        <origin xyz="0.3169 0 0"
+                rpy="0 0 0" />
+        <parent link="L_Connecting_Rod_Diff_Link" />
+        <child link="V1_L_Connecting_Rod_Diff_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint>
+    
+
+    <!-- <joint name="L_Rocker_rod_Joint" type="fixed">
+        <origin xyz="0 0 0"
+                rpy="0 0 0" />
+        <parent link="V1_L_Connecting_Rod_Diff_Link" />
+        <child link="aux_L_Rocker_Link" />
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 1 0" />
+    </joint> -->
+    
+  
+    
+
+    
+</robot>

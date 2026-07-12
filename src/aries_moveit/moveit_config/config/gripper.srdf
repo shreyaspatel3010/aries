@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="igus_gripper">
+    <group name="gripper">
+        <joint name="gripper_gear_left_joint"/>
+    </group>
+    
+    <group_state name="open" group="gripper">
+        <joint name="gripper_gear_left_joint" value="-1.57"/>
+    </group_state>
+    
+    <group_state name="closed" group="gripper">
+        <joint name="gripper_gear_left_joint" value="0.07"/>
+    </group_state>
+    
+    <group_state name="half_open" group="gripper">
+        <joint name="gripper_gear_left_joint" value="-0.75"/>
+    </group_state>
+    
+    <virtual_joint name="virtual_joint" type="fixed" parent_frame="world" child_link="world"/>
+    
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_gear_left_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_gear_right_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_gear_left_link" link2="gripper_gear_right_link" reason="Never"/>
+    <!-- Camera (rigidly mounted on arm_gripper_base_link) -->
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_camera_link" reason="Adjacent"/>
+    <!-- Four-bar linkage bucket overlaps -->
+    <disable_collisions link1="gripper_bucket_left_link" link2="gripper_gear_left_link" reason="Never"/>
+    <disable_collisions link1="gripper_bucket_left_link" link2="gripper_left_link" reason="Never"/>
+    <disable_collisions link1="gripper_bucket_right_link" link2="gripper_gear_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_bucket_right_link" link2="gripper_right_link" reason="Never"/>
+    <!-- Closed gripper: opposing fingers and four-bar links intentionally approach each other -->
+    <disable_collisions link1="gripper_gear_left_link" link2="gripper_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_gear_right_link" link2="gripper_left_link" reason="Never"/>
+    <disable_collisions link1="gripper_gear_left_link" link2="gripper_bucket_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_gear_right_link" link2="gripper_bucket_left_link" reason="Never"/>
+    <disable_collisions link1="gripper_bucket_left_link" link2="gripper_bucket_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_left_link" link2="gripper_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_left_link" link2="gripper_bucket_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_right_link" link2="gripper_bucket_left_link" reason="Never"/>
+</robot>

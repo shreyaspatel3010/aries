@@ -1,0 +1,135 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <joint name="arm_gripper_base_joint" type="fixed">
+        <parent link="link6"/>
+        <child link="arm_gripper_base_link"/>
+        <origin xyz="0.0 0.0 0.05223" rpy="0.0 0.0 0"/>
+    </joint>
+
+    <!--Arm gripper base Link -->
+    <link name="arm_gripper_base_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="1.5363204791731" />
+            <inertia
+                ixx="0.242660790998556"
+                ixy="-9.00009815481889E-05"
+                ixz="0.0234683038167963"
+                iyy="0.514730499629884"
+                iyz="2.70300300277055E-11"
+                izz="0.664242254581203" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_base.stl" />
+            </geometry>
+            <material
+                name="">
+                <color rgba="1 1 1 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_base.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    
+
+
+    <!--Arm gripper left Link -->
+    <link name="arm_gripper_left_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="1.5363204791731" />
+            <inertia
+                ixx="0.242660790998556"
+                ixy="-9.00009815481889E-05"
+                ixz="0.0234683038167963"
+                iyy="0.514730499629884"
+                iyz="2.70300300277055E-11"
+                izz="0.664242254581203" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_left.stl" />
+            </geometry>
+            <material
+                name="">
+                <color rgba="1 1 1 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_left.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="arm_gripper_left_joint" type="prismatic">
+        <parent link="arm_gripper_base_link"/>
+        <child link="arm_gripper_left_link"/>
+        <origin xyz="-0.1393 0.0 0.06453" rpy="0.0 0.0 0.0"/>
+        <axis xyz="1 0 0"/>
+            <limit effort="500" velocity="2.0" lower="-0.001" upper="0.08925"/>
+        <dynamics damping="0" friction="0"/>
+    </joint>
+
+    <!--Arm gripper right Link -->
+    <link name="arm_gripper_right_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="1.5363204791731" />
+            <inertia
+                ixx="0.242660790998556"
+                ixy="-9.00009815481889E-05"
+                ixz="0.0234683038167963"
+                iyy="0.514730499629884"
+                iyz="2.70300300277055E-11"
+                izz="0.664242254581203" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_right.stl" />
+            </geometry>
+            <material
+                name="">
+                <color rgba="1 1 1 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="file://$(find aries)/meshes/gripper_right.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="arm_gripper_right_joint" type="prismatic">
+        <parent link="arm_gripper_base_link"/>
+        <child link="arm_gripper_right_link"/>
+        <origin xyz="0.1393 0.0 0.06453" rpy="0.0 0.0 0.0"/>
+        <axis xyz="-1 0 0"/>
+        <limit effort="500" velocity="2.0" lower="-0.001" upper="0.08925"/>
+        <dynamics damping="0" friction="0"/>
+        <mimic joint="arm_gripper_left_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+    
+
+    <!-- Gripper Camera (D435i) — defined in gripper_camera.xacro -->
+    <xacro:include filename="gripper_camera.xacro" />
+
+</robot>

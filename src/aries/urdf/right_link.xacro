@@ -1,0 +1,226 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+
+
+
+    <!-- Right Rocker Link -->
+    <link name="R_Rocker_Link">
+        <inertial>
+            <origin xyz="-0.0708464812196745 -0.0262779873712159 0" rpy="0 0 0"/>
+            <mass value="0.467421555266234"/>
+            <inertia
+                ixx="0.0013791875014213"
+                ixy="-0.00243008562643184"
+                ixz="0"
+                iyy="0.00977976029683704"
+                iyz="0"
+                izz="0.0111539619683355"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/right_rocker.stl"/>
+            </geometry>
+            <material name="silver"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/right_rocker.stl"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Right Rocker Joint -->
+    <joint name="R_Rocker_Joint" type="revolute">
+        <origin xyz="0 -0.2842 0.070999999999999" rpy="${PI/2} 0 ${PI}"/>
+        <parent link="base_link"/>
+        <child link="R_Rocker_Link"/>
+        <axis xyz="0 0 -1"/>
+        <limit upper="0.323" lower="-0.226" effort="1000" velocity="5"/>
+        <xacro:if value="${enable_mimic}">
+            <mimic joint="L_Rocker_Joint" multiplier="-1.0" offset="0.0"/>
+        </xacro:if>
+        <dynamics damping="50" friction="50"/>
+    </joint>
+
+    
+
+    <!-- Right Wheel 1 -->
+    <link name="R_1_Wheel_Link">
+        <inertial>
+            <origin xyz="0 0 0.0350608778434713" rpy="0 0 0"/>
+            <mass value="${wheel_mass}"/>
+            <inertia
+                ixx="0.00914288966451803"
+                ixy="0"
+                ixz="0"
+                iyy="0.00914288966451804"
+                iyz="0"
+                izz="0.0160987749043434"/>
+            </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/R_1_Wheel_Link.STL"/>
+            </geometry>
+            <material name="blue"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.035" rpy="0 0 0"/>
+            <geometry>
+                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Right Wheel 1 Joint -->
+    <joint name="R_1_Wheel_Joint" type="continuous">
+        <origin xyz="0.12754 -0.1674 -0.0953" rpy="0 0 0"/>
+        <parent link="R_Boggie_Link"/>
+        <child link="R_1_Wheel_Link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="0.01" friction="0.01"/>
+    </joint>
+
+    <!-- Right Wheel 2 -->
+    <link name="R_2_Wheel_Link">
+        <inertial>
+            <origin xyz="0 0 0.0350608778434713" rpy="0 0 0"/>
+            <mass value="${wheel_mass}"/>
+            <inertia
+                ixx="0.00914288966451803"
+                ixy="0"
+                ixz="0"
+                iyy="0.00914288966451803"
+                iyz="0"
+                izz="0.0160987749043434"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/R_2_Wheel_Link.STL"/>
+            </geometry>
+            <material name="blue"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.035" rpy="0 0 0"/>
+            <geometry>
+                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Right Wheel 2 Joint -->
+    <joint name="R_2_Wheel_Joint" type="continuous">
+        <origin xyz="-0.12754 -0.1674 -0.0953" rpy="0 0 0"/>
+        <parent link="R_Boggie_Link"/>
+        <child link="R_2_Wheel_Link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="0.01" friction="0.01"/>
+    </joint>
+
+    <!-- Right Wheel 3 -->
+    <link name="R_3_Wheel_Link">
+        <inertial>
+            <origin xyz="0 0 0.0350608778434713" rpy="0 0 0"/>
+            <mass value="${wheel_mass}"/>
+            <inertia
+                ixx="0.00914288966451803"
+                ixy="0"
+                ixz="0"
+                iyy="0.00914288966451803"
+                iyz="0"
+                izz="0.0160987749043434"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/R_3_Wheel_Link.STL"/>
+            </geometry>
+            <material name="blue"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.035" rpy="0 0 0"/>
+            <geometry>
+                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Right Wheel 3 Joint -->
+    <joint name="R_3_Wheel_Joint" type="continuous">
+        <origin xyz="-0.2299 -0.1602 -0.0953" rpy="0 0 0"/>
+        <parent link="R_Rocker_Link"/>
+        <child link="R_3_Wheel_Link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="0.01" friction="0.01"/>
+    </joint>
+
+    <!-- Right Boggie Link -->
+    <link name="R_Boggie_Link">
+        <inertial>
+            <origin xyz="0.00949530058774795 -0.0867241425807485 -0.00999999999999995" rpy="0 0 0"/>
+            <mass value="1.297654231795819"/>
+            <inertia
+                ixx="0.000853802912911995"
+                ixy="0"
+                ixz="0"
+                iyy="0.00305171661999932"
+                iyz="0"
+                izz="0.00390234455443883"/>
+            </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/right_bogie.stl"/>
+            </geometry>
+            <material name="silver"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/right_bogie.stl"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Right Boggie Joint -->
+    <joint name="R_Boggie_Joint" type="revolute">
+        <origin xyz="0.195 0 0" rpy="0 0 0"/>
+        <parent link="R_Rocker_Link"/>
+        <child link="R_Boggie_Link"/>
+        <axis xyz="0 0 -1"/>
+        <limit lower="-0.560" upper="0.594" effort="10" velocity="100"/>
+        <dynamics damping="50" friction="5"/>
+    </joint>
+
+    
+
+
+    <link name="aux_R_Rocker_Link">
+        <inertial>
+            <origin xyz="0 0 0"/>
+            <mass value="0.0001"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+        </inertial>    
+    </link>
+
+    <joint name="aux_R_Rocker_joint" type="revolute">
+        <origin xyz="-0.0092 0.06977 0"
+                rpy="0 0 0" />
+        <parent link="R_Rocker_Link" />
+        <child link="aux_R_Rocker_Link" />
+        <limit lower="-3.14" upper="3.14" effort="0.0" velocity="5"/>
+        <dynamics damping="0.05" friction="0.0"/>
+        <axis xyz="0 0 1" />
+    </joint>
+
+    
+
+    
+    
+
+    
+</robot>

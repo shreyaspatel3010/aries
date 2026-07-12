@@ -1,0 +1,21 @@
+# Xbox controller mapping for teleop_twist_joy.
+teleop_twist_joy_node:
+  ros__parameters:
+    # Require hold-to-drive (deadman); set to -1 to disable
+    enable_button: 5          # RB
+    enable_turbo_button: 4    # LB (optional turbo)
+
+    # Axis mapping (0: left stick horiz, 1: left stick vert, 3: right stick horiz on many Xbox pads)
+    axis_linear:
+      x: 1                    # forward/back on left stick
+    scale_linear:
+      x: 0.5                  # m/s normal
+    scale_linear_turbo:
+      x: 1.0
+
+    axis_angular:
+      yaw: 0                  # turn with right stick
+    scale_angular:
+      yaw: 1.2                # rad/s normal
+    scale_angular_turbo:
+      yaw: 2.5

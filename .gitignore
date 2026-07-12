@@ -1,0 +1,44 @@
+build/
+install/
+log/
+.colcon_release/
+.colcon_cache/
+.colcon_install_cache/
+
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Local Python environments
+vision_venv/
+.venv/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+/artifacts/
+/data/
+src/grasshopper_waypoint_follower
+
+# Training outputs and local model downloads. The packaged production model is
+# tracked explicitly under src/aries_vision_grasp/models/.
+runs/
+datasets/
+*.pt
+!src/aries_vision_grasp/models/grasp.pt
+
+# Office/editor temporary files
+.~lock.*#
+*.swp
+*~
+
+# Archives exceed GitHub's 100 MB blob limit
+*.zip

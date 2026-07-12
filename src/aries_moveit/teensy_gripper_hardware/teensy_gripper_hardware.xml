@@ -1,0 +1,7 @@
+<library path="teensy_gripper_hardware">
+  <class name="teensy_gripper_hardware/TeensyGripperSystem"
+         type="teensy_gripper_hardware::TeensyGripperSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>Teensy single-servo gripper ros2_control system</description>
+  </class>
+</library>

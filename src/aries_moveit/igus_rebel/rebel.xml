@@ -1,0 +1,9 @@
+<library path="igus_rebel">
+  <class name="Igus/Rebel"
+         type="Igus::Rebel"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Rebel hardware interface for ros2_control.
+    </description>
+  </class>
+</library>

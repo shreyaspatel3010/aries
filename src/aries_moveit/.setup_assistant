@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: aries
+    relative_path: urdf/my_robot.urdf.xacro
+  srdf:
+    relative_path: config/aries.srdf
+  package_settings:
+    author_name: shreyas
+    author_email: shreyaspatel517@gmail.com
+    generated_timestamp: 1772710933
+  

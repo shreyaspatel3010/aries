@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile for micro-ROS agent — minimum latency.
+
+  Applied via FASTRTPS_DEFAULT_PROFILES_FILE env var on the agent process.
+  Fast DDS reads this file directly (independent of RMW), so it affects
+  the DDS entities the agent creates for /gripper/cmd and /gripper/state.
+
+  Changes vs defaults:
+    • SYNCHRONOUS publish mode   – data is sent immediately in the caller's
+                                   thread; no background-thread buffering.
+    • latencyBudget = 0          – signals to the middleware that this app
+                                   requires the lowest possible delivery delay.
+    • PREALLOCATED_WITH_REALLOC  – avoids dynamic malloc during normal
+                                   operation, reducing jitter.
+    • Unicast-only participant   – skips multicast discovery overhead; the
+                                   agent and ROS 2 nodes are on the same host.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+  <!-- Participant: unicast-only, no multicast discovery overhead -->
+  <participant profile_name="default participant profile" is_default_profile="true">
+    <rtps>
+      <builtin>
+        <metatrafficUnicastLocatorList>
+          <locator>
+            <udpv4>
+              <address>127.0.0.1</address>
+            </udpv4>
+          </locator>
+        </metatrafficUnicastLocatorList>
+        <initialPeersList>
+          <locator>
+            <udpv4>
+              <address>127.0.0.1</address>
+            </udpv4>
+          </locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+
+  <!-- Publisher (DataWriter): synchronous, zero latency budget -->
+  <publisher profile_name="default publisher profile" is_default_profile="true">
+    <qos>
+      <publishMode>
+        <kind>SYNCHRONOUS</kind>
+      </publishMode>
+      <latencyBudget>
+        <duration>
+          <sec>0</sec>
+          <nanosec>0</nanosec>
+        </duration>
+      </latencyBudget>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </publisher>
+
+  <!-- Subscriber (DataReader): zero latency budget, pre-allocated history -->
+  <subscriber profile_name="default subscriber profile" is_default_profile="true">
+    <qos>
+      <latencyBudget>
+        <duration>
+          <sec>0</sec>
+          <nanosec>0</nanosec>
+        </duration>
+      </latencyBudget>
+    </qos>
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </subscriber>
+
+</profiles>

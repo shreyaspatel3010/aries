@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+  <!-- <xacro:arg name="hardware_protocol" default="rebel"/> -->
+  <!-- igus_rebel -->
+  <xacro:include filename="$(find aries)/urdf/igus_rebel2.urdf"/>
+  <xacro:include filename="$(find aries)/urdf/igus_rebel2.control.xacro"/>
+  <!-- Connect arm to the robot base -->
+  <joint name="virtual_arm_base_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm_base_link"/>
+    <origin xyz="0.05121 0.0 0.2125" rpy="0.0 0.0 -0.10472"/>
+  </joint>
+</robot>

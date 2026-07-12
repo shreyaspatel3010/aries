@@ -1,0 +1,84 @@
+<launch>
+  <!-- Paths -->
+  <let name="urdf_path" value="$(find-pkg-share aries)/urdf/my_robot.urdf.xacro"/>
+  <let name="rviz_config_path" value="$(find-pkg-share aries_moveit)/launch/moveit.rviz"/>
+  <let name="gazebo_config_path" value="$(find-pkg-share aries)/config/marsyard_gazebo_bridge.yaml"/>
+  <let name="gz_gui_config_path" value="$(find-pkg-share aries)/config/gz_gui_config.config"/>
+  <let name="world_path" value="$(find-pkg-share aries)/worlds/marsyard.sdf"/>
+  <arg name="aries_share" default="$(find-pkg-share aries)"/>
+  
+  <!-- Gripper type: 'new' or 'old' -->
+  <arg name="gripper_type" default="new"/>
+  
+  <!-- Hardware protocol for ros2_control -->
+  <arg name="hardware_protocol" default="gazebo"/>
+  
+  <!-- Use simulation time -->
+  <arg name="use_sim_time" default="true"/>
+
+  <!-- Start joystick control through MoveIt Servo -->
+  <arg name="use_joystick" default="true"/>
+  
+   <!-- spawn position (you can tweak these at launch time) -->
+  <arg name="spawn_x" default="0.0"/>
+  <arg name="spawn_y" default="0.0"/>
+  <arg name="spawn_z" default="1.666"/>  <!-- start 1.65 m above terrain for marsyard-->
+
+ 
+  <!-- Prefer GZ_SIM_RESOURCE_PATH for Gazebo Sim. You can prepend multiple dirs. -->
+  <set_env
+    name="GZ_SIM_RESOURCE_PATH"
+    value="$(find-pkg-prefix aries)/share:$(var aries_share)/models:$(var aries_share)/worlds:$(env GZ_SIM_RESOURCE_PATH '')" />
+
+
+
+  <!-- Start Gazebo (server + GUI) with your world -->
+  <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
+    <arg name="gz_args" value="$(var world_path) -r"/>
+  </include>
+
+  <!-- GUI for joints (optional) -->
+  <!-- <node pkg="joint_state_publisher_gui" exec="joint_state_publisher_gui"/> -->
+
+  <!-- Robot state publisher -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" output="screen">
+    <param name="robot_description" value="$(command 'xacro $(var urdf_path) gripper_type:=$(var gripper_type) hardware_protocol:=$(var hardware_protocol)')"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <!-- Spawn robot from robot_description (use -name, not -entity) -->
+  <node pkg="ros_gz_sim" exec="create" name="create" output="screen"
+      args="-name aries --gui-config $(var gz_gui_config_path) -topic robot_description -allow_renaming true -x $(var spawn_x) -y $(var spawn_y) -z $(var spawn_z)">
+  </node>
+  <!-- Bridge topics using your YAML config -->
+  <node pkg="ros_gz_bridge" exec="parameter_bridge" output="screen">
+    <param name="config_file" value="$(var gazebo_config_path)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+ 
+  <!-- mimic.py to keep rockers aligned -->
+ 
+
+  <node pkg="aries" exec="virtual_differential" name="virtual_differential" output="screen">
+    <param from="$(find-pkg-share aries)/config/virtual_differential.yaml"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <!-- Publish wheel joint states (not controlled by ros2_control) -->
+  <node pkg="aries_moveit" exec="publish_wheel_joints.py" name="wheel_joint_publisher" output="screen">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <!-- MoveIt move_group for arm control -->
+  <include file="$(find-pkg-share aries_moveit)/launch/move_group.launch.py">
+    <arg name="hardware_protocol" value="$(var hardware_protocol)"/>
+    <arg name="use_sim_time" value="$(var use_sim_time)"/>
+    <arg name="use_gui" value="true"/>
+    <arg name="use_joystick" value="$(var use_joystick)"/>
+  </include>
+
+  <!-- Spawn ros2_control controllers -->
+  <include file="$(find-pkg-share aries_moveit)/launch/ros_controllers.launch.py"/>
+
+</launch>

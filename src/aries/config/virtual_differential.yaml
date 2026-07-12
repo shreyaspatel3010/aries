@@ -1,0 +1,15 @@
+virtual_differential:
+  ros__parameters:
+    imu_topic: /imu
+    joint_states_topic: /joint_states
+    left_joint_name: L_Rocker_Joint
+    right_joint_name: R_Rocker_Joint
+    left_cmd_topic: /aries/L_Rocker_Joint/cmd_pos
+    right_cmd_topic: /aries/R_Rocker_Joint/cmd_pos
+    target_pitch_deg: 0.0
+    kp: 0.6
+    kd: 0.05
+    cmd_rate_hz: 50.0
+    cmd_limit_deg: 45.0
+    avg_rate_limit_deg_s: 60.0
+    invert_pitch: false

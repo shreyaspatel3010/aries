@@ -1,0 +1,129 @@
+<?xml version="1.0"?>
+<!-- igus_rebel.control.xacro -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="igus_rebel_control" params="arm_id hardware_protocol arm_hardware_protocol:='' gripper_hardware_protocol:='' serial_port:='/dev/ttyACM0'">
+        <xacro:macro name="joint_control" params="joint">
+            <joint name="${joint}">
+                <xacro:if value="${arm_hardware_protocol == 'mock_hardware' or (arm_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+                    <command_interface name="position" />
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                    <command_interface name="position" />
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+                    <command_interface name="velocity" />
+                </xacro:if>
+                <state_interface name="position" />
+                <state_interface name="velocity" />
+            </joint>
+        </xacro:macro>
+
+        <ros2_control name="${arm_id}_controller" type="system">
+            <hardware>
+                <xacro:if value="${arm_hardware_protocol == 'mock_hardware' or (arm_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                    <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+                    <param name="position_proportional_gain">5.0</param>
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+                    <plugin>Igus/Rebel</plugin>
+                </xacro:if>
+            </hardware>
+            <xacro:joint_control joint="joint1" />
+            <xacro:joint_control joint="joint2" />
+            <xacro:joint_control joint="joint3" />
+            <xacro:joint_control joint="joint4" />
+            <xacro:joint_control joint="joint5" />
+            <xacro:joint_control joint="joint6" />
+
+            <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position" />
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <!-- Mimic joints: driven by GazeboSimSystem to match gripper_gear_left_joint -->
+                <joint name="gripper_gear_right_joint">
+                    <param name="mimic">gripper_gear_left_joint</param>
+                    <param name="multiplier">1.0</param>
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_link_left_joint">
+                    <param name="mimic">gripper_gear_left_joint</param>
+                    <param name="multiplier">1.0</param>
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_link_right_joint">
+                    <param name="mimic">gripper_gear_left_joint</param>
+                    <param name="multiplier">1.0</param>
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_bucket_left_joint">
+                    <param name="mimic">gripper_gear_left_joint</param>
+                    <param name="multiplier">1.0</param>
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_bucket_right_joint">
+                    <param name="mimic">gripper_gear_left_joint</param>
+                    <param name="multiplier">1.0</param>
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+            </xacro:if>
+        </ros2_control>
+
+        <xacro:if value="${gripper_hardware_protocol == 'mock_hardware' or (gripper_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+            <ros2_control name="${arm_id}_gripper_mock" type="system">
+                <hardware>
+                    <plugin>mock_components/GenericSystem</plugin>
+                </hardware>
+
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position">
+                        <param name="min">-1.57</param>
+                        <param name="max">0.07</param>
+                    </command_interface>
+                    <state_interface name="position">
+                        <param name="initial_value">-1.57</param>
+                    </state_interface>
+                    <state_interface name="velocity" />
+                </joint>
+            </ros2_control>
+        </xacro:if>
+
+        <xacro:if value="${gripper_hardware_protocol == 'rebel' or (gripper_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+            <ros2_control name="${arm_id}_gripper" type="system">
+                <hardware>
+                    <plugin>teensy_gripper_hardware/TeensyGripperSystem</plugin>
+                    <param name="cmd_topic">/gripper/cmd</param>
+                    <param name="state_topic">/gripper/state</param>
+                    <param name="min_pos">-1.57</param>
+                    <param name="max_pos">0.07</param>
+                </hardware>
+
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position" />
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+            </ros2_control>
+        </xacro:if>
+
+        <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+            <gazebo>
+                <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+                    <parameters>$(find aries_moveit)/config/ros2_controllers.yaml</parameters>
+                    <robot_param>robot_description</robot_param>
+                    <robot_param_node>robot_state_publisher</robot_param_node>
+                    <controller_manager_name>controller_manager</controller_manager_name>
+                </plugin>
+            </gazebo>
+        </xacro:if>
+    </xacro:macro>
+</robot>

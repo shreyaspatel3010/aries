@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Materials -->
+  <material name="silver">
+    <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.647058823529412 0.619607843137255 0.588235294117647 1"/>
+  </material>
+  <!-- Properties -->
+  <xacro:property name="PI" value="3.1415926535897931"/>
+  <xacro:property name="wheel_mass" value="50"/>
+  <xacro:property name="wheel_radius" value="0.1100"/>
+  <xacro:property name="wheel_thickness" value="0.070"/>
+  <!-- Mesh locations -->
+  <xacro:property name="mesh_location" value="package://aries/meshes"/>
+  <!-- Enable Mimic joints -->
+  <xacro:property name="enable_mimic" value="true"/>
+  <!-- Enable Lidar -->
+  <xacro:property name="enable_lidar" value="true"/>
+  <!-- Keep real LiDAR frames/visuals in every robot description without
+         automatically enabling the expensive Gazebo sensors. -->
+  <xacro:property name="enable_lidar_gazebo" value="false"/>
+  <!-- Enable D435i -->
+  <xacro:property name="enable_D435i" value="false"/>
+  <!-- Enable Gazebo extras used by the full robot description -->
+  <xacro:property name="enable_full_robot_gazebo_extras" value="true"/>
+</robot>

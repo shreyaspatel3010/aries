@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Waypoint follower without Nav2 -->
+  <node pkg="aries" exec="waypoint_follower.py" name="waypoint_follower" output="screen">
+    <!-- Aries Gazebo topics -->
+    <param name="cmd_vel_topic" value="/cmd_vel"/>
+    <param name="odom_topic" value="/odom"/>
+    <param name="imu_topic" value="/imu"/>
+    <!-- Example waypoints (x,y,yaw in radians) in odom frame -->
+    <param
+      name="waypoints"
+      value="[[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 1.57]]"
+      type="str"/>
+    <!-- Tunables -->
+    <param name="k_lin" value="0.8"/>
+    <param name="k_ang" value="2.0"/>
+    <param name="max_lin" value="0.4"/>
+    <param name="max_ang" value="1.2"/>
+    <param name="tol_dist" value="0.10"/>
+    <param name="tol_yaw" value="0.07"/>
+    <param name="face_first" value="true"/>
+  </node>
+</launch>

@@ -1,0 +1,330 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="realsense_d435i">
+
+    <!-- D435i Camera Physical Dimensions -->
+    <xacro:property name="M_PI" value="3.1415926535897931"/>
+    <xacro:property name="d435i_cam_width" value="0.090"/>
+    <xacro:property name="d435i_cam_height" value="0.025"/>
+    <xacro:property name="d435i_cam_depth" value="0.02505"/>
+    <xacro:property name="d435i_cam_mount_from_center_offset" value="0.0149"/>
+    
+    <!-- Camera Sensor Offsets -->
+    <xacro:property name="d435i_cam_depth_to_left_ir_offset" value="0.0"/>
+    <xacro:property name="d435i_cam_depth_to_right_ir_offset" value="-0.050"/>
+    <xacro:property name="d435i_cam_depth_to_color_offset" value="0.015"/>
+    
+    <!-- Mount Position Offsets -->
+    <xacro:property name="d435i_cam_depth_py" value="0.0175"/>
+    <xacro:property name="d435i_cam_depth_pz" value="0.0125"/>
+    
+    <!-- IMU Position Offset -->
+    <xacro:property name="d435i_imu_offset_x" value="-0.00174"/>
+    <xacro:property name="d435i_imu_offset_y" value="0.00552"/>
+    <xacro:property name="d435i_imu_offset_z" value="0.0176"/>
+
+    <!-- Material definitions -->
+    <material name="camera_aluminum">
+        <color rgba="0.5 0.5 0.5 1"/>
+    </material>
+
+    <!-- Camera body, with origin at bottom screw mount -->
+    <joint name="camera_joint" type="fixed">
+        <origin xyz="0.245 0.13 0.225" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="camera_bottom_screw_frame"/>
+    </joint>
+    <link name="camera_bottom_screw_frame"/>
+
+    <joint name="camera_link_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="camera_bottom_screw_frame"/>
+        <child link="camera_link"/>
+    </joint>
+
+    <link name="camera_link">
+        <visual>
+            
+            <geometry>
+                <mesh filename="${mesh_location}/d435.dae"/>
+            </geometry>
+            <material name="camera_aluminum"/>
+        </visual>
+        <collision>
+            <origin xyz="0 -0.0175 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02505 0.090 0.025"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.564"/>
+            <origin xyz="0 0 0"/>
+            <inertia ixx="0.003881243" ixy="0.0" ixz="0.0" iyy="0.000498940" iyz="0.0" izz="0.003879257"/>
+        </inertial>
+    </link>
+
+    <!-- Camera depth sensor frames -->
+    <joint name="camera_depth_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="camera_link"/>
+        <child link="camera_depth_frame"/>
+    </joint>
+    <link name="camera_depth_frame"/>
+    
+    <joint name="camera_depth_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_depth_frame"/>
+        <child link="camera_depth_optical_frame"/>
+    </joint>
+    <link name="camera_depth_optical_frame"/>
+
+    <!-- Camera IR sensor frames -->
+    <joint name="camera_left_ir_joint" type="fixed">
+        <origin xyz="0 0.0 0" rpy="0 0 0"/>
+        <parent link="camera_depth_frame"/>
+        <child link="camera_left_ir_frame"/>
+    </joint>
+    <link name="camera_left_ir_frame"/>
+    
+    <joint name="camera_left_ir_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_left_ir_frame"/>
+        <child link="camera_left_ir_optical_frame"/>
+    </joint>
+    <link name="camera_left_ir_optical_frame"/>
+    
+    <joint name="camera_right_ir_joint" type="fixed">
+        <origin xyz="0 -0.050 0" rpy="0 0 0"/>
+        <parent link="camera_depth_frame"/>
+        <child link="camera_right_ir_frame"/>
+    </joint>
+    <link name="camera_right_ir_frame"/>
+    
+    <joint name="camera_right_ir_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_right_ir_frame"/>
+        <child link="camera_right_ir_optical_frame"/>
+    </joint>
+    <link name="camera_right_ir_optical_frame"/>
+
+    <!-- Camera color sensor frames -->
+    <joint name="camera_color_joint" type="fixed">
+        <origin xyz="0 0.015 0" rpy="0 0 0"/>
+        <parent link="camera_depth_frame"/>
+        <child link="camera_color_frame"/>
+    </joint>
+    <link name="camera_color_frame"/>
+    
+    <joint name="camera_color_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_color_frame"/>
+        <child link="camera_color_optical_frame"/>
+    </joint>
+    <link name="camera_color_optical_frame"/>
+
+    <!-- Camera IMU sensor frames (accelerometer and gyroscope) -->
+    <joint name="camera_accel_joint" type="fixed">
+        <origin xyz="-0.00174 0.00552 0.0176" rpy="0 0 0"/>
+        <parent link="camera_link"/>
+        <child link="camera_accel_frame"/>
+    </joint>
+    <link name="camera_accel_frame"/>
+    
+    <joint name="camera_accel_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_accel_frame"/>
+        <child link="camera_accel_optical_frame"/>
+    </joint>
+    <link name="camera_accel_optical_frame"/>
+    
+    <joint name="camera_gyro_joint" type="fixed">
+        <origin xyz="-0.00174 0.00552 0.0176" rpy="0 0 0"/>
+        <parent link="camera_link"/>
+        <child link="camera_gyro_frame"/>
+    </joint>
+    <link name="camera_gyro_frame"/>
+    
+    <joint name="camera_gyro_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="camera_gyro_frame"/>
+        <child link="camera_gyro_optical_frame"/>
+    </joint>
+    <link name="camera_gyro_optical_frame"/>
+
+    <!-- Gazebo configuration for Ionic/ROS2 Jazzy -->
+    <xacro:if value="${enable_D435i}">
+        <gazebo reference="camera_link">
+            <self_collide>0</self_collide>
+            <enable_wind>0</enable_wind>
+            <kinematic>0</kinematic>
+            <mu2>1</mu2>
+            <fdir1>0 0 0</fdir1>
+            <kp>1e+13</kp>
+            <kd>1</kd>
+            
+            <!-- Color Camera Sensor -->
+            <sensor name="camera_color" type="camera">
+                <camera name="camera">
+                    <horizontal_fov>1.211</horizontal_fov>
+                    <image>
+                        <width>1280</width>
+                        <height>720</height>
+                        <format>RGB_INT8</format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.007</stddev>
+                    </noise>
+                </camera>
+                <always_on>1</always_on>
+                <update_rate>60</update_rate>
+                <visualize>false</visualize>
+                <topic>camera/color/image_raw</topic>
+                <gz_frame_id>camera_color_optical_frame</gz_frame_id>
+            </sensor>
+            
+            <!-- Infrared Camera Sensors -->
+            <sensor name="camera_ired1" type="camera">
+                <camera name="camera">
+                    <horizontal_fov>1.487</horizontal_fov>
+                    <image>
+                        <width>640</width>
+                        <height>480</height>
+                        <format>L_INT8</format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.05</stddev>
+                    </noise>
+                </camera>
+                <always_on>1</always_on>
+                <update_rate>60</update_rate>
+                <visualize>false</visualize>
+                <topic>camera/infra1/image_rect_raw</topic>
+                <gz_frame_id>camera_left_ir_optical_frame</gz_frame_id>
+            </sensor>
+            
+            <sensor name="camera_ired2" type="camera">
+                <camera name="camera">
+                    <horizontal_fov>1.487</horizontal_fov>
+                    <image>
+                        <width>640</width>
+                        <height>480</height>
+                        <format>L_INT8</format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.05</stddev>
+                    </noise>
+                </camera>
+                <always_on>1</always_on>
+                <update_rate>60</update_rate>
+                <visualize>false</visualize>
+                <topic>camera/infra2/image_rect_raw</topic>
+                <gz_frame_id>camera_right_ir_optical_frame</gz_frame_id>
+            </sensor>
+            
+            <!-- Depth Camera Sensor -->
+            <sensor name="camera_depth" type="depth_camera">
+                <camera name="camera">
+                    <horizontal_fov>1.487</horizontal_fov>
+                    <image>
+                        <width>1280</width>
+                        <height>720</height>
+                        <format>R_FLOAT32</format>
+                    </image>
+                    <clip>
+                        <near>0.1</near>
+                        <far>100</far>
+                    </clip>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.100</stddev>
+                    </noise>
+                </camera>
+                <always_on>1</always_on>
+                <update_rate>60</update_rate>
+                <visualize>true</visualize>
+                <topic>camera/depth/image_rect_raw</topic>
+                <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
+            </sensor>
+
+            <!-- IMU Sensor -->
+            <sensor name="camera_imu" type="imu">
+                <always_on>true</always_on>
+                <update_rate>400</update_rate>
+                <imu>
+                    <angular_velocity>
+                        <x>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>2e-4</stddev>
+                                <bias_mean>0.0000075</bias_mean>
+                                <bias_stddev>0.0000008</bias_stddev>
+                            </noise>
+                        </x>
+                        <y>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>2e-4</stddev>
+                                <bias_mean>0.0000075</bias_mean>
+                                <bias_stddev>0.0000008</bias_stddev>
+                            </noise>
+                        </y>
+                        <z>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>2e-4</stddev>
+                                <bias_mean>0.0000075</bias_mean>
+                                <bias_stddev>0.0000008</bias_stddev>
+                            </noise>
+                        </z>
+                    </angular_velocity>
+                    <linear_acceleration>
+                        <x>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>1.7e-2</stddev>
+                                <bias_mean>0.1</bias_mean>
+                                <bias_stddev>0.001</bias_stddev>
+                            </noise>
+                        </x>
+                        <y>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>1.7e-2</stddev>
+                                <bias_mean>0.1</bias_mean>
+                                <bias_stddev>0.001</bias_stddev>
+                            </noise>
+                        </y>
+                        <z>
+                            <noise type="gaussian">
+                                <mean>0.0</mean>
+                                <stddev>1.7e-2</stddev>
+                                <bias_mean>0.1</bias_mean>
+                                <bias_stddev>0.001</bias_stddev>
+                            </noise>
+                        </z>
+                    </linear_acceleration>
+                </imu>
+                <topic>camera/imu/data</topic>
+                <gz_frame_id>camera_gyro_optical_frame</gz_frame_id>
+            </sensor>
+        </gazebo>
+    </xacro:if>
+</robot>

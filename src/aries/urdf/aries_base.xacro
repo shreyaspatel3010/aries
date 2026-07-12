@@ -1,0 +1,100 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+   
+    <!-- Wheel Macro -->
+    <xacro:macro name="wheel" params="prefix reflect">
+        <link name="${prefix}_Wheel_Link">
+            <inertial>
+                <origin xyz="0 0 0.0350608778434713" rpy="0 0 0"/>
+                <mass value="${wheel_mass}"/>
+                <inertia
+                    ixx="0.00914288966451803"
+                    ixy="0"
+                    ixz="0"
+                    iyy="0.00914288966451803"
+                    iyz="0"
+                    izz="0.0160987749043434"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/${prefix}_Wheel_Link.STL"/>
+                </geometry>
+                <material name="blue"/>
+            </visual>
+            <collision>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/${prefix}_Wheel_Link.STL"/>
+                </geometry>
+            </collision>
+        </link>
+    </xacro:macro>
+
+
+    <!-- IMU Frame -->
+    <link name="imu_frame"/>
+
+    <joint name="imu_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="imu_frame"/>
+        <origin xyz="0.0 0.0 0.08" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- Base Footprint - root link for mobile robot (odom frame provided by odometry, not URDF) -->
+    <link name="base_footprint">
+    </link>
+
+    <joint name="base_footprint_joint" type="fixed">
+        <parent link="base_footprint" />
+        <child link="base_link" />
+        <origin xyz="0 0 0.165" rpy="0 0 0" />
+    </joint>
+
+    <!-- Base Link -->
+    <link name="base_link">
+        <inertial>
+            <origin xyz="-0.0194894545849965 0.000308596526751935 0.119828029892907"
+                    rpy="0 0 0" />
+            <mass value="17.5363204791731" />
+            <inertia
+                ixx="0.242660790998556"
+                ixy="-9.00009815481889E-05"
+                ixz="0.0234683038167963"
+                iyy="0.514730499629884"
+                iyz="2.70300300277055E-11"
+                izz="0.664242254581203" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/base_link.STL" />
+            </geometry>
+            <material
+                name="">
+                <color rgba="1 1 1 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/base_link.STL" />
+            </geometry>
+        </collision>
+    </link>
+
+    
+
+    
+
+
+    
+    
+  
+    
+
+    
+</robot>

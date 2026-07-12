@@ -1,0 +1,640 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot
+  name="igus_rebel">
+  <link name="arm_base_link">
+    <inertial>
+      <origin
+        xyz="-0.0011101 -0.00059494 0.040917"
+        rpy="0 0 0" />
+      <mass
+        value="4.2944" />
+      <inertia
+        ixx="0.098117"
+        ixy="4.4465E-07"
+        ixz="3.3605E-05"
+        iyy="0.086593"
+        iyz="-1.8837E-06"
+        izz="0.12838" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/base_link.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0.05"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.09" length="0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="motor1">
+    <inertial>
+      <origin
+        xyz="0.00015243 0.00010812 -0.014668"
+        rpy="0 0 0" />
+      <mass
+        value="2" />
+      <inertia
+        ixx="0.024041"
+        ixy="8.3398E-08"
+        ixz="-7.2533E-07"
+        iyy="0.024081"
+        iyz="-6.2967E-07"
+        izz="0.037427" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/motor1.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 -0.0125"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.05" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="J_motor1"
+    type="fixed">
+    <origin
+      xyz="0 0 0.1462"
+      rpy="0 0 3.1416" />
+    <parent
+      link="arm_base_link" />
+    <child
+      link="motor1" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="link1">
+    <inertial>
+      <origin
+        xyz="2.5064E-06 -0.031151 0.06301"
+        rpy="0 0 0" />
+      <mass
+        value="1.9246" />
+      <inertia
+        ixx="0.046865"
+        ixy="-3.7969E-09"
+        ixz="5.1665E-09"
+        iyy="0.04904"
+        iyz="0.00010721"
+        izz="0.030611" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link1.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 -0.045 0.08"
+        rpy="0 0 0" />
+      <geometry>
+        <box size="0.1 0.03 0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint1"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="motor1" />
+    <child
+      link="link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.1241"
+      upper="3.1241"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+  <link name="motor2">
+    <inertial>
+      <origin
+        xyz="0.00015243 0.014668 0.00010812"
+        rpy="0 0 0" />
+      <mass
+        value="2" />
+      <inertia
+        ixx="0.024041"
+        ixy="7.2533E-07"
+        ixz="8.3398E-08"
+        iyy="0.037427"
+        iyz="6.2967E-07"
+        izz="0.024081" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/motor2.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0.0125 0"
+        rpy="1.57079 0 0" />
+      <geometry>
+        <cylinder radius="0.05" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="J_motor2"
+    type="fixed">
+    <origin
+      xyz="0 -0.0225000000000001 0.106"
+      rpy="0 0 0" />
+    <parent
+      link="link1" />
+    <child
+      link="motor2" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="link2">
+    <inertial>
+      <origin
+        xyz="0.023424 0.025337 0.10782"
+        rpy="0 0 0" />
+      <mass
+        value="5.689" />
+      <inertia
+        ixx="0.1162"
+        ixy="-2.0164E-11"
+        ixz="-0.00018569"
+        iyy="0.10155"
+        iyz="5.9595E-10"
+        izz="0.08965" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link2.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0.05 -0.025 0.12"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.06" length="0.18"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint2"
+    type="revolute">
+    <origin
+      xyz="0 0.049 0"
+      rpy="0 0 0" />
+    <parent
+      link="motor2" />
+    <child
+      link="link2" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.4835"
+      upper="2.4435"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+  <link name="motor3">
+    <inertial>
+      <origin
+        xyz="0.00015243 0.014668 0.00010812"
+        rpy="0 0 0" />
+      <mass
+        value="2.0785" />
+      <inertia
+        ixx="0.024041"
+        ixy="7.2533E-07"
+        ixz="8.3398E-08"
+        iyy="0.037427"
+        iyz="6.2967E-07"
+        izz="0.024081" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/motor3.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0.0125 0"
+        rpy="1.57079 0 0" />
+      <geometry>
+        <cylinder radius="0.05" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="J_motor3"
+    type="fixed">
+    <origin
+      xyz="0 -0.049 0.24152"
+      rpy="0 0 0" />
+    <parent
+      link="link2" />
+    <child
+      link="motor3" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="link3">
+    <inertial>
+      <origin
+        xyz="1.8683E-06 0.030601 0.032537"
+        rpy="0 0 0" />
+      <mass
+        value="2.5429" />
+      <inertia
+        ixx="0.051458"
+        ixy="3.7774E-09"
+        ixz="-4.5694E-09"
+        iyy="0.057983"
+        iyz="0.00010721"
+        izz="0.035205" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link3.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0.045 0.03"
+        rpy="0 0 0" />
+      <geometry>
+        <box size="0.1 0.03 0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint3"
+    type="revolute">
+    <origin
+      xyz="0 0.0225 0"
+      rpy="0 0 0" />
+    <parent
+      link="motor3" />
+    <child
+      link="link3" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.39626"
+      upper="2.61799"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+  <link name="motor4">
+    <inertial>
+      <origin
+        xyz="0.00015243 -0.00010812 0.014668"
+        rpy="0 0 0" />
+      <mass
+        value="2.0785" />
+      <inertia
+        ixx="0.024041"
+        ixy="-8.3398E-08"
+        ixz="7.2533E-07"
+        iyy="0.024081"
+        iyz="-6.2967E-07"
+        izz="0.037427" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/motor4.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0.0125"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.05" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="J_motor4"
+    type="fixed">
+    <origin
+      xyz="0.0013449814287804 0 0.105479407401356"
+      rpy="0 0 0" />
+    <parent
+      link="link3" />
+    <child
+      link="motor4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="link4">
+    <inertial>
+      <origin
+        xyz="-0.0070458 -0.00089773 0.05185"
+        rpy="0 0 0" />
+      <mass
+        value="2.2059" />
+      <inertia
+        ixx="0.02402"
+        ixy="1.096E-07"
+        ixz="2.3983E-05"
+        iyy="0.025662"
+        iyz="-1.1343E-06"
+        izz="0.030673" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link4.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0.044"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.05" length="0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint4"
+    type="revolute">
+    <origin
+      xyz="0 0 0.052"
+      rpy="0 0 0" />
+    <parent
+      link="motor4" />
+    <child
+      link="link4" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.12414"
+      upper="3.12414"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+  <link name="motor5">
+    <inertial>
+      <origin
+        xyz="3.9518E-05 0.02054 -0.00015792"
+        rpy="0 0 0" />
+      <mass
+        value="1.3011" />
+      <inertia
+        ixx="0.010922"
+        ixy="3.1358E-08"
+        ixz="1.683E-08"
+        iyy="0.014448"
+        iyz="-3.8659E-08"
+        izz="0.010868" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/motor5.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0.0125 0"
+        rpy="1.57079 0 0" />
+      <geometry>
+        <cylinder radius="0.04" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="J_motor5"
+    type="fixed">
+    <origin
+      xyz="0 -0.0182 0.142"
+      rpy="0 0 0" />
+    <parent
+      link="link4" />
+    <child
+      link="motor5" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="link5">
+    <inertial>
+      <origin
+        xyz="7.5874E-05 0.022847 0.026585"
+        rpy="0 0 0" />
+      <mass
+        value="0.70922" />
+      <inertia
+        ixx="0.0091752"
+        ixy="-5.1443E-08"
+        ixz="-7.751E-09"
+        iyy="0.0086093"
+        iyz="2.4553E-05"
+        izz="0.0079966" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link5.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0.045 0.01"
+        rpy="0 0 0" />
+      <geometry>
+        <box size="0.1 0.03 0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint5"
+    type="continuous">
+    <origin
+      xyz="0 0.0182 0"
+      rpy="0 0 0" />
+    <parent
+      link="motor5" />
+    <child
+      link="link5" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.65806"
+      upper="1.65806"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+  <link name="link6">
+    <inertial>
+      <origin
+        xyz="-0.00016088 -4.7449E-05 0.021219"
+        rpy="0 0 0" />
+      <mass
+        value="1.2658" />
+      <inertia
+        ixx="0.010763"
+        ixy="-2.2861E-07"
+        ixz="-4.9144E-08"
+        iyy="0.010792"
+        iyz="-2.2502E-08"
+        izz="0.014496" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="file://$(find aries)/meshes/robolink_rebel2/link6.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0.0125"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder radius="0.04" length="0.065"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint6"
+    type="revolute">
+    <origin
+      xyz="0 0 0.0768"
+      rpy="0 0 0" />
+    <parent
+      link="link5" />
+    <child
+      link="link6" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.12414"
+      upper="3.12414"
+      effort="330"
+      velocity="2.16" />
+    <dynamics
+      damping="0.0"
+      friction="0.0" />
+  </joint>
+</robot>

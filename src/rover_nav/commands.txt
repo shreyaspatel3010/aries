@@ -1,0 +1,50 @@
+
+sudo ip link set can0 up type can bitrate 250000
+
+# one-time passwordless CAN setup for aries_bringup automatic CAN setup
+sudo visudo -cf src/aries_bringup/setup/rover_can
+sudo install -m 440 src/aries_bringup/setup/rover_can /etc/sudoers.d/rover_can
+
+# launch CAN setup without password prompt
+ros2 launch aries_bringup rover_drive.launch.py can_interface:=can0
+ros2 launch aries_bringup full_hardware.launch.py
+
+
+ros2 launch odrive_can example_launch.yaml
+
+ros2 run joy joy_node
+
+ros2 run rover_nav Rover_control_Joy.py
+
+
+ros2 run rtabmap_odom rgbd_odometry \
+  --ros-args \
+  -p frame_id:=camera_link \
+  -p odom_frame_id:=camera_odom \
+  -p publish_tf:=false \
+  -r rgb/image:=/camera/camera/color/image_raw \
+  -r depth/image:=/camera/camera/depth/image_rect_raw \
+  -r rgb/camera_info:=/camera/camera/color/camera_info
+  
+  
+  
+  for odom from rtab --> just connecting the names correctly 
+  
+  ros2 launch realsense2_camera rs_launch.py \
+  enable_sync:=true \
+  align_depth.enable:=true
+  
+  
+ros2 run bno055 bno055 --ros-args --params-file ./src/bno055/bno055/params/bno055_params.yaml
+
+
+ros2 run robot_localization ekf_node --ros-args --params-file ~/colcon_ws/src/rover_nav/config/ekf_config.yaml
+
+
+
+ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link bno055
+
+
+colcon build --packages-skip cmrosutils carmaker_rsds_client hellocm hellocm_cmnode hellocm_msgs
+
+	

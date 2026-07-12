@@ -1,0 +1,112 @@
+/**:
+  ros__parameters:
+    joy_topic: "joy"
+    joint_state_topic: "joint_states"
+    servo_status_topic: "servo_node/status"
+    servo_command_type_service: "/servo_node/switch_command_type"
+    gripper_command_topic: "rebel_gripper_controller/joint_trajectory"
+    gripper_joint_name: "gripper_gear_left_joint"
+    command_frame_id: "base_link"
+    status_topic: "/arm_joystick/status"
+    move_action_name: "move_action"
+    planning_frame: "base_link"
+    planning_group: "igus_rebel_arm"
+    planning_link: "arm_gripper_base_link"
+    move_group_control_mode: "cartesian"
+
+    linear_scale: 0.10
+    angular_scale: 0.18
+    joint_scale: 0.28
+    constant_speed_mode: false
+    gripper_speed: 2.00
+
+    # Optional MoveGroup planned joystick mode.
+    # When joystick_control_mode:=move_group, cartesian mode sends small end-effector pose targets through
+    # /move_action, so MoveIt uses the same planning, joint limits, collision
+    # checking, and trajectory execution path as RViz Plan + Execute.
+    cartesian_step_m: 0.025
+    angular_step_rad: 0.10
+    cartesian_directions: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    position_goal_tolerance: 0.015
+    orientation_goal_tolerance: 0.15
+
+    # Set move_group_control_mode: "joint" to use planned joint nudges instead.
+    joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    joint_min_positions: [-3.1241, -1.4835, -1.39626, -3.12414, -1.65806, -3.12414]
+    joint_max_positions: [3.1241, 2.4435, 2.61799, 3.12414, 1.65806, 3.12414]
+    joint_directions: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    joint_step_rad: 0.07
+    joint_limit_margin: 0.05
+    joint_goal_tolerance: 0.025
+    allowed_planning_time: 2.0
+    num_planning_attempts: 5
+    velocity_scale: 0.35
+    acceleration_scale: 0.35
+    command_period_sec: 0.20
+    success_cooldown_sec: 0.05
+    failure_cooldown_sec: 0.80
+    status_period_sec: 1.0
+
+    gripper_open_position: -1.57
+    gripper_closed_position: 0.07
+    gripper_trajectory_duration: 0.10
+    max_gripper_command_step: 0.04
+    deadzone: 0.04
+    command_publish_rate_hz: 80.0
+    joy_timeout_sec: 0.35
+    stop_publish_duration: 0.0
+    stop_ramp_steps: 10
+    publish_zero_when_disabled: false
+
+    # Arm mapping:
+    # Hold RB/button 5 = arm/gripper enable
+    # Default joystick_control_mode:=servo uses smooth Cartesian/Twist movement.
+    # In servo mode, RB press toggles Cartesian <-> chain/joint mode.
+    # LB/button 4 belongs to rover and blocks arm output
+    # Hold X/button 2 = manual gripper open; hold B/button 1 = manual gripper close
+    button_enable: 5
+    button_joint_enable: 999
+    button_arm_mode_toggle: 5
+    button_rover_enable: 4
+    arm_toggle_mode: true
+
+    button_gripper_open: 2
+    button_gripper_close: 1
+    button_gripper_toggle: 0
+
+    axis_linear_x: 1
+    axis_linear_y: 0
+    axis_linear_z: 7
+    axis_angular_x: 3
+    axis_angular_y: 4
+    axis_angular_z: 6
+
+    axis_joint1: 0
+    axis_joint2: 1
+    axis_joint3: 4
+    axis_joint4: 3
+    axis_joint5: 6
+    axis_joint6: 7
+    trajectory_horizon_sec: 0.025
+    stop_ramp_duration_sec: 0.06
+    arm_command_topic: "rebel_arm_trajectory_controller/joint_trajectory"
+    button_direct_joint_mode: 999
+    twist_command_topic: "/delta_twist_cmds"
+    cartesian_linear_scale: 0.10
+    cartesian_angular_scale: 0.18
+    cartesian_release_deadzone: 0.04
+    cartesian_stop_ramp_duration_sec: 0.0
+    cartesian_hard_stop_cycles: 3
+    servo_pause_service: "/servo_node/pause_servo"
+    max_joint_velocity: 0.28
+    max_joint_accel: 1.8
+    max_joint_decel: 16.0
+    joint_velocity_deadband: 0.004
+    dls_lambda: 0.10
+    trajectory_preview_sec: 0.025
+    hold_time_sec: 0.030
+    stop_hold_cycles: 2
+    collision_preview_sec: 0.16
+    velocity_point_1_sec: 0.040
+    velocity_point_2_sec: 0.080
+    stop_zero_cycles: 4

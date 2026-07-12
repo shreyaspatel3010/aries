@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="igus_gripper">
+    <xacro:arg name="serial_port" default="/dev/ttyACM0"/>
+    <xacro:property name="serial_port" value="$(arg serial_port)"/>
+    
+    <!-- Properties -->
+    <xacro:property name="mesh_location" value="package://aries/meshes"/>
+    
+    <!-- Base link (world) -->
+    <link name="world"/>
+    
+    <!-- Fake arm end-effector link (link6) that gripper expects -->
+    <link name="link6">
+        <visual>
+            <geometry>
+                <sphere radius="0.01"/>
+            </geometry>
+            <material name="gray">
+                <color rgba="0.5 0.5 0.5 1.0"/>
+            </material>
+        </visual>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+        </inertial>
+    </link>
+    
+    <!-- Fixed joint from world to link6 -->
+    <joint name="world_to_link6" type="fixed">
+        <parent link="world"/>
+        <child link="link6"/>
+        <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    </joint>
+    
+    <!-- Include gripper xacro (it will attach to link6) -->
+    <xacro:include filename="$(find aries)/urdf/gripper.xacro"/>
+    
+    <!-- ros2_control using Teensy hardware -->
+    <ros2_control name="TeensyGripperHardware" type="system">
+        <hardware>
+            <plugin>teensy_gripper_hardware/TeensyGripperSystem</plugin>
+            <param name="cmd_topic">/gripper/cmd</param>
+            <param name="state_topic">/gripper/state</param>
+            <param name="min_pos">0.0</param>
+            <param name="max_pos">0.08925</param>
+        </hardware>
+        
+        <!-- Only control left gripper joint - right is a mimic joint -->
+        <joint name="arm_gripper_left_joint">
+            <command_interface name="position"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+    </ros2_control>
+    
+</robot>

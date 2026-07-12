@@ -1,0 +1,44 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    rebel_arm_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    rebel_arm_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+rebel_arm_trajectory_controller:
+  ros__parameters:
+    joints:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    command_interfaces: [velocity]
+    state_interfaces: [position, velocity]
+
+    gains:
+      joint1: { p: 10.0, d: 5.0, i: 0.02, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+      joint2: { p: 5.0, d: 2.0, i: 0.01, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+      joint3: { p: 5.0, d: 2.0, i: 0.01, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+      joint4: { p: 5.0, d: 2.0, i: 0.01, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+      joint5: { p: 5.0, d: 2.0, i: 0.01, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+      joint6: { p: 5.0, d: 2.0, i: 0.01, i_clamp: 5.0, ff_velocity_scale: 1.0 }
+
+rebel_arm_velocity_controller:
+  ros__parameters:
+    joints:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    command_interfaces: [velocity]
+    state_interfaces: [position, velocity]

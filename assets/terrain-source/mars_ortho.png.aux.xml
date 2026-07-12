@@ -1,0 +1,19 @@
+<PAMDataset>
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCS["ETRF2000-PL / CS2000/21",GEOGCS["ETRS89",DATUM["European_Terrestrial_Reference_System_1989",SPHEROID["GRS 1980",6378137,298.257222101004,AUTHORITY["EPSG","7019"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY["EPSG","6258"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4258"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",21],PARAMETER["scale_factor",0.999923],PARAMETER["false_easting",7500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","2178"]]</SRS>
+  <GeoTransform>  7.4221829613152975e+06,  1.3222600000087343e-02,  0.0000000000000000e+00,  5.5483653094957909e+06,  0.0000000000000000e+00, -1.3222600000023186e-02</GeoTransform>
+  <Metadata domain="IMAGE_STRUCTURE">
+    <MDI key="INTERLEAVE">PIXEL</MDI>
+  </Metadata>
+  <Metadata>
+    <MDI key="AREA_OR_POINT">Area</MDI>
+  </Metadata>
+  <PAMRasterBand band="1">
+    <UnitType>metre</UnitType>
+  </PAMRasterBand>
+  <PAMRasterBand band="2">
+    <UnitType>metre</UnitType>
+  </PAMRasterBand>
+  <PAMRasterBand band="3">
+    <UnitType>metre</UnitType>
+  </PAMRasterBand>
+</PAMDataset>

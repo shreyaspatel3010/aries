@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:property name="camera_length" value="0.01" />
+    <xacro:property name="camera_width" value="0.1" />
+    <xacro:property name="camera_height" value="0.05" />
+
+    <xacro:macro name="box_inertia" params="m l w h xyz rpy">
+        <inertial>
+            <origin xyz="${xyz}" rpy="${rpy}" />
+            <mass value="${m}" />
+            <inertia ixx="${(m/12) * (h*h + l*l)}" ixy="0" ixz="0" 
+                     iyy="${(m/12) * (w*w + l/l)}" iyz="0" 
+                     izz="${(m/12) * (w*w + h*h)}" />
+        </inertial>
+    </xacro:macro>
+
+    <link name="camera_link">
+        <visual>
+            <geometry>
+                <mesh filename="${mesh_location}/d435.dae"/>
+            </geometry>
+            <material name="red" />
+        </visual>
+        <collision>
+            <geometry>
+                <mesh filename="${mesh_location}/d435.dae"/>
+            </geometry>
+        </collision>
+        <xacro:box_inertia m="0.1" l="${camera_length}" w="${camera_width}" h="${camera_height}"
+                           xyz="0 0 0" rpy="0 0 0" />
+    </link>
+
+    <joint name="base_camera_joint" type="fixed">
+        <parent link="base_link" />
+        <child link="camera_link" />
+        <origin xyz="0.245 0.13 0.225" rpy="0 0 0" />
+    </joint>
+
+    <link name="camera_link_optical" />
+
+    <joint name="camera_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+        <parent link="camera_link"/>
+        <child link="camera_link_optical"/>
+    </joint>
+
+    <gazebo reference="camera_link">
+        <sensor name="camera" type="camera">
+            <camera>
+                <horizontal_fov>1.3962634</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>R8G8B8</format>
+                </image>
+                <clip>
+                    <near>0.1</near>
+                    <far>15</far>
+                </clip>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.0</mean>
+                    <stddev>0.007</stddev>
+                </noise>
+                <optical_frame_id>camera_link_optical</optical_frame_id>
+                <camera_info_topic>camera/camera_info</camera_info_topic>
+            </camera>
+            <always_on>1</always_on>
+            <update_rate>50</update_rate>
+            <visualize>true</visualize>
+            <topic>camera/image_raw</topic>            
+        </sensor>
+    </gazebo>
+
+</robot>

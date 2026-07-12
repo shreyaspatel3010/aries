@@ -1,0 +1,9 @@
+# Default initial positions for aries's ros2_control fake system
+initial_positions:
+  joint1: 0
+  joint2: 0
+  joint3: 0
+  joint4: 0
+  joint5: 0
+  joint6: 0
+  gripper_gear_left_joint: -1.57
