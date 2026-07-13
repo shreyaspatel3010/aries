@@ -474,6 +474,18 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
+    # Geometry tables model the new four-bar gripper only.
+    gripper_arc_visualizer_node = None
+    if gripper_type == "new":
+        gripper_arc_visualizer_node = Node(
+            package="aries_moveit",
+            executable="gripper_arc_visualizer.py",
+            name="gripper_arc_visualizer",
+            parameters=[{"use_sim_time": use_sim_time}],
+            output="screen",
+        )
+
     rviz_config = os.path.join(get_package_share_directory("aries_moveit"), "launch", "moveit.rviz")
     rviz_node = Node(
         condition=IfCondition(use_gui),
@@ -510,6 +522,8 @@ def launch_setup(context, *args, **kwargs):
         nodes.append(gripper_spawner_event)
     if micro_ros_agent:
         nodes.append(micro_ros_agent)
+    if gripper_arc_visualizer_node:
+        nodes.append(gripper_arc_visualizer_node)
     return nodes
 
 

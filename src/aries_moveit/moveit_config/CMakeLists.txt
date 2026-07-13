@@ -63,6 +63,7 @@ install(PROGRAMS
   scripts/joy_layout_normalizer.py
   scripts/publish_wheel_joints.py
   scripts/rebel_movegroup_joystick.py
+  scripts/gripper_arc_visualizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

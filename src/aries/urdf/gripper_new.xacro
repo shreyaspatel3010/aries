@@ -397,6 +397,19 @@
     </joint>
 
 
+    <!-- Virtual TCP frame used as the IK tip: stable pinch center inside the
+         fingers. Finger z range is roughly 0.064-0.159 m from
+         arm_gripper_base_link; the bucket-jaw midpoint is ~0.22 m. -->
+    <xacro:property name="gripper_tcp_z" value="0.15"/>
+
+    <link name="gripper_tcp"/>
+
+    <joint name="gripper_tcp_joint" type="fixed">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_tcp"/>
+        <origin xyz="0.0 0.0 ${gripper_tcp_z}" rpy="0.0 0.0 0.0"/>
+    </joint>
+
     <!-- Gripper Camera (D435i) — defined in gripper_camera.xacro -->
     <xacro:include filename="gripper_camera.xacro" />
 

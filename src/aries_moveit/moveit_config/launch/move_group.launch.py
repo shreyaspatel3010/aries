@@ -281,6 +281,17 @@ def opaque_func(context, *args, **kwargs):
         output="screen",
     )
 
+    # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
+    # The robot model here always loads the new four-bar gripper.
+    gripper_arc_visualizer_node = Node(
+        package="aries_moveit",
+        executable="gripper_arc_visualizer.py",
+        namespace=namespace,
+        name="gripper_arc_visualizer",
+        parameters=[{'use_sim_time': use_sim_time}],
+        output="screen",
+    )
+
     default_rviz_file = os.path.join(
         get_package_share_directory('aries_moveit'),
         'launch',
@@ -314,6 +325,7 @@ def opaque_func(context, *args, **kwargs):
         joy_layout_normalizer_node,
         teleop_twist_joy_node,
         move_group_joystick_node,
+        gripper_arc_visualizer_node,
         launch_rviz
     ]
 

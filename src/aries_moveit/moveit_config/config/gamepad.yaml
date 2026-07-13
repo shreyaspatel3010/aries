@@ -11,7 +11,7 @@
     move_action_name: "move_action"
     planning_frame: "base_link"
     planning_group: "igus_rebel_arm"
-    planning_link: "arm_gripper_base_link"
+    planning_link: "gripper_tcp"
     move_group_control_mode: "cartesian"
 
     linear_scale: 0.10

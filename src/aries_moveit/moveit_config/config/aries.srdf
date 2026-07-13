@@ -35,7 +35,7 @@
         <joint name="J_motor5" />
         <joint name="joint6" />
         <joint name="virtual_arm_base_joint"/>
-        <chain base_link="arm_base_link" tip_link="arm_gripper_base_link"/>
+        <chain base_link="arm_base_link" tip_link="gripper_tcp"/>
     </group>
     <group name="gripper">
         <link name="arm_gripper_base_link"/>

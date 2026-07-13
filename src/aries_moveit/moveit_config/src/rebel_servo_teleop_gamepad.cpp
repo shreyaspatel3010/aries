@@ -115,7 +115,7 @@ private:
     status_topic_ = declareGet<std::string>("status_topic", "/arm_joystick/status");
 
     planning_group_ = declareGet<std::string>("planning_group", "igus_rebel_arm");
-    planning_link_ = declareGet<std::string>("planning_link", "arm_gripper_base_link");
+    planning_link_ = declareGet<std::string>("planning_link", "gripper_tcp");
 
     std::vector<std::string> default_names(DEFAULT_ARM_JOINTS.begin(), DEFAULT_ARM_JOINTS.end());
     auto names = declareGet<std::vector<std::string>>("joint_names", default_names);

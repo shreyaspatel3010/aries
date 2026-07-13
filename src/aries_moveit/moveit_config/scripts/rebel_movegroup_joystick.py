@@ -39,7 +39,7 @@ class RebelMoveGroupJoystick(Node):
         self.declare_parameter("move_action_name", "move_action")
         self.declare_parameter("planning_frame", "base_link")
         self.declare_parameter("planning_group", "igus_rebel_arm")
-        self.declare_parameter("planning_link", "arm_gripper_base_link")
+        self.declare_parameter("planning_link", "gripper_tcp")
         self.declare_parameter("move_group_control_mode", "cartesian")
         self.declare_parameter("cartesian_step_m", 0.025)
         self.declare_parameter("angular_step_rad", 0.10)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -238,6 +238,16 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_gui'))
     )
     
+    # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
+    # Geometry tables model the new four-bar gripper only.
+    gripper_arc_visualizer_node = Node(
+        package="aries_moveit",
+        executable="gripper_arc_visualizer.py",
+        name="gripper_arc_visualizer",
+        output="screen",
+        condition=IfCondition(PythonExpression(["'", gripper_type, "' == 'new'"])),
+    )
+
     # micro-ROS agent: bridges Teensy USB serial to ROS 2 topics
     micro_ros_agent_node = Node(
         package='micro_ros_agent',
@@ -260,5 +270,6 @@ def generate_launch_description():
         delay_arm_spawner,
         delay_gripper_spawner,
         move_group_node,
+        gripper_arc_visualizer_node,
         rviz_node,
     ])
