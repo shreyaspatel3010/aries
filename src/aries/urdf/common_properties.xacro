@@ -20,7 +20,7 @@
   <!-- Enable Mimic joints -->
   <xacro:property name="enable_mimic" value="true"/>
   <!-- Enable Lidar -->
-  <xacro:property name="enable_lidar" value="true"/>
+  <xacro:property name="enable_lidar" value="false"/>
   <!-- Keep real LiDAR frames/visuals in every robot description without
          automatically enabling the expensive Gazebo sensors. -->
   <xacro:property name="enable_lidar_gazebo" value="false"/>
