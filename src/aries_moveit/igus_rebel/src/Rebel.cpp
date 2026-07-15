@@ -5,6 +5,8 @@
 
 #include <iostream>
 #include <sstream>
+#include <algorithm>
+#include <cctype>
 
 namespace Igus
 {
@@ -36,14 +38,20 @@ namespace Igus
             msg << std::setprecision(8);
             msg << "CRISTART " << Ccnt() << " ";
             msg << "ALIVEJOG ";
-            msg << j1 << " " << j2 << " " << j3 << " ";
-            msg << j4 << " " << j5 << " " << j6 << " ";
-            msg << 0.0f << " " << 0.0f << " " << 0.0f << " ";
-            msg << "CRIEND" << std::endl;
-
-            // RCLCPP_INFO(node_->get_logger(), "ALIVEJOG: %s", msg.str().c_str());
             {
                 std::lock_guard<std::mutex> lockGuard(aliveLock);
+                if (handGuiding.load())
+                {
+                    msg << 0.0f << " " << 0.0f << " " << 0.0f << " ";
+                    msg << 0.0f << " " << 0.0f << " " << 0.0f << " ";
+                }
+                else
+                {
+                    msg << j1 << " " << j2 << " " << j3 << " ";
+                    msg << j4 << " " << j5 << " " << j6 << " ";
+                }
+                msg << 0.0f << " " << 0.0f << " " << 0.0f << " ";
+                msg << "CRIEND" << std::endl;
                 rebelSocket->SendMessage(msg.str());
             }
 
@@ -92,6 +100,11 @@ namespace Igus
                 case CriMessages::MessageType::CMD:
                 {
                     CriMessages::Command command = CriMessages::Command(msg);
+
+                    if (command.command.rfind(CriKeywords::COMMAND_ZEROTORQUE, 0) == 0)
+                    {
+                        ProcessZeroTorqueResponse(command.command);
+                    }
 
                     // Not sure if the ROS node should display these?
                     RCLCPP_INFO(rclcpp::get_logger("igus_rebel"), "CMD: %s", command.command.c_str());
@@ -517,6 +530,54 @@ namespace Igus
         lastErrorJoints = currentErrorJoints;
     }
 
+    void Rebel::ProcessZeroTorqueResponse(const std::string &command)
+    {
+        // Expected CRI response: "ZeroTorque <allowed> <enabled> [CRIEND]".
+        std::istringstream stream(command);
+        std::string keyword;
+        std::string allowedText;
+        std::string enabledText;
+        stream >> keyword >> allowedText >> enabledText;
+
+        auto parseBool = [](std::string value, bool &result) {
+            std::transform(value.begin(), value.end(), value.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (value == "true" || value == "1")
+            {
+                result = true;
+                return true;
+            }
+            if (value == "false" || value == "0")
+            {
+                result = false;
+                return true;
+            }
+            return false;
+        };
+
+        bool allowed = false;
+        bool enabled = false;
+        if (keyword != CriKeywords::COMMAND_ZEROTORQUE ||
+            !parseBool(allowedText, allowed) || !parseBool(enabledText, enabled))
+        {
+            RCLCPP_WARN(rclcpp::get_logger("igus_rebel"),
+                "Could not parse ZeroTorque response: %s", command.c_str());
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(zeroTorqueLock);
+            zeroTorqueAllowed = allowed;
+            zeroTorqueEnabled = enabled;
+            ++zeroTorqueResponseCount;
+        }
+        zeroTorqueCondition.notify_all();
+
+        RCLCPP_INFO(rclcpp::get_logger("igus_rebel"),
+            "ZeroTorque available=%s active=%s",
+            allowed ? "true" : "false", enabled ? "true" : "false");
+    }
+
     //
     // public functions
     //
@@ -561,6 +622,9 @@ namespace Igus
         node_ = std::make_shared<rclcpp::Node>("igus_rebel");
         digital_output_srv_ = node_->create_service<igus_rebel_msgs::srv::SetDigitalOutput>(
             "set_digital_output", std::bind(&Rebel::dio_callback, this, std::placeholders::_1, std::placeholders::_2));
+        hand_guiding_srv_ = node_->create_service<std_srvs::srv::SetBool>(
+            "~/set_hand_guiding",
+            std::bind(&Rebel::hand_guiding_callback, this, std::placeholders::_1, std::placeholders::_2));
         return CallbackReturn::SUCCESS;
     }
 
@@ -657,12 +721,21 @@ namespace Igus
             rclcpp::spin_some(node_);
         }
 
+        // Never let a buffered controller command reach the robot in zero-torque mode.
+        if (handGuiding.load())
+        {
+            std::lock_guard<std::mutex> lockGuard(aliveLock);
+            j1 = j2 = j3 = j4 = j5 = j6 = 0.0f;
+            return;
+        }
+
         // Apply dead-band: zero out commands below VELOCITY_DEADBAND_PCT so the
         // robot's own servo holds final position instead of chasing micro-corrections.
         auto db = [](float v) -> float {
             return (std::fabs(v) < VELOCITY_DEADBAND_PCT) ? 0.0f : v;
         };
 
+        std::lock_guard<std::mutex> lockGuard(aliveLock);
         j1 = db(JOINT_VELOCITY_SCALE * (float)vel_cmd[0] / degToRad);
         j2 = db(JOINT_VELOCITY_SCALE * (float)vel_cmd[1] / degToRad);
         j3 = db(JOINT_VELOCITY_SCALE * (float)vel_cmd[2] / degToRad);
@@ -677,6 +750,95 @@ namespace Igus
     {
         SetDigitalOut(request->output.output, request->output.is_on);
         response->success = true;
+    }
+
+    void Rebel::hand_guiding_callback(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+    {
+        const bool enable = request->data;
+
+        // Inhibit ROS commands before asking the robot to release torque.
+        handGuiding.store(true);
+        {
+            std::lock_guard<std::mutex> lockGuard(aliveLock);
+            j1 = j2 = j3 = j4 = j5 = j6 = 0.0f;
+        }
+
+        unsigned long previousResponseCount;
+        {
+            std::lock_guard<std::mutex> lock(zeroTorqueLock);
+            previousResponseCount = zeroTorqueResponseCount;
+        }
+
+        Command(CriKeywords::COMMAND_ZEROTORQUE + (enable ? " True" : " False"));
+
+        // The message thread receives the authoritative allowed/enabled state.
+        std::unique_lock<std::mutex> lock(zeroTorqueLock);
+        const bool received = zeroTorqueCondition.wait_for(
+            lock, std::chrono::milliseconds(1000),
+            [this, previousResponseCount] {
+                return zeroTorqueResponseCount != previousResponseCount;
+            });
+
+        if (!received)
+        {
+            response->success = false;
+            response->message =
+                "Timed out waiting for the Rebel ZeroTorque confirmation; arm controller remains stopped";
+            return;
+        }
+
+        if (enable)
+        {
+            if (!zeroTorqueAllowed)
+            {
+                handGuiding.store(false);
+                response->success = false;
+                response->message =
+                    "ZeroTorque unavailable (allowed=false, enabled=false): enable it in the Rebel robot "
+                    "configuration and verify that the joint firmware supports torque mode";
+                return;
+            }
+
+            if (!zeroTorqueEnabled)
+            {
+                handGuiding.store(false);
+                response->success = false;
+                response->message =
+                    "ZeroTorque allowed but did not activate (allowed=true, enabled=false): the robot must "
+                    "be referenced and its motors enabled";
+                return;
+            }
+
+            response->success = true;
+            response->message = "Hand guiding active: ZeroTorque confirmed";
+            return;
+        }
+
+        if (zeroTorqueEnabled)
+        {
+            response->success = false;
+            response->message = "Rebel still reports ZeroTorque active; arm controller remains stopped";
+            return;
+        }
+
+        lock.unlock();
+
+        // CRI specifies that leaving ZeroTorque puts the motors in Disabled state.
+        // Re-enable them while jog remains inhibited; the coordinator starts the ROS
+        // trajectory controller only after this service succeeds.
+        for (double &command : vel_cmd)
+        {
+            command = 0.0;
+        }
+        Command(CriKeywords::COMMAND_RESET);
+        Command(CriKeywords::COMMAND_ENABLE);
+        Command(CriKeywords::COMMAND_MOTIONTYPEJOINT);
+        handGuiding.store(false);
+
+        response->success = true;
+        response->message = "Hand guiding stopped and Rebel motors re-enabled";
     }
 
     void Rebel::GetReferenceInfo()

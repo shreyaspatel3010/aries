@@ -64,6 +64,7 @@
     # In servo mode, RB press toggles Cartesian <-> chain/joint mode.
     # LB/button 4 belongs to rover and blocks arm output
     # Hold X/button 2 = manual gripper open; hold B/button 1 = manual gripper close
+    # Hold Y/button 3 = real-arm physical hand guiding (ZeroTorque)
     button_enable: 5
     button_joint_enable: 999
     button_arm_mode_toggle: 5

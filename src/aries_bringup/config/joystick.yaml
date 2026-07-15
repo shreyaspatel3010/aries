@@ -13,6 +13,7 @@
 # Final mapping:
 #   Hold LB = rover drive
 #   Hold RB = arm/gripper enable
+#   Hold Y  = real-arm physical hand guiding (ZeroTorque)
 #   New RB press = toggle arm Cartesian <-> chain/joint mode
 
 rover_joystick_controller:

@@ -3,6 +3,8 @@ from launch_ros.actions import Node
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition
+from launch.substitutions import PythonExpression
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -79,6 +81,16 @@ def generate_launch_description():
         arguments=["rebel_arm_velocity_controller", "--controller-manager", "/controller_manager"],
         output="both",
     )
+
+    hand_guiding_node = Node(
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("hardware_protocol"), "' == 'rebel'"
+        ])),
+        package="igus_rebel",
+        executable="rebel_hand_guiding.py",
+        name="rebel_hand_guiding",
+        output="screen",
+    )
     
     return LaunchDescription([
         hardware_protocol_arg,
@@ -86,6 +98,7 @@ def generate_launch_description():
         robot_state_pub_node,
         joint_state_broadcaster_spawner,
         robot_trajectory_controller_spawner,
+        hand_guiding_node,
         # robot_velocity_controller_spawner,
     ])
     

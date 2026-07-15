@@ -31,6 +31,55 @@ Recommended launch order based on workflow.
    ros2 launch aries_bringup igus_rebel_hardware.launch.py use_joystick:=true
    ```
 
+#### Move the arm physically by hand
+
+The real-arm launch exposes a coordinated hand-guiding service. Before enabling
+it, remove the payload if possible, clear the workspace, keep the emergency stop
+within reach, and support the arm so it cannot fall when motor torque is removed.
+
+Enable hand guiding:
+
+```bash
+ros2 service call /arm/set_hand_guiding std_srvs/srv/SetBool "{data: true}"
+```
+
+With the normalized joystick running, you can instead hold Y to enter hand
+guiding and release Y to restore normal control. If joystick messages stop while
+Y is held, a watchdog requests torque restoration after two seconds.
+
+Move the arm slowly by hand, staying away from joint limits. When it is in the
+desired pose, keep holding it and restore normal control:
+
+```bash
+ros2 service call /arm/set_hand_guiding std_srvs/srv/SetBool "{data: false}"
+```
+
+The service stops the arm trajectory controller before entering the Rebel CRI
+`ZeroTorque` mode. On exit, it disables `ZeroTorque`, re-enables the motors, and
+starts a fresh trajectory controller so an old trajectory cannot resume.
+
+If the request says that `ZeroTorque` is unavailable, enable zero-torque mode in
+the Rebel/iRC robot configuration and verify that the installed motor modules
+support torque mode. A raw all-motors-disabled fallback is intentionally not used
+because the ReBeL's spring-applied electromagnetic brakes engage without motor
+voltage, so disabling the drives locks the joints instead of making them
+backdrivable.
+
+The iRC documentation does not define a separate physical teach/freedrive mode.
+It calls powered movement with the software controls or gamepad followed by
+recording a pose "teach-in programming"; `ZeroTorque` is the documented manual
+guidance mode.
+
+Use iRC **File -> Configuration Files**, load the robot configuration from the
+robot, save a backup, and inspect its `ZeroTorque` entry. Each intended axis must
+be enabled, for example `A1="true"` through `A6="true"`. Write the configuration
+back to the robot and restart the controller. On an embedded controller the same
+file is under
+`~/RobotControl/Data/Robots/<category>/<robot type>/<robot type>.xml`, but the
+iRC workflow is preferred. Only enable axes that igus confirms can be safely used
+without torque. Joint-module firmware must report product `0x42`, firmware
+`0x05 0x03` or newer.
+
 ### Gripper Hardware Only (Teensy over USB serial)
 
 1. Terminal 1:
@@ -72,6 +121,7 @@ ros2 launch aries_lidar lidar.launch.py use_lidar:=true
 
 Joystick controls:
 - Hold RB to enable arm/gripper joystick output.
+- On the real arm, hold Y for physical hand guiding; release Y to restore torque.
 - Default arm mode is the old smooth MoveIt Servo Cartesian/Twist teleop.
 - Press RB to toggle arm mode between Cartesian/Twist and Chain/JointJog.
 - Servo output is filtered by `servo_collision_guard` before it reaches the arm controller.

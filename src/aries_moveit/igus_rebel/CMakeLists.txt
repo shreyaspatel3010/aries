@@ -14,6 +14,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(igus_rebel_msgs REQUIRED)
 
@@ -37,7 +38,12 @@ target_include_directories(${PROJECT_NAME} PUBLIC)
 
 # Add library dependencies
 ament_target_dependencies(${PROJECT_NAME}
-  pluginlib hardware_interface igus_rebel_msgs
+  pluginlib hardware_interface igus_rebel_msgs std_srvs
+)
+
+install(PROGRAMS
+  scripts/rebel_hand_guiding.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 pluginlib_export_plugin_description_file(hardware_interface rebel.xml)

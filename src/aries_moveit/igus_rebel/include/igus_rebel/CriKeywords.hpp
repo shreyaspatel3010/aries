@@ -51,6 +51,7 @@ namespace Igus
         const std::string COMMAND_QUIT = "QUIT";
         const std::string COMMAND_SETACTIVE = "SetActive";
         const std::string COMMAND_DOUT = "DOUT";
+        const std::string COMMAND_ZEROTORQUE = "ZeroTorque";
 
         const std::string CONFIG_GETKINEMATICLIMITS = "GetKinematicLimits";
         const std::string CONFIG_GETKINEMATICLIMITS_ANSWER = "KinematicLimits";

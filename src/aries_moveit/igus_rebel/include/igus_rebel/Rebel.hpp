@@ -3,9 +3,12 @@
 
 #include <thread>
 #include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include <math.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/int16.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 #include "igus_rebel_msgs/msg/digital_output.hpp"
 #include "igus_rebel_msgs/srv/set_digital_output.hpp"
 #include <hardware_interface/system_interface.hpp>
@@ -55,6 +58,16 @@ namespace Igus
         std::mutex cntLock;
         std::mutex aliveLock;
 
+        // Zero-torque (hand-guiding) state is confirmed from the CRI reply.  The
+        // alive thread keeps sending zero jog while this is true, even if a ROS
+        // controller still has an old velocity command buffered.
+        std::atomic<bool> handGuiding{false};
+        std::mutex zeroTorqueLock;
+        std::condition_variable zeroTorqueCondition;
+        bool zeroTorqueAllowed{false};
+        bool zeroTorqueEnabled{false};
+        unsigned long zeroTorqueResponseCount{0};
+
         double vel_cmd[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         double pos[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         double last_pos[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -69,6 +82,7 @@ namespace Igus
 
         // ROS2 communication
         rclcpp::Service<igus_rebel_msgs::srv::SetDigitalOutput>::SharedPtr digital_output_srv_;
+        rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr hand_guiding_srv_;
 
         // Thread functions
         void AliveThreadFunction();
@@ -82,6 +96,7 @@ namespace Igus
 
         // Function to react to specific status values, to display warnings, error messages, etc.
         void ProcessStatus(const CriMessages::Status &);
+        void ProcessZeroTorqueResponse(const std::string &);
         void SetUpRosHardwareInterface();
 
     public:
@@ -118,6 +133,9 @@ namespace Igus
 
         void dio_callback(const std::shared_ptr<igus_rebel_msgs::srv::SetDigitalOutput::Request> request,
                           std::shared_ptr<igus_rebel_msgs::srv::SetDigitalOutput::Response> response);
+        void hand_guiding_callback(
+            const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+            std::shared_ptr<std_srvs::srv::SetBool::Response> response);
 
         void GetReferenceInfo();
 

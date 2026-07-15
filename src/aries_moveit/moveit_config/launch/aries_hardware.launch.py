@@ -283,6 +283,15 @@ def launch_setup(context, *args, **kwargs):
         output="both",
     )
 
+    hand_guiding_node = None
+    if arm_hardware_protocol == "rebel":
+        hand_guiding_node = Node(
+            package="igus_rebel",
+            executable="rebel_hand_guiding.py",
+            name="rebel_hand_guiding",
+            output="screen",
+        )
+
     micro_ros_agent = None
     if gripper_hardware_protocol == "rebel":
         _fastdds_xml = os.path.join(
@@ -520,6 +529,8 @@ def launch_setup(context, *args, **kwargs):
     ]
     if gripper_spawner_event:
         nodes.append(gripper_spawner_event)
+    if hand_guiding_node:
+        nodes.append(hand_guiding_node)
     if micro_ros_agent:
         nodes.append(micro_ros_agent)
     if gripper_arc_visualizer_node:
