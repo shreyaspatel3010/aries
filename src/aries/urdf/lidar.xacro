@@ -1,126 +1,112 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-    <!-- Lidar Link -->
-     <xacro:if value="${enable_lidar}">
-      <!-- Measured mounting position on the physical rover. -->
-      <xacro:property name="lidar_mount_xyz" value="0.1947 -0.1126 0.27"/>
+    <xacro:if value="${enable_lidar}">
+        <xacro:property name="lidar_mount_xyz" value="0.2 -0.105 0.2202"/>
 
-      <link name="Lidar_Link">
-          <inertial>
-              <origin xyz="-0.000142451762346639 -0.0277692495246192 -2.91412068116337E-05" rpy="0 0 0"/>
-              <mass value="0.281890658237879"/>
-              <inertia
-                  ixx="0.000161112839542335"
-                  ixy="-1.13383824923403E-06"
-                  ixz="3.9288174866879E-07"
-                  iyy="0.000210368216440506"
-                  iyz="-2.31509209129161E-07"
-                  izz="0.000159257660338308"/>
-          </inertial>
-          <visual>
-              <origin xyz="0 0 0" rpy="0 0 0"/>
-              <geometry>
-                  <mesh filename="${mesh_location}/Lidar_Link.STL"/>
-              </geometry>
-              <material name="gray"/>
-          </visual>
-          <collision>
-              <origin xyz="0 0 0" rpy="0 0 0"/>
-              <geometry>
-                  <mesh filename="${mesh_location}/Lidar_Link.STL"/>
-              </geometry>
-          </collision>
-      </link>
+        <xacro:property name="sensor_height_offset" value="0.0628"/>
 
-      <!-- Lidar Joint -->
-      <joint name="Lidar_Joint" type="fixed">
-          <!-- <origin xyz="0.1947 -0.1126 0.269999999999999" rpy="${PI/2} 0 ${PI/2}"/> -->
-          <origin xyz="${lidar_mount_xyz}" rpy="${PI/2} 0 ${PI/2}"/>
-          <parent link="base_link"/>
-          <child link="Lidar_Link"/>
-          <axis xyz="0 0 0"/>
-      </joint>
+        <link name="Lidar_Link">
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.28"/>
+                <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+            </inertial>
+            <visual>
+                <origin xyz="0.0 0.0 0.0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/picoscan_150.stl"/>
+                </geometry>
+                <material name="dark_grey">
+                    <color rgba="0.2 0.2 0.2 1.0"/>
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.0 0.0 0.0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/picoscan_150.stl"/>
+                </geometry>
+            </collision>
+        </link>
 
-      <!-- Base-aligned frame for the 2D LaserScan slice. -->
-      <link name="Lidar_Scan_Link"/>
-      <joint name="Lidar_Scan_Joint" type="fixed">
-          <origin xyz="${lidar_mount_xyz}" rpy="0 0 0"/>
-          <parent link="base_link"/>
-          <child link="Lidar_Scan_Link"/>
-      </joint>
+        <joint name="Lidar_Joint" type="fixed">
+            <origin xyz="${lidar_mount_xyz}" rpy="0 0 0"/>
+            <parent link="base_link"/>
+            <child link="Lidar_Link"/>
+        </joint>
 
-      <!-- Gazebo sensors are intentionally separate from the real LiDAR
-           frames so hardware descriptions do not start simulation sensors. -->
-      <xacro:if value="${enable_lidar_gazebo}">
-       <gazebo reference="Lidar_Link">
-        <sensor name="gpu_lidar" type="gpu_lidar">
-          <pose>0 0 0 0 0 0</pose>
-          <topic>/lidar</topic>
-          <update_rate>60</update_rate>
-          <ray>
-            <scan>
-              <horizontal>
-                <samples>1024</samples>
-                <resolution>1</resolution>
-                <min_angle>-3.14159</min_angle>
-                <max_angle> 3.14159</max_angle>
-              </horizontal>
-              <vertical>
-                <samples>1025</samples>
-                <resolution>1</resolution>
-                <min_angle>-3.14159</min_angle>  
-                <max_angle> 3.14159</max_angle>  
-              </vertical>
-            </scan>
-            <range>
-              <min>0.05</min>
-              <max>45.0</max>
-              <resolution>0.01</resolution>
-            </range>
-          </ray>
-          <gz_frame_id>Lidar_Link</gz_frame_id>
-          <always_on>1</always_on>
-          <visualize>true</visualize>
-        </sensor>
-       </gazebo>
+        <link name="Lidar_Scan_Link"/>
 
-      <!-- Dedicated planar sensor for ROS LaserScan output. -->
-       <gazebo reference="base_link">
-        <sensor name="gpu_lidar_scan" type="gpu_lidar">
-          <pose>${lidar_mount_xyz} 0 0 0</pose>
-          <topic>/lidar_scan</topic>
-          <update_rate>60</update_rate>
-          <ray>
-            <scan>
-              <horizontal>
-                <samples>1024</samples>
-                <resolution>1</resolution>
-                <min_angle>-3.14159</min_angle>
-                <max_angle> 3.14159</max_angle>
-              </horizontal>
-              <vertical>
-                <samples>1</samples>
-                <resolution>1</resolution>
-                <min_angle>0.0</min_angle>
-                <max_angle>0.0</max_angle>
-              </vertical>
-            </scan>
-            <range>
-              <min>0.05</min>
-              <max>45.0</max>
-              <resolution>0.01</resolution>
-            </range>
-          </ray>
-          <gz_frame_id>Lidar_Scan_Link</gz_frame_id>
-          <always_on>1</always_on>
-          <visualize>false</visualize>
-        </sensor>
-       </gazebo>
-      </xacro:if>
+        <joint name="Lidar_Scan_Joint" type="fixed">
+            <origin xyz="0 0 ${sensor_height_offset}" rpy="0 0 0"/>
+            <parent link="Lidar_Link"/>
+            <child link="Lidar_Scan_Link"/>
+        </joint>
+
+        <gazebo reference="Lidar_Scan_Link">
+            <sensor name="gpu_lidar_points" type="gpu_lidar">
+                <pose>0 0 0 0 0 0</pose>
+                <topic>/lidar</topic>
+                <update_rate>60</update_rate>
+                <ray>
+                    <scan>
+                    <horizontal>
+                        <samples>1024</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-3.14159</min_angle>
+                        <max_angle> 3.14159</max_angle>
+                    </horizontal>
+                    <vertical>
+                        <samples>1025</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-3.14159</min_angle>
+                        <max_angle> 3.14159</max_angle>
+                    </vertical>
+                    </scan>
+                    <range>
+                    <min>0.05</min>
+                    <max>45.0</max>
+                    <resolution>0.01</resolution>
+                    </range>
+                </ray>
+                <gz_frame_id>Lidar_Scan_Link</gz_frame_id>
+                <always_on>1</always_on>
+                <visualize>true</visualize>
+                </sensor>
+            </gazebo>
+
+            <!-- Dedicated planar sensor for ROS LaserScan output. -->
+            <gazebo reference="Lidar_Scan_Link">
+                <sensor name="gpu_lidar_scan" type="gpu_lidar">
+                <pose>0 0 0 0 0 0</pose>
+                <topic>/lidar_scan</topic>
+                <update_rate>60</update_rate>
+                <ray>
+                    <scan>
+                    <horizontal>
+                        <samples>1024</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-3.14159</min_angle>
+                        <max_angle> 3.14159</max_angle>
+                    </horizontal>
+                    <vertical>
+                        <samples>1</samples>
+                        <resolution>1</resolution>
+                        <min_angle>0.0</min_angle>
+                        <max_angle>0.0</max_angle>
+                    </vertical>
+                    </scan>
+                    <range>
+                    <min>0.05</min>
+                    <max>45.0</max>
+                    <resolution>0.01</resolution>
+                    </range>
+                </ray>
+                <gz_frame_id>Lidar_Scan_Link</gz_frame_id>
+                <always_on>1</always_on>
+                <visualize>false</visualize>
+                </sensor>
+            </gazebo>
     </xacro:if>
 
-
-
-    
 </robot>
