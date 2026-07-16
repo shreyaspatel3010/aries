@@ -12,8 +12,19 @@ def _find_model() -> str:
     )
 
 
+def _find_pick_place_config() -> str:
+    """Return the installed pick/place posture configuration."""
+    return str(
+        get_package_share_directory('aries_vision_grasp') + '/config/pick_place.yaml'
+    )
+
+
 def generate_launch_description():
     args = [
+        # aries_bringup/my_robot.launch.py defaults to Gazebo/use_sim_time=true.
+        # Keep action durations and watchdogs on that same clock. Override with
+        # use_sim_time:=false when running the physical rover.
+        ('use_sim_time', 'true'),
         ('model_path', _find_model()),
         ('target_class', 'probe'),
         ('confidence_threshold', '0.55'),
@@ -92,17 +103,12 @@ def generate_launch_description():
         ('final_grasp_pose_orientation_tolerance_rad', '0.35'),
         ('final_grasp_pose_check_timeout_sec', '6.0'),
         ('final_grasp_pose_check_period_sec', '0.10'),
-        ('gripper_settle_sec', '0.90'),
-        ('gripper_command_duration_sec', '4.00'),
-        ('gripper_no_feedback_close_complete_sec', '10.00'),
         ('gripper_command_mode', 'auto'),
-        ('gripper_feedback_available', 'false'),
-        ('gripper_goal_tolerance', '0.012'),
-        ('gripper_confirm_timeout_sec', '4.5'),
         ('gripper_contact_min_position', '0.000'),
 
-        # Physical hardware close is open-loop here: always command the full
-        # mechanical close and let the object stop the fingers.
+        # Always request the full mechanical close and let the object stop the
+        # fingers. Completion is still gated by time + fresh joint feedback;
+        # those settings live in config/pick_place.yaml.
         ('adaptive_gripper_enabled', 'false'),
         ('gripper_gap_at_zero_rad', '0.1786'),
         ('gripper_gap_slope', '2.0'),
@@ -137,8 +143,9 @@ def generate_launch_description():
         ('fourbar_final_close_steps', '1'),
         ('fourbar_final_close_step_wait_sec', '0.00'),
         ('freeze_arm_during_gripper_enabled', 'true'),
-        # After final close: keep gripper closed, lift straight up, then move to
-        # pick_home.  No open-gripper command is sent after grasping.
+        # After final close: keep the gripper closed through pickup verification
+        # and transport to pick_home. Release is allowed only later at the
+        # calibrated base-box posture.
         ('hold_after_close_no_motion', 'false'),
         ('post_grasp_lift_then_pick_home', 'true'),
         ('post_grasp_lift_distance_m', '0.160'),
@@ -165,15 +172,7 @@ def generate_launch_description():
         ('post_grasp_lift_jump_threshold', '0.5'),
         ('post_grasp_lift_max_step_m', '0.002'),
         ('post_grasp_min_link_z_m', '0.140'),
-        # Longer planning time for the direct post-grasp pick_home motion.
-        # The arm starts near the floor in a near-singular configuration;
-        # OMPL needs more time to find a collision-free path to pick_home.
-        ('post_grasp_planning_time_sec', '10.0'),
-
-        # pick_home is defined inside the node from aries.srdf arm joints only:
-        # joint1..joint6 = [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098].
-        # The gripper joint from the SRDF pick_home state is intentionally NOT
-        # commanded, otherwise it would open and drop the object.
+        # Home and base-box drop postures are loaded from config/pick_place.yaml.
 
         # Object yaw only; keep floor probe grasp top-down.
         ('publish_object_pose', 'true'),
@@ -214,8 +213,8 @@ def generate_launch_description():
         ('rover_motion_cancel_active_arm_motion', 'true'),
 
         # Target lock: no live target update after pregrasp by default.
-        ('target_stability_samples', '4'),
-        ('target_stability_max_jump_m', '0.018'),
+        ('target_stability_samples', '6'),
+        ('target_stability_max_jump_m', '0.012'),
         ('continuous_tracking_enabled', 'true'),
         ('hard_freeze_perception_after_lock', 'true'),
         ('disable_refinement_after_lock', 'true'),
@@ -270,8 +269,6 @@ def generate_launch_description():
         ('success_lockout_sec', '999999.0'),
         ('hold_object_after_success', 'true'),
         ('clear_target_after_success', 'false'),
-        ('use_joint_retreat_home', 'true'),
-
         # Markers.
         ('publish_markers', 'true'),
         ('markers_topic', '/vision_grasp/markers'),
@@ -281,13 +278,19 @@ def generate_launch_description():
 
     declared = [DeclareLaunchArgument(name, default_value=value) for name, value in args]
     params = {name: LaunchConfiguration(name) for name, _ in args}
+    pick_place_config_arg = DeclareLaunchArgument(
+        'pick_place_config',
+        default_value=_find_pick_place_config(),
+        description='YAML file containing home and base-box placement postures.',
+    )
 
-    return LaunchDescription(declared + [
+    return LaunchDescription(declared + [pick_place_config_arg,
         Node(
             package='aries_vision_grasp',
             executable='vision_grasp_node.py',
             name='vision_grasp_node',
             output='screen',
-            parameters=[params],
+            # The YAML is last so posture values live in one authoritative file.
+            parameters=[params, LaunchConfiguration('pick_place_config')],
         ),
     ])

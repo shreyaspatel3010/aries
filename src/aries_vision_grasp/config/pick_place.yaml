@@ -1,0 +1,140 @@
+vision_grasp_node:
+  ros__parameters:
+    # Joint order used by every arm posture below. Values are in radians.
+    pick_home_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+
+    # Safe transport/home posture used after lifting a grasped probe and again
+    # after releasing it in the base-mounted box.
+    pick_home_joint_positions:
+      - 0.0
+      - 0.366519
+      - 1.18682
+      - 0.0349066
+      - 1.55334
+      - 1.50098
+
+    # Enable the pick_home -> box drop -> release -> pick_home sequence.
+    place_in_base_box_after_grasp: true
+
+    # Physical release point in base_box_drop_frame.
+    # XYZ is metres. RPY is radians and describes arm_gripper_base_link.
+    # These initial values were calculated from the calibrated SRDF pick_drop
+    # posture, so pose mode starts at the same physical release location.
+    base_box_drop_use_pose: true
+    base_box_drop_frame: base_link
+    base_box_drop_xyz: [0.15, 0.2, 0.30]
+    base_box_drop_rpy: [0.0, 0.0, 0.0]
+
+    # Point on arm_gripper_base_link that must reach XYZ above. This is the
+    # closed-gripper probe/contact centre, not an additional world offset.
+    base_box_drop_target_point_offset_in_link: [0.0, 0.0259, 0.2180]
+    base_box_drop_position_tolerance_m: 0.015
+    base_box_drop_orientation_tolerance_rad: 0.10
+
+    # RViz marker on /vision_grasp/markers: magenta release point plus XYZ axes.
+    base_box_drop_marker_enabled: true
+    base_box_drop_marker_scale_m: 0.060
+    base_box_drop_marker_axes_length_m: 0.120
+
+    # Joint fallback. Set base_box_drop_use_pose to false to use this posture.
+    # Keep the names and positions arrays the same length and matching order.
+    base_box_drop_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    base_box_drop_joint_positions:
+      - 0.15708
+      - -0.837758
+      - 1.93732
+      - 0.15708
+      - 0.959931
+      - 1.27409
+
+    # Transport/release timing.
+    post_grasp_planning_time_sec: 10.0
+    base_box_planning_time_sec: 10.0
+    base_box_release_wait_sec: 4.0
+    return_pick_home_after_base_box_place: true
+
+    # General retreat home used by non-placement fallback/recovery paths.
+    use_joint_retreat_home: true
+    retreat_home_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    retreat_home_joint_positions:
+      - -0.0523599
+      - 0.244346
+      - 1.41372
+      - 0.0
+      - 1.53589
+      - 1.01229
+
+    joint_goal_tolerance: 0.03
+
+    # Gripper joint positions (rad), configurable here.
+    # The Gazebo URDF provides 0.05 rad of extra model travel beyond these
+    # nominal endpoints so -1.57/0.07 do not coincide with physics hard stops.
+    gripper_open_width: -1.57
+    gripper_close_width: 0.07
+    gripper_preclose_width: -0.75
+    gripper_joint_lower_limit: -1.62
+    gripper_joint_upper_limit: 0.12
+    gripper_joint_limit_margin: 0.05
+
+    # Gripper command completion requires BOTH conditions:
+    #   1. the full command/minimum settle time has elapsed; and
+    #   2. fresh /joint_states feedback is within gripper_goal_tolerance.
+    # Timeout never counts as successful completion.
+    gripper_settle_sec: 0.90
+    gripper_command_duration_sec: 4.00
+    gripper_feedback_available: true
+    gripper_require_feedback_for_completion: true
+    gripper_feedback_max_age_sec: 0.50
+    gripper_goal_tolerance: 0.012
+    # Must exceed the 4 s trajectory plus the controller's 5 s goal-time
+    # allowance, especially when Gazebo is running below real-time speed.
+    gripper_confirm_timeout_sec: 12.0
+    # Require FollowJointTrajectory acceptance/result success in addition to
+    # elapsed time and measured joint feedback.
+    gripper_require_action_success_for_completion: true
+
+    # Legacy time-only fallback is disabled.
+    gripper_no_feedback_close_complete_sec: 0.0
+
+    # Whole-process arm completion gate. Every MoveIt/Cartesian action must
+    # succeed AND fresh measured arm feedback must remain at the target for the
+    # configured number of samples before the next stage is allowed to start.
+    arm_require_feedback_for_completion: true
+    arm_feedback_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    arm_feedback_max_age_sec: 0.50
+    arm_feedback_settle_sec: 0.25
+    arm_feedback_timeout_sec: 5.0
+    arm_feedback_check_period_sec: 0.10
+    arm_feedback_stable_samples: 3
+    arm_joint_confirmation_tolerance_rad: 0.04
+    arm_pose_confirmation_position_tolerance_m: 0.020
+    arm_pose_confirmation_orientation_tolerance_rad: 0.15
+
+    # Robust probe acquisition. A grasp starts only after a consecutive cluster
+    # of high-confidence 3D detections agrees within these limits. The committed
+    # grasp point is the coordinate-wise median, never the last raw frame.
+    target_stability_samples: 6
+    target_stability_max_jump_m: 0.012
+    target_stability_rms_m: 0.005
+    target_filter_window_samples: 9
+    target_filter_outlier_distance_m: 0.025
+    target_stability_max_sample_gap_sec: 0.75
+    target_lock_min_confidence: 0.70

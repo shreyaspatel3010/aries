@@ -4,7 +4,7 @@ project(aries_vision_grasp)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch models
+  DIRECTORY config launch models
   DESTINATION share/${PROJECT_NAME}
 )
 

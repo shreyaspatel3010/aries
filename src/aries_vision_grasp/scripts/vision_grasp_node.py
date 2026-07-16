@@ -267,6 +267,9 @@ class VisionGraspNode(Node):
         self.declare_parameter('joint_goal_tolerance', 0.03)
 
         # Gripper
+        # Nominal commanded endpoints. Gazebo gets an extra 0.05 rad of model
+        # travel outside these values so the four-bar does not wedge at a hard
+        # physics stop; the commanded open/close positions remain unchanged.
         self.declare_parameter('gripper_open_width', -1.57)
         # Probe mesh is about 45 mm wide.
         # Fully closing to 0.085 can push the probe out.
@@ -274,6 +277,9 @@ class VisionGraspNode(Node):
         # q=0.070 gives about 38.6 mm gap, enough to grip a 45 mm probe.
         self.declare_parameter('gripper_close_width', 0.07)
         self.declare_parameter('gripper_preclose_width', -0.75)
+        self.declare_parameter('gripper_joint_lower_limit', -1.62)
+        self.declare_parameter('gripper_joint_upper_limit', 0.12)
+        self.declare_parameter('gripper_joint_limit_margin', 0.05)
         self.declare_parameter('final_grasp_arm_settle_sec', 0.0)
         self.declare_parameter('final_grasp_pose_check_enabled', True)
         self.declare_parameter('final_grasp_pose_position_tolerance_m', 0.025)
@@ -288,6 +294,7 @@ class VisionGraspNode(Node):
         self.declare_parameter('gripper_action_name', '/rebel_gripper_controller/follow_joint_trajectory')
         self.declare_parameter('gripper_joint_name', 'gripper_gear_left_joint')
         self.declare_parameter('gripper_action_timeout_sec', 5.0)
+        self.declare_parameter('gripper_require_action_success_for_completion', True)
 
         # Adaptive gripper sizing: estimate object 3D width from detection mask
         # and compute the optimal close angle for each detected object.
@@ -353,6 +360,28 @@ class VisionGraspNode(Node):
         self.declare_parameter('pick_home_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
         self.declare_parameter('pick_home_joint_positions', [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098])
 
+        # Base-box placement.  The arm first reaches pick_home with the probe
+        # attached, then moves to the calibrated SRDF ``pick_drop`` posture,
+        # opens the gripper, detaches the probe from MoveIt's planning scene,
+        # and returns to pick_home.  Only arm joints are commanded for the two
+        # transport poses so the gripper cannot open before the release stage.
+        self.declare_parameter('place_in_base_box_after_grasp', False)
+        self.declare_parameter('base_box_drop_use_pose', False)
+        self.declare_parameter('base_box_drop_frame', 'base_link')
+        self.declare_parameter('base_box_drop_xyz', [0.45078823, 0.07073892, 0.64813140])
+        self.declare_parameter('base_box_drop_rpy', [2.05331746, 0.12332939, 1.83238021])
+        self.declare_parameter('base_box_drop_target_point_offset_in_link', [0.0, 0.0259, 0.2180])
+        self.declare_parameter('base_box_drop_position_tolerance_m', 0.015)
+        self.declare_parameter('base_box_drop_orientation_tolerance_rad', 0.10)
+        self.declare_parameter('base_box_drop_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
+        self.declare_parameter('base_box_drop_joint_positions', [0.15708, -0.837758, 1.93732, 0.15708, 0.959931, 1.27409])
+        self.declare_parameter('base_box_planning_time_sec', 10.0)
+        self.declare_parameter('base_box_release_wait_sec', 0.0)
+        self.declare_parameter('return_pick_home_after_base_box_place', True)
+        self.declare_parameter('base_box_drop_marker_enabled', True)
+        self.declare_parameter('base_box_drop_marker_scale_m', 0.060)
+        self.declare_parameter('base_box_drop_marker_axes_length_m', 0.120)
+
         # Floor-safe grasping: never insert the gripper contact point deeply
         # below the detected object surface when the object lies on the floor.
         self.declare_parameter('floor_safe_grasp_enabled', True)
@@ -411,8 +440,30 @@ class VisionGraspNode(Node):
         self.declare_parameter('num_planning_attempts', 20)
         self.declare_parameter('velocity_scale', 0.25)
         self.declare_parameter('acceleration_scale', 0.25)
-        self.declare_parameter('target_stability_samples', 3)
-        self.declare_parameter('target_stability_max_jump_m', 0.03)
+        # Whole-process motion completion supervisor. MoveIt/ExecuteTrajectory
+        # success is necessary but not sufficient: fresh measured robot state
+        # must also reach and remain at every commanded target before the next
+        # stage can begin.
+        self.declare_parameter('arm_require_feedback_for_completion', True)
+        self.declare_parameter('arm_feedback_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
+        self.declare_parameter('arm_feedback_max_age_sec', 0.50)
+        self.declare_parameter('arm_feedback_settle_sec', 0.25)
+        self.declare_parameter('arm_feedback_timeout_sec', 5.0)
+        self.declare_parameter('arm_feedback_check_period_sec', 0.10)
+        self.declare_parameter('arm_feedback_stable_samples', 3)
+        self.declare_parameter('arm_joint_confirmation_tolerance_rad', 0.04)
+        self.declare_parameter('arm_pose_confirmation_position_tolerance_m', 0.020)
+        self.declare_parameter('arm_pose_confirmation_orientation_tolerance_rad', 0.15)
+        # Initial target acquisition uses a robust temporal cluster instead of
+        # locking the last raw YOLO/depth sample. This prevents mask-edge and
+        # depth noise from moving the committed grasp point frame to frame.
+        self.declare_parameter('target_stability_samples', 6)
+        self.declare_parameter('target_stability_max_jump_m', 0.012)
+        self.declare_parameter('target_stability_rms_m', 0.005)
+        self.declare_parameter('target_filter_window_samples', 9)
+        self.declare_parameter('target_filter_outlier_distance_m', 0.025)
+        self.declare_parameter('target_stability_max_sample_gap_sec', 0.75)
+        self.declare_parameter('target_lock_min_confidence', 0.70)
 
         # Rover-motion interlock.  The wrist/arm must not move while the rover
         # base is being driven because the camera target and collision geometry
@@ -444,7 +495,9 @@ class VisionGraspNode(Node):
         # Gripper confirmation.
         # The arm must not retreat until the gripper command is finished.
         self.declare_parameter('gripper_feedback_available', True)
-        self.declare_parameter('gripper_confirm_timeout_sec', 2.5)
+        self.declare_parameter('gripper_require_feedback_for_completion', True)
+        self.declare_parameter('gripper_feedback_max_age_sec', 0.50)
+        self.declare_parameter('gripper_confirm_timeout_sec', 12.0)
         self.declare_parameter('gripper_goal_tolerance', 0.006)
         self.declare_parameter('gripper_contact_min_position', 0.018)
         self.declare_parameter('trust_gripper_contact_for_success', True)
@@ -603,9 +656,39 @@ class VisionGraspNode(Node):
         self.retreat_home_joint_positions = [float(v) for v in p('retreat_home_joint_positions').value]
         self.joint_goal_tolerance = float(p('joint_goal_tolerance').value)
 
-        self.gripper_open = float(p('gripper_open_width').value)
-        self.gripper_close = float(p('gripper_close_width').value)
-        self.gripper_preclose = float(p('gripper_preclose_width').value)
+        self.gripper_joint_lower_limit = float(p('gripper_joint_lower_limit').value)
+        self.gripper_joint_upper_limit = float(p('gripper_joint_upper_limit').value)
+        if self.gripper_joint_upper_limit <= self.gripper_joint_lower_limit:
+            raise ValueError(
+                'gripper_joint_upper_limit must be greater than '
+                'gripper_joint_lower_limit'
+            )
+        limit_span = self.gripper_joint_upper_limit - self.gripper_joint_lower_limit
+        self.gripper_joint_limit_margin = float(np.clip(
+            float(p('gripper_joint_limit_margin').value),
+            0.0,
+            0.49 * limit_span,
+        ))
+        self.gripper_safe_lower_limit = (
+            self.gripper_joint_lower_limit + self.gripper_joint_limit_margin
+        )
+        self.gripper_safe_upper_limit = (
+            self.gripper_joint_upper_limit - self.gripper_joint_limit_margin
+        )
+
+        requested_open = float(p('gripper_open_width').value)
+        requested_close = float(p('gripper_close_width').value)
+        requested_preclose = float(p('gripper_preclose_width').value)
+        self.gripper_open = self._limit_gripper_target(requested_open, 'configured open')
+        self.gripper_close = self._limit_gripper_target(requested_close, 'configured close')
+        self.gripper_preclose = self._limit_gripper_target(
+            requested_preclose, 'configured pre-close'
+        )
+        if self.gripper_open >= self.gripper_close:
+            raise ValueError(
+                'Safe gripper configuration requires gripper_open_width < '
+                'gripper_close_width'
+            )
         self.final_grasp_arm_settle_sec = float(p('final_grasp_arm_settle_sec').value)
         self.final_grasp_pose_check_enabled = bool(p('final_grasp_pose_check_enabled').value)
         self.final_grasp_pose_position_tolerance_m = max(
@@ -631,6 +714,9 @@ class VisionGraspNode(Node):
         self.gripper_action_name = p('gripper_action_name').value
         self.gripper_joint_name = p('gripper_joint_name').value
         self.gripper_action_timeout_sec = float(p('gripper_action_timeout_sec').value)
+        self.gripper_require_action_success_for_completion = bool(
+            p('gripper_require_action_success_for_completion').value
+        )
 
         self.adaptive_gripper_enabled = bool(p('adaptive_gripper_enabled').value)
         self.gripper_gap_at_zero_rad = float(p('gripper_gap_at_zero_rad').value)
@@ -670,6 +756,34 @@ class VisionGraspNode(Node):
         self.post_grasp_planning_time_sec = max(1.0, float(p('post_grasp_planning_time_sec').value))
         self.pick_home_joint_names = list(p('pick_home_joint_names').value)
         self.pick_home_joint_positions = [float(v) for v in p('pick_home_joint_positions').value]
+        self.place_in_base_box_after_grasp = bool(p('place_in_base_box_after_grasp').value)
+        self.base_box_drop_use_pose = bool(p('base_box_drop_use_pose').value)
+        self.base_box_drop_frame = str(p('base_box_drop_frame').value)
+        self.base_box_drop_xyz = [float(v) for v in p('base_box_drop_xyz').value]
+        self.base_box_drop_rpy = [float(v) for v in p('base_box_drop_rpy').value]
+        self.base_box_drop_target_point_offset_in_link = [
+            float(v) for v in p('base_box_drop_target_point_offset_in_link').value
+        ]
+        self.base_box_drop_position_tolerance_m = max(
+            0.001, float(p('base_box_drop_position_tolerance_m').value)
+        )
+        self.base_box_drop_orientation_tolerance_rad = max(
+            0.01, float(p('base_box_drop_orientation_tolerance_rad').value)
+        )
+        self.base_box_drop_joint_names = list(p('base_box_drop_joint_names').value)
+        self.base_box_drop_joint_positions = [float(v) for v in p('base_box_drop_joint_positions').value]
+        self.base_box_planning_time_sec = max(1.0, float(p('base_box_planning_time_sec').value))
+        self.base_box_release_wait_sec = max(0.0, float(p('base_box_release_wait_sec').value))
+        self.return_pick_home_after_base_box_place = bool(p('return_pick_home_after_base_box_place').value)
+        self.base_box_drop_marker_enabled = bool(p('base_box_drop_marker_enabled').value)
+        self.base_box_drop_marker_scale_m = max(0.01, float(p('base_box_drop_marker_scale_m').value))
+        self.base_box_drop_marker_axes_length_m = max(
+            0.02, float(p('base_box_drop_marker_axes_length_m').value)
+        )
+        if not self._base_box_drop_pose_config_valid():
+            _safe_ros_log(self.get_logger(), "error", 'Invalid base-box pose configuration: base_box_drop_frame must be non-empty, '
+                'and base_box_drop_xyz/base_box_drop_rpy must each contain exactly three values. '
+                'The drop marker and pose-based placement will remain disabled.')
         self.floor_safe_grasp_enabled = bool(p('floor_safe_grasp_enabled').value)
         self.max_grasp_descent_below_target_m = float(p('max_grasp_descent_below_target_m').value)
         self.min_grasp_height_above_floor_m = float(p('min_grasp_height_above_floor_m').value)
@@ -704,8 +818,51 @@ class VisionGraspNode(Node):
         self.num_planning_attempts = int(p('num_planning_attempts').value)
         self.velocity_scale = float(p('velocity_scale').value)
         self.acceleration_scale = float(p('acceleration_scale').value)
-        self.target_stability_samples = int(p('target_stability_samples').value)
-        self.target_stability_max_jump_m = float(p('target_stability_max_jump_m').value)
+        self.arm_require_feedback_for_completion = bool(
+            p('arm_require_feedback_for_completion').value
+        )
+        self.arm_feedback_joint_names = [str(v) for v in p('arm_feedback_joint_names').value]
+        self.arm_feedback_max_age_sec = max(0.05, float(p('arm_feedback_max_age_sec').value))
+        self.arm_feedback_settle_sec = max(0.0, float(p('arm_feedback_settle_sec').value))
+        self.arm_feedback_timeout_sec = max(0.5, float(p('arm_feedback_timeout_sec').value))
+        self.arm_feedback_check_period_sec = max(
+            0.02, float(p('arm_feedback_check_period_sec').value)
+        )
+        self.arm_feedback_stable_samples = max(1, int(p('arm_feedback_stable_samples').value))
+        self.arm_joint_confirmation_tolerance_rad = max(
+            0.005, float(p('arm_joint_confirmation_tolerance_rad').value)
+        )
+        self.arm_pose_confirmation_position_tolerance_m = max(
+            0.002, float(p('arm_pose_confirmation_position_tolerance_m').value)
+        )
+        self.arm_pose_confirmation_orientation_tolerance_rad = max(
+            0.01, float(p('arm_pose_confirmation_orientation_tolerance_rad').value)
+        )
+        self.target_filter_window_samples = max(
+            3, int(p('target_filter_window_samples').value)
+        )
+        self.target_stability_samples = int(np.clip(
+            int(p('target_stability_samples').value),
+            3,
+            self.target_filter_window_samples,
+        ))
+        self.target_stability_max_jump_m = max(
+            0.001, float(p('target_stability_max_jump_m').value)
+        )
+        self.target_stability_rms_m = max(
+            0.0005, float(p('target_stability_rms_m').value)
+        )
+        self.target_filter_outlier_distance_m = max(
+            self.target_stability_max_jump_m,
+            float(p('target_filter_outlier_distance_m').value),
+        )
+        self.target_stability_max_sample_gap_sec = max(
+            self.detect_period_sec * 1.5,
+            float(p('target_stability_max_sample_gap_sec').value),
+        )
+        self.target_lock_min_confidence = float(np.clip(
+            float(p('target_lock_min_confidence').value), 0.0, 1.0
+        ))
 
         self.pause_arm_when_rover_moving = bool(p('pause_arm_when_rover_moving').value)
         self.rover_motion_cmd_vel_topic = str(p('rover_motion_cmd_vel_topic').value)
@@ -727,6 +884,12 @@ class VisionGraspNode(Node):
         self.clear_target_after_success = bool(p('clear_target_after_success').value)
 
         self.gripper_feedback_available = bool(p('gripper_feedback_available').value)
+        self.gripper_require_feedback_for_completion = bool(
+            p('gripper_require_feedback_for_completion').value
+        )
+        self.gripper_feedback_max_age_sec = max(
+            0.05, float(p('gripper_feedback_max_age_sec').value)
+        )
         self.gripper_confirm_timeout_sec = float(p('gripper_confirm_timeout_sec').value)
         self.gripper_goal_tolerance = float(p('gripper_goal_tolerance').value)
         self.gripper_contact_min_position = float(p('gripper_contact_min_position').value)
@@ -810,6 +973,12 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'idle'
         self.current_target_point_base: Optional[np.ndarray] = None
         self.target_history: List[np.ndarray] = []
+        self.target_history_stamps: List[float] = []
+        self.target_confidence_history: List[float] = []
+        self.filtered_target_point_base: Optional[np.ndarray] = None
+        self.filtered_target_confidence: float = 0.0
+        self.target_filter_max_residual_m: float = float('inf')
+        self.target_filter_rms_m: float = float('inf')
         self.pending_timers = []
         self.pre_grasp_pose: Optional[PoseStamped] = None
         self.grasp_pose: Optional[PoseStamped] = None
@@ -817,6 +986,7 @@ class VisionGraspNode(Node):
         self.grasp_orientation: Optional[Quaternion] = None
         self.sequence_wrist_value: Optional[float] = None
         self.current_joint_positions: dict = {}
+        self.current_joint_update_sec: dict = {}
         self._refine_buffer: List[np.ndarray] = []
         self._refine_start_sec: float = 0.0
 
@@ -882,6 +1052,11 @@ class VisionGraspNode(Node):
         self._gripper_wait_cb: Optional[Callable[[], None]] = None
         self._gripper_wait_seq: int = 0
         self._gripper_wait_stage: str = ''
+        self._gripper_command_used_action = False
+        self._gripper_action_goal_handle = None
+        self._gripper_action_accepted = False
+        self._gripper_action_succeeded = False
+        self._gripper_action_failed_reason: Optional[str] = None
 
         # Motion-token supervisor.  Every arm motion and delayed timer is tagged
         # with the current sequence id and expected stage.  Stale callbacks are
@@ -898,6 +1073,9 @@ class VisionGraspNode(Node):
         self._pregrasp_force_finalize = False
         self._pregrasp_final_replan_count = 0
         self._active_move_goal_handle = None
+        self._pending_arm_motion_confirmation: Optional[dict] = None
+        self._arm_confirmation_timer = None
+        self._cartesian_plan_in_flight: Optional[Tuple[str, int]] = None
         self._refine_width_buffer: List[float] = []
         self._refine_orientation_cam_last: Optional[np.ndarray] = None
 
@@ -954,8 +1132,10 @@ class VisionGraspNode(Node):
             f'planning_link={self.planning_link} | planning_frame={self.planning_frame} | gripper_mode={self.gripper_command_mode}')
 
     def _joint_states_cb(self, msg: JointState) -> None:
+        update_sec = self._now_sec()
         for name, pos in zip(msg.name, msg.position):
             self.current_joint_positions[name] = float(pos)
+            self.current_joint_update_sec[name] = update_sec
 
     def color_cb(self, msg: Image) -> None:
         try:
@@ -1042,7 +1222,7 @@ class VisionGraspNode(Node):
         self._refine_width_buffer = []
         self._refine_orientation_cam_last = None
         # Perception remains active during move_pre_grasp/refine only.  It is
-        # frozen automatically for move_grasp, close, lift, and pick_home.
+        # frozen automatically for grasp, transport, release, and completion.
         self.perception_frozen_for_sequence = True
 
     def _perception_updates_forbidden_now(self) -> bool:
@@ -1070,7 +1250,7 @@ class VisionGraspNode(Node):
         if self.sequence_stage in allowed_live_feedback_stages:
             return False
 
-        return self.sequence_stage not in ('idle', 'done_holding')
+        return self.sequence_stage not in ('idle', 'done_holding', 'done_placed')
 
     def _rover_motion_active(self) -> bool:
         if not self.pause_arm_when_rover_moving:
@@ -1150,6 +1330,7 @@ class VisionGraspNode(Node):
             'preclose_gripper',
             'close_gripper',
             'verify_gripper',
+            'release_in_base_box',
         }
         if self.sequence_stage in gripper_stages:
             return True
@@ -1157,13 +1338,34 @@ class VisionGraspNode(Node):
             return True
         return False
 
+    def _limit_gripper_target(self, width: float, description: str) -> float:
+        """Keep gripper commands clear of hard stops that can lock the four-bar."""
+        requested = float(width)
+        limited = float(np.clip(
+            requested,
+            self.gripper_safe_lower_limit,
+            self.gripper_safe_upper_limit,
+        ))
+        if not math.isclose(requested, limited, rel_tol=0.0, abs_tol=1e-9):
+            _safe_ros_log(
+                self.get_logger(),
+                "warning",
+                f'Clamped {description} gripper target from {requested:.5f} to '
+                f'{limited:.5f}; safe range is '
+                f'[{self.gripper_safe_lower_limit:.5f}, '
+                f'{self.gripper_safe_upper_limit:.5f}].',
+            )
+        return limited
+
     def publish_gripper(self, width: float) -> None:
         mode = self.gripper_command_mode
         sent = False
+        self._gripper_command_used_action = False
         if mode in ('auto', 'trajectory_action'):
             sent = self.send_gripper_action(width)
             if sent:
-                _safe_ros_log(self.get_logger(), "info", f'Gripper action command -> {width:.5f}')
+                self._gripper_command_used_action = True
+                _safe_ros_log(self.get_logger(), "info", f'Gripper action submitted; waiting for controller acceptance: target={width:.5f}')
         if not sent and mode in ('auto', 'topic'):
             msg = Float64()
             msg.data = width
@@ -1174,15 +1376,21 @@ class VisionGraspNode(Node):
         if not self.gripper_action_client.wait_for_server(timeout_sec=self.gripper_action_timeout_sec):
             _safe_ros_log(self.get_logger(), "warning", 'Gripper action server not available; falling back to topic command.')
             return False
+        expected_seq = self.sequence_id
+        expected_stage = self.sequence_stage
+        expected_target = float(width)
+        self._gripper_action_goal_handle = None
+        self._gripper_action_accepted = False
+        self._gripper_action_succeeded = False
+        self._gripper_action_failed_reason = None
         goal = FollowJointTrajectory.Goal()
         traj = JointTrajectory()
         traj.joint_names = [self.gripper_joint_name]
 
-        # Always include an explicit start waypoint at t=0 from the current
-        # joint state.  Without it the JTC infers the start from its internal
-        # hold value, which can differ from the echoed /joint_states by one
-        # control cycle and cause a tiny discontinuity.  Some JTC versions also
-        # require ≥ 2 waypoints to build a valid spline.
+        # This controller needs an explicit measured start waypoint followed by
+        # the target. A single future waypoint is accepted by Jazzy's JTC but,
+        # with this Gazebo/open-loop configuration, remains active indefinitely
+        # and never reports success.
         current_pos = self.current_joint_positions.get(self.gripper_joint_name)
         points = []
         if current_pos is not None:
@@ -1208,11 +1416,90 @@ class VisionGraspNode(Node):
             nanosec=traj_ns % 1_000_000_000,
         )
         points.append(end_pt)
-
         traj.points = points
         goal.trajectory = traj
-        self.gripper_action_client.send_goal_async(goal)
+        future = self.gripper_action_client.send_goal_async(goal)
+        future.add_done_callback(
+            lambda fut, seq=expected_seq, stage=expected_stage, target=expected_target:
+                self._on_gripper_goal_response(fut, seq, stage, target)
+        )
         return True
+
+    def _on_gripper_goal_response(
+        self,
+        future,
+        expected_seq: int,
+        expected_stage: str,
+        expected_target: float,
+    ) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            if expected_seq == self.sequence_id and expected_stage == self.sequence_stage:
+                self._gripper_action_failed_reason = f'goal request failed: {exc}'
+            return
+
+        if expected_seq != self.sequence_id or expected_stage != self.sequence_stage:
+            if goal_handle.accepted:
+                try:
+                    goal_handle.cancel_goal_async()
+                except Exception as exc:
+                    _safe_ros_log(self.get_logger(), "error", f'Could not cancel stale gripper goal: {exc}')
+            return
+
+        if not goal_handle.accepted:
+            self._gripper_action_failed_reason = (
+                f'controller rejected target {expected_target:.5f}'
+            )
+            _safe_ros_log(self.get_logger(), "error", f'Gripper action rejected by controller: '
+                f'stage={expected_stage}, target={expected_target:.5f}.')
+            return
+
+        self._gripper_action_goal_handle = goal_handle
+        self._gripper_action_accepted = True
+        _safe_ros_log(self.get_logger(), "info", f'Gripper action accepted by controller: '
+            f'stage={expected_stage}, target={expected_target:.5f}.')
+        goal_handle.get_result_async().add_done_callback(
+            lambda fut, seq=expected_seq, stage=expected_stage, target=expected_target:
+                self._on_gripper_goal_result(fut, seq, stage, target)
+        )
+
+    def _on_gripper_goal_result(
+        self,
+        future,
+        expected_seq: int,
+        expected_stage: str,
+        expected_target: float,
+    ) -> None:
+        if expected_seq != self.sequence_id or expected_stage != self.sequence_stage:
+            return
+        self._gripper_action_goal_handle = None
+        try:
+            result_wrap = future.result()
+        except Exception as exc:
+            self._gripper_action_failed_reason = f'action result unavailable: {exc}'
+            return
+
+        result = result_wrap.result
+        error_code = int(getattr(result, 'error_code', 0))
+        successful_code = int(getattr(FollowJointTrajectory.Result, 'SUCCESSFUL', 0))
+        if (
+            result_wrap.status == GoalStatus.STATUS_SUCCEEDED
+            and error_code == successful_code
+        ):
+            self._gripper_action_succeeded = True
+            _safe_ros_log(self.get_logger(), "info", f'Gripper controller reported action success: '
+                f'stage={expected_stage}, target={expected_target:.5f}.')
+            return
+
+        error_string = str(getattr(result, 'error_string', '')).strip()
+        self._gripper_action_failed_reason = (
+            f'action finished with status={result_wrap.status}, '
+            f'error_code={error_code}, error="{error_string}"'
+        )
+        _safe_ros_log(self.get_logger(), "error", f'Gripper controller action failed: '
+            f'stage={expected_stage}, target={expected_target:.5f}, '
+            f'{self._gripper_action_failed_reason}.')
 
     def command_gripper_and_then(
         self,
@@ -1223,9 +1510,25 @@ class VisionGraspNode(Node):
     ) -> None:
         """
         Gripper Agent:
-        Send gripper command and wait until /joint_states confirms it,
-        or timeout expires.
+        Send a gripper command and continue only when both the minimum command
+        time has elapsed and fresh /joint_states feedback confirms the target.
         """
+        if (
+            self._pending_arm_motion_confirmation is not None
+            or self._active_move_goal_handle is not None
+            or self._cartesian_plan_in_flight is not None
+        ):
+            reason = (
+                f'Blocked gripper command "{description}" because the arm stage '
+                'has not completed action + measured-state confirmation.'
+            )
+            if self.holding_object:
+                self._cancel_active_moveit_goal()
+                self._hold_closed_after_transport_failure(reason)
+            else:
+                self.reset_sequence(reason)
+            return
+        width = self._limit_gripper_target(width, description)
         self.sequence_stage = stage_name
         self._gripper_wait_target = float(width)
         self._gripper_wait_cb = cb
@@ -1263,66 +1566,172 @@ class VisionGraspNode(Node):
 
         target = self._gripper_wait_target
         current = self.current_joint_positions.get(self.gripper_joint_name)
-        elapsed = self._now_sec() - self._gripper_wait_start_sec
+        now_sec = self._now_sec()
+        elapsed = now_sec - self._gripper_wait_start_sec
         command_duration_sec = self.gripper_command_duration_sec
         if command_duration_sec <= 0.0:
             command_duration_sec = self.gripper_settle_sec + 0.5
+
+        minimum_completion_sec = max(self.gripper_settle_sec, command_duration_sec)
+        if self.sequence_stage == 'release_in_base_box' and self.base_box_release_wait_sec > 0.0:
+            minimum_completion_sec = max(minimum_completion_sec, self.base_box_release_wait_sec)
+
+        if self._gripper_command_used_action and self._gripper_action_failed_reason is not None:
+            reason = (
+                f'Gripper controller did not execute the command: '
+                f'{self._gripper_action_failed_reason}. target={target:.5f}'
+            )
+            self._finish_failed_gripper_wait(reason, current)
+            return
+
+        feedback_stamp = self.current_joint_update_sec.get(self.gripper_joint_name)
+        feedback_fresh = (
+            current is not None
+            and feedback_stamp is not None
+            and float(feedback_stamp) >= self._gripper_wait_start_sec
+            and (now_sec - float(feedback_stamp)) <= self.gripper_feedback_max_age_sec
+        )
+        position_reached = (
+            feedback_fresh
+            and abs(float(current) - target) <= self.gripper_goal_tolerance
+        )
+        minimum_time_elapsed = elapsed >= minimum_completion_sec
+        action_complete = (
+            not self._gripper_command_used_action
+            or not self.gripper_require_action_success_for_completion
+            or self._gripper_action_succeeded
+        )
+        feedback_complete = (
+            self.gripper_feedback_available
+            and minimum_time_elapsed
+            and position_reached
+            and action_complete
+        )
+
+        # Optional legacy fallback for systems that genuinely have no state
+        # feedback. Hardware launch keeps require_feedback=true, so this path is
+        # disabled on the rover and time alone can never complete a command.
         no_feedback_close_complete_sec = self.gripper_no_feedback_close_complete_sec
-        if no_feedback_close_complete_sec <= 0.0:
+        if self.sequence_stage == 'release_in_base_box' and self.base_box_release_wait_sec > 0.0:
+            no_feedback_close_complete_sec = self.base_box_release_wait_sec
+        elif no_feedback_close_complete_sec <= 0.0:
             no_feedback_close_complete_sec = command_duration_sec
+        legacy_time_complete = (
+            not self.gripper_require_feedback_for_completion
+            and not self.gripper_feedback_available
+            and elapsed >= no_feedback_close_complete_sec
+            and action_complete
+        )
 
-        reached = False
-        if self.gripper_feedback_available and elapsed >= self.gripper_settle_sec and current is not None:
-            reached = abs(float(current) - target) <= self.gripper_goal_tolerance
-
-        open_loop_done = (not self.gripper_feedback_available) and elapsed >= no_feedback_close_complete_sec
-        timeout_elapsed = self.gripper_feedback_available and elapsed >= self.gripper_confirm_timeout_sec
-
-        if reached or open_loop_done or timeout_elapsed:
+        if feedback_complete or legacy_time_complete:
             if self._gripper_wait_timer is not None:
                 self._gripper_wait_timer.cancel()
                 self._gripper_wait_timer = None
 
             cb = self._gripper_wait_cb
             self._gripper_wait_cb = None
-
             self.last_gripper_actual = float(current) if current is not None else None
             self.last_gripper_target = float(target)
 
-            if reached:
-                _safe_ros_log(self.get_logger(), "info", f'Gripper confirmed: target={target:.5f}, '
-                    f'actual={current:.5f}, elapsed={elapsed:.2f}s')
-            elif open_loop_done:
-                _safe_ros_log(self.get_logger(), "info", f'Gripper feedback disabled; assuming command completed after '
-                    f'{elapsed:.2f}s at target={target:.5f} '
-                    f'(command_duration={command_duration_sec:.2f}s, '
-                    f'close_complete_wait={no_feedback_close_complete_sec:.2f}s).')
+            if feedback_complete:
+                _safe_ros_log(self.get_logger(), "info", f'Gripper command confirmed by time + fresh joint feedback: '
+                    f'target={target:.5f}, actual={current:.5f}, elapsed={elapsed:.2f}s, '
+                    f'minimum_time={minimum_completion_sec:.2f}s, '
+                    f'action_success={self._gripper_action_succeeded}.')
             else:
-                if self.sequence_stage in ('open_gripper', 'retry_open_gripper') and self.gripper_feedback_available:
-                    # Opening failure is real failure. Do not continue half-open.
-                    self.reset_sequence(
-                        f'Gripper failed to open: target={target:.5f}, '
-                        f'actual={current}, elapsed={elapsed:.2f}s.'
-                    )
-                    return
-
-                # During close/preclose, not reaching target often means the object is
-                # physically between the fingers. This is useful contact evidence.
-                if (
-                    self.sequence_stage in ('preclose_gripper', 'close_gripper')
-                    and current is not None
-                    and float(current) >= self.gripper_contact_min_position
-                ):
-                    self.gripper_contact_detected = True
-                    _safe_ros_log(self.get_logger(), "warning", f'Gripper contact suspected: target={target:.5f}, '
-                        f'actual={current:.5f}, elapsed={elapsed:.2f}s. '
-                        f'Will not open/release unless failure is strongly verified.')
-                else:
-                    _safe_ros_log(self.get_logger(), "warning", f'Gripper confirmation timeout: target={target:.5f}, '
-                        f'actual={current}, elapsed={elapsed:.2f}s.')
+                _safe_ros_log(self.get_logger(), "warning", f'Legacy open-loop gripper completion: target={target:.5f}, '
+                    f'elapsed={elapsed:.2f}s. This mode is disabled by default.')
 
             if cb is not None:
                 cb()
+            return
+
+        effective_timeout_sec = max(
+            self.gripper_confirm_timeout_sec,
+            minimum_completion_sec + 0.5,
+        )
+        if elapsed < effective_timeout_sec:
+            return
+
+        if self._gripper_wait_timer is not None:
+            self._gripper_wait_timer.cancel()
+            self._gripper_wait_timer = None
+        cb = self._gripper_wait_cb
+        self._gripper_wait_cb = None
+        self.last_gripper_actual = float(current) if current is not None else None
+        self.last_gripper_target = float(target)
+
+        feedback_detail = (
+            f'actual={current}, fresh={feedback_fresh}, position_reached={position_reached}, '
+            f'action_accepted={self._gripper_action_accepted}, '
+            f'action_succeeded={self._gripper_action_succeeded}, '
+            f'elapsed={elapsed:.2f}s, required_time={minimum_completion_sec:.2f}s'
+        )
+
+        if self.sequence_stage == 'release_in_base_box':
+            self._stop_after_uncertain_base_box_release(
+                f'Gripper failed to confirm release in the base box: target={target:.5f}, {feedback_detail}.'
+            )
+            return
+
+        if self.sequence_stage in ('open_gripper', 'retry_open_gripper'):
+            self.reset_sequence(
+                f'Gripper failed to confirm open: target={target:.5f}, {feedback_detail}.'
+            )
+            return
+
+        # A final close may legitimately stop short of its target because the
+        # probe is between the fingers. Accept that only with fresh position
+        # feedback past the configured contact threshold and after the full
+        # minimum command time. A pre-close must still reach its exact target.
+        contact_confirmed = (
+            self.sequence_stage == 'close_gripper'
+            and minimum_time_elapsed
+            and feedback_fresh
+            and current is not None
+            and float(current) >= self.gripper_contact_min_position
+            and action_complete
+        )
+        if contact_confirmed:
+            self.gripper_contact_detected = True
+            _safe_ros_log(self.get_logger(), "warning", f'Gripper close confirmed by timed fresh contact feedback: '
+                f'target={target:.5f}, actual={current:.5f}. The probe may be blocking full closure.')
+            if cb is not None:
+                cb()
+            return
+
+        if self.sequence_stage == 'close_gripper':
+            self._hold_closed_after_failed_grasp_check(
+                f'Final gripper close was not confirmed: target={target:.5f}, {feedback_detail}.'
+            )
+            return
+
+        self.reset_sequence(
+            f'Gripper command was not confirmed at stage={self.sequence_stage}: '
+            f'target={target:.5f}, {feedback_detail}.'
+        )
+
+    def _finish_failed_gripper_wait(
+        self,
+        reason: str,
+        current: Optional[float],
+    ) -> None:
+        """Stop immediately when the gripper controller rejects/aborts a command."""
+        if self._gripper_wait_timer is not None:
+            self._gripper_wait_timer.cancel()
+            self._gripper_wait_timer = None
+        self._gripper_wait_cb = None
+        self.last_gripper_actual = float(current) if current is not None else None
+        self.last_gripper_target = float(self._gripper_wait_target)
+
+        if self.sequence_stage == 'release_in_base_box':
+            self._stop_after_uncertain_base_box_release(reason)
+        elif self.sequence_stage in ('open_gripper', 'retry_open_gripper'):
+            self.reset_sequence(reason)
+        elif self.sequence_stage == 'close_gripper':
+            self._hold_closed_after_failed_grasp_check(reason)
+        else:
+            self.reset_sequence(reason)
 
     def publish_debug_image(self, img: np.ndarray) -> None:
         try:
@@ -2757,8 +3166,15 @@ class VisionGraspNode(Node):
         required = float(self.floor_z_min + self.fourbar_ground_clearance_m + self.fourbar_min_arc_clearance_m)
         if min_z < required:
             lift = required - min_z
-            if self.fourbar_use_urdf_geometry_model:
-                lift = min(lift, float(self.fourbar_max_contact_lift_m))
+            configured_cap = max(0.0, float(self.fourbar_max_contact_lift_m))
+            if configured_cap > 0.0 and lift > configured_cap:
+                # The old implementation capped this correction and then
+                # executed a close whose own log still showed negative safety
+                # clearance. A safety guard must never knowingly return an
+                # unsafe pose. Apply the full required lift; a missed grasp is
+                # recoverable, a floor collision is not.
+                _safe_ros_log(self.get_logger(), "warning", f'Required four-bar floor lift {lift*1000:.1f} mm exceeds '
+                    f'configured advisory cap {configured_cap*1000:.1f} mm; applying the full safety correction.')
             grasp_point = np.array(grasp_point, dtype=np.float64).copy()
             grasp_point[2] += float(lift)
             min_z_after, clearance_after = self._predict_fourbar_arc_min_z(grasp_point, orientation)
@@ -2947,14 +3363,79 @@ class VisionGraspNode(Node):
 
         return True
 
-    def is_target_stable(self, p: np.ndarray) -> bool:
-        self.target_history.append(p)
-        if len(self.target_history) > self.target_stability_samples:
+    def _clear_target_stability_history(self) -> None:
+        self.target_history.clear()
+        self.target_history_stamps.clear()
+        self.target_confidence_history.clear()
+        self.filtered_target_point_base = None
+        self.filtered_target_confidence = 0.0
+        self.target_filter_max_residual_m = float('inf')
+        self.target_filter_rms_m = float('inf')
+
+    def _expire_target_stability_history(self, now_sec: float) -> None:
+        if (
+            self.target_history_stamps
+            and now_sec - self.target_history_stamps[-1]
+            > self.target_stability_max_sample_gap_sec
+        ):
+            self._clear_target_stability_history()
+
+    def is_target_stable(self, p: np.ndarray, confidence: float) -> bool:
+        """Build a consecutive, spatially coherent 3D cluster and median-filter it."""
+        now_sec = self._now_sec()
+        self._expire_target_stability_history(now_sec)
+
+        if confidence < self.target_lock_min_confidence:
+            _safe_ros_log(
+                self.get_logger(),
+                "info",
+                f'Probe confidence {confidence:.2f} is below lock threshold '
+                f'{self.target_lock_min_confidence:.2f}; not adding it to the '
+                'target stability window.',
+                throttle_duration_sec=1.0,
+            )
+            return False
+
+        candidate = np.asarray(p, dtype=np.float64)
+        if self.target_history:
+            existing_center = np.median(
+                np.asarray(self.target_history, dtype=np.float64), axis=0
+            )
+            outlier_distance = float(np.linalg.norm(candidate - existing_center))
+            if outlier_distance > self.target_filter_outlier_distance_m:
+                _safe_ros_log(
+                    self.get_logger(),
+                    "warning",
+                    f'Resetting probe stability window after a '
+                    f'{outlier_distance*1000.0:.1f} mm 3D detection jump.',
+                    throttle_duration_sec=0.5,
+                )
+                self._clear_target_stability_history()
+
+        self.target_history.append(candidate.copy())
+        self.target_history_stamps.append(now_sec)
+        self.target_confidence_history.append(float(confidence))
+
+        while len(self.target_history) > self.target_filter_window_samples:
             self.target_history.pop(0)
+            self.target_history_stamps.pop(0)
+            self.target_confidence_history.pop(0)
+
+        points = np.asarray(self.target_history, dtype=np.float64)
+        filtered = np.median(points, axis=0)
+        residuals = np.linalg.norm(points - filtered, axis=1)
+        self.filtered_target_point_base = filtered
+        self.filtered_target_confidence = float(np.median(self.target_confidence_history))
+        self.target_filter_max_residual_m = float(np.max(residuals))
+        self.target_filter_rms_m = float(np.sqrt(np.mean(np.square(residuals))))
+
         if len(self.target_history) < self.target_stability_samples:
             return False
-        base = self.target_history[0]
-        return all(np.linalg.norm(item - base) <= self.target_stability_max_jump_m for item in self.target_history[1:])
+
+        return (
+            self.target_filter_max_residual_m <= self.target_stability_max_jump_m
+            and self.target_filter_rms_m <= self.target_stability_rms_m
+        )
 
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -3364,12 +3845,16 @@ class VisionGraspNode(Node):
             'verify_gripper',
             'move_post_grasp_lift',
             'move_pick_home',
+            'move_base_box_drop',
+            'release_in_base_box',
+            'move_pick_home_after_place',
             'move_lift_check',
             'verify_lift',
             'retry_open_gripper',
             'move_cartesian_retreat',
             'move_retreat_home',
             'done_holding',
+            'done_placed',
         ):
             return
 
@@ -3436,14 +3921,27 @@ class VisionGraspNode(Node):
             return
 
         if detection is None:
+            self._expire_target_stability_history(now_sec)
             return
 
         point_base, name, conf = detection
 
-        if not self.is_target_stable(point_base):
-            _safe_ros_log(self.get_logger(), "info", 'Target seen but waiting for stable 3D position...', throttle_duration_sec=1.0)
+        if not self.is_target_stable(point_base, conf):
+            _safe_ros_log(
+                self.get_logger(),
+                "info",
+                f'Target seen but waiting for stable filtered 3D position '
+                f'({len(self.target_history)}/{self.target_stability_samples} samples, '
+                f'max residual={self.target_filter_max_residual_m*1000.0:.1f} mm, '
+                f'RMS={self.target_filter_rms_m*1000.0:.1f} mm)...',
+                throttle_duration_sec=1.0,
+            )
             return
 
+        if self.filtered_target_point_base is None:
+            return
+        point_base = self.filtered_target_point_base.copy()
+        conf = self.filtered_target_confidence
         locked_target_point = point_base.copy()
         locked_object_axis = self._get_detected_object_long_axis_base()
 
@@ -3511,7 +4009,9 @@ class VisionGraspNode(Node):
 
         _safe_ros_log(self.get_logger(), "info", f'Stable target acquired in {self.planning_frame}: '
             f'x={point_base[0]:.3f}, y={point_base[1]:.3f}, '
-            f'z={point_base[2]:.3f}, conf={conf:.2f}')
+            f'z={point_base[2]:.3f}, median_conf={conf:.2f}, '
+            f'max_residual={self.target_filter_max_residual_m*1000.0:.1f}mm, '
+            f'RMS={self.target_filter_rms_m*1000.0:.1f}mm')
 
         self.start_grasp_sequence()
 
@@ -3700,6 +4200,7 @@ class VisionGraspNode(Node):
         """Best-effort cancellation of a MoveIt goal before we proceed."""
         gh = getattr(self, '_active_move_goal_handle', None)
         if gh is None:
+            self._clear_arm_motion_confirmation()
             return
         try:
             gh.cancel_goal_async()
@@ -3707,6 +4208,22 @@ class VisionGraspNode(Node):
         except Exception as exc:
             _safe_ros_log(self.get_logger(), "warning", f'Could not cancel active MoveIt goal cleanly: {exc}')
         self._active_move_goal_handle = None
+        self._clear_arm_motion_confirmation()
+
+    def _cancel_active_gripper_goal(self) -> None:
+        """Best-effort cancellation and cleanup of the current gripper action."""
+        goal_handle = getattr(self, '_gripper_action_goal_handle', None)
+        if goal_handle is not None:
+            try:
+                goal_handle.cancel_goal_async()
+                _safe_ros_log(self.get_logger(), "warning", 'Requested cancellation of active gripper action.')
+            except Exception as exc:
+                _safe_ros_log(self.get_logger(), "warning", f'Could not cancel active gripper action cleanly: {exc}')
+        self._gripper_action_goal_handle = None
+        self._gripper_command_used_action = False
+        self._gripper_action_accepted = False
+        self._gripper_action_succeeded = False
+        self._gripper_action_failed_reason = None
 
     def _pregrasp_watchdog_tick(self, expected_seq: int) -> None:
         if expected_seq != self.sequence_id:
@@ -3740,6 +4257,11 @@ class VisionGraspNode(Node):
         if not near and not timed_out:
             return
         if timed_out and not self.pregrasp_watchdog_force_after_timeout and not near:
+            return
+        if self.arm_require_feedback_for_completion:
+            _safe_ros_log(self.get_logger(), "info", 'Pre-grasp watchdog sees the arm near its target, but strict whole-process '
+                'confirmation is enabled; waiting for MoveIt success plus stable measured feedback '
+                'before advancing.', throttle_duration_sec=1.0)
             return
 
         if getattr(self, '_pregrasp_watchdog_timer', None) is not None:
@@ -4281,7 +4803,16 @@ class VisionGraspNode(Node):
         the near-floor configuration without self-collisions.
         """
         if len(self.pick_home_joint_names) != len(self.pick_home_joint_positions):
-            self.reset_sequence('pick_home_joint_names and pick_home_joint_positions length mismatch.')
+            reason = 'pick_home_joint_names and pick_home_joint_positions length mismatch.'
+            if self.holding_object:
+                self._hold_closed_after_transport_failure(reason)
+            else:
+                self.reset_sequence(reason)
+            return
+        if not self.move_group_client.wait_for_server(timeout_sec=2.0):
+            self._hold_closed_after_transport_failure(
+                'MoveIt action server unavailable for held-probe transport to pick_home.'
+            )
             return
         self.sequence_stage = 'move_pick_home'
         _safe_ros_log(self.get_logger(), "info", f'Moving to pick_home (gripper closed). '
@@ -4293,6 +4824,133 @@ class VisionGraspNode(Node):
             planning_time_override=self.post_grasp_planning_time_sec,
             num_attempts_override=max(self.num_planning_attempts, 15),
         )
+
+    def send_base_box_drop_closed(self) -> None:
+        """Move to the configured base-box release pose with the gripper closed."""
+        if self.base_box_drop_use_pose:
+            if not self._base_box_drop_pose_config_valid():
+                self._hold_closed_after_transport_failure(
+                    'Invalid base-box pose: frame must be non-empty and XYZ/RPY must each contain three values.'
+                )
+                return
+            if len(self.base_box_drop_target_point_offset_in_link) != 3:
+                self._hold_closed_after_transport_failure(
+                    'base_box_drop_target_point_offset_in_link must contain exactly three values.'
+                )
+                return
+        elif len(self.base_box_drop_joint_names) != len(self.base_box_drop_joint_positions):
+            self._hold_closed_after_transport_failure(
+                'base_box_drop_joint_names and base_box_drop_joint_positions length mismatch.'
+            )
+            return
+        if not self.move_group_client.wait_for_server(timeout_sec=2.0):
+            self._hold_closed_after_transport_failure(
+                'MoveIt action server unavailable for held-probe transport to the base box.'
+            )
+            return
+
+        self.sequence_stage = 'move_base_box_drop'
+        if self.base_box_drop_use_pose:
+            pose = self.get_base_box_drop_pose()
+            _safe_ros_log(self.get_logger(), "info", f'Moving held probe to base-box release pose: '
+                f'frame={self.base_box_drop_frame}, xyz={self.base_box_drop_xyz}, '
+                f'rpy={self.base_box_drop_rpy}.')
+            self.send_pose_goal(
+                pose,
+                pos_tol=self.base_box_drop_position_tolerance_m,
+                with_orientation=True,
+                orientation_override=pose.pose.orientation,
+                orientation_tol=self.base_box_drop_orientation_tolerance_rad,
+                target_point_offset=self.base_box_drop_target_point_offset_in_link,
+                arm_joints_only_start_state=True,
+                planning_time_override=self.base_box_planning_time_sec,
+                num_attempts_override=max(self.num_planning_attempts, 15),
+            )
+        else:
+            _safe_ros_log(self.get_logger(), "info", f'Moving held probe from pick_home to the base-box joint posture. '
+                f'MoveGroup planning time={self.base_box_planning_time_sec:.1f} s.')
+            self.send_joint_goal(
+                self.base_box_drop_joint_names,
+                self.base_box_drop_joint_positions,
+                planning_time_override=self.base_box_planning_time_sec,
+                num_attempts_override=max(self.num_planning_attempts, 15),
+            )
+
+    def _base_box_drop_pose_config_valid(self) -> bool:
+        return bool(self.base_box_drop_frame) and len(self.base_box_drop_xyz) == 3 and len(self.base_box_drop_rpy) == 3
+
+    def get_base_box_drop_pose(self) -> PoseStamped:
+        """Return the configured physical release-point pose for planning/markers."""
+        pose = PoseStamped()
+        pose.header.frame_id = self.base_box_drop_frame
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position = Point(
+            x=float(self.base_box_drop_xyz[0]),
+            y=float(self.base_box_drop_xyz[1]),
+            z=float(self.base_box_drop_xyz[2]),
+        )
+        pose.pose.orientation = rpy_to_quat(
+            float(self.base_box_drop_rpy[0]),
+            float(self.base_box_drop_rpy[1]),
+            float(self.base_box_drop_rpy[2]),
+        )
+        return pose
+
+    def release_probe_in_base_box(self) -> None:
+        """Open only after MoveIt confirms that the drop posture was reached."""
+        _safe_ros_log(self.get_logger(), "info", 'Base-box drop posture reached; releasing the probe.')
+        self.command_gripper_and_then(
+            self.gripper_open,
+            self._after_probe_released_in_base_box,
+            stage_name='release_in_base_box',
+            description='release probe in rover base box',
+        )
+
+    def _after_probe_released_in_base_box(self) -> None:
+        self.holding_object = False
+
+        # The physical probe is now supported by the box rather than the tool.
+        # Remove the attached planning-scene object before planning the empty-arm
+        # return motion, otherwise MoveIt would continue carrying a ghost probe.
+        self._remove_post_grasp_collision_objects()
+        _safe_ros_log(self.get_logger(), "info", 'Probe released in the rover base box.')
+
+        if not self.return_pick_home_after_base_box_place:
+            self.finish_placement_successfully(returned_home=False)
+            return
+
+        if not self.move_group_client.wait_for_server(timeout_sec=2.0):
+            self.finish_placement_successfully(
+                returned_home=False,
+                warning='Probe was placed, but MoveIt is unavailable for the empty-arm return to pick_home.',
+            )
+            return
+
+        self.sequence_stage = 'move_pick_home_after_place'
+        self.send_joint_goal(
+            self.pick_home_joint_names,
+            self.pick_home_joint_positions,
+            planning_time_override=self.post_grasp_planning_time_sec,
+            num_attempts_override=max(self.num_planning_attempts, 15),
+        )
+
+    def _hold_closed_after_transport_failure(self, reason: str) -> None:
+        """Stop safely if transport fails while the probe is still grasped."""
+        self.holding_object = True
+        self.task_complete = True
+        self.busy = True
+        self.sequence_stage = 'transport_failed_holding'
+        self.success_until_sec = self._now_sec() + self.success_lockout_sec
+        _safe_ros_log(self.get_logger(), "error", f'{reason} The gripper remains closed; no release or automatic restart will occur.')
+
+    def _stop_after_uncertain_base_box_release(self, reason: str) -> None:
+        """Lock the task when gripper feedback cannot confirm box release."""
+        self.task_complete = True
+        self.busy = True
+        self.sequence_stage = 'base_box_release_unconfirmed'
+        self.success_until_sec = self._now_sec() + self.success_lockout_sec
+        _safe_ros_log(self.get_logger(), "error", f'{reason} The arm will remain at the box and automatic restart is disabled; '
+            'inspect whether the probe was released before sending another command.')
 
     # ------------------------------------------------------------------ #
     #   Lift-check verification                                            #
@@ -4683,6 +5341,13 @@ class VisionGraspNode(Node):
         if self._arm_motion_forbidden_now(expected_stage):
             _safe_ros_log(self.get_logger(), "error", f'Blocked unsafe Cartesian arm command during gripper stage: requested_stage={expected_stage}')
             return
+        if self._cartesian_plan_in_flight is not None or self._pending_arm_motion_confirmation is not None:
+            self._cancel_active_moveit_goal()
+            self._arm_motion_confirmation_failed(
+                expected_stage,
+                'Blocked overlapping Cartesian planning/execution request.',
+            )
+            return
         if not self.cartesian_client.wait_for_service(timeout_sec=2.0):
             if self.sequence_stage == 'move_grasp':
                 if self.allow_movegroup_fallback_for_grasp and self._send_movegroup_grasp_fallback(0.0):
@@ -4712,21 +5377,36 @@ class VisionGraspNode(Node):
                     f'goal_link=({goal_pose.position.x:.3f},{goal_pose.position.y:.3f},{goal_pose.position.z:.3f}) '
                     f'delta=({dx*1000:.1f},{dy*1000:.1f},{dz*1000:.1f})mm '
                     f'collision_check=on orientation_path_constraint={self.cartesian_lock_orientation}.')
+        final_waypoint = waypoints[-1] if waypoints else None
+        self._cartesian_plan_in_flight = (expected_stage, expected_seq)
         future = self.cartesian_client.call_async(req)
         future.add_done_callback(
-            lambda fut, st=expected_stage, seq=expected_seq: self._on_cartesian_path(fut, st, seq)
+            lambda fut, st=expected_stage, seq=expected_seq, wp=final_waypoint: self._on_cartesian_path(
+                fut, st, seq, wp
+            )
         )
 
-    def _on_cartesian_path(self, future, expected_stage: str, expected_seq: int) -> None:
+    def _on_cartesian_path(
+        self,
+        future,
+        expected_stage: str,
+        expected_seq: int,
+        final_waypoint: Optional[Pose],
+    ) -> None:
         try:
             resp = future.result()
         except Exception as exc:
+            if self._cartesian_plan_in_flight == (expected_stage, expected_seq):
+                self._cartesian_plan_in_flight = None
             self.reset_sequence(f'GetCartesianPath call failed: {exc}')
             return
         if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
+            if self._cartesian_plan_in_flight == (expected_stage, expected_seq):
+                self._cartesian_plan_in_flight = None
             _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale Cartesian response for stage={expected_stage}; '
                 f'current_stage={self.sequence_stage}.')
             return
+        self._cartesian_plan_in_flight = None
 
         stage = expected_stage
         min_fraction = self.cartesian_fraction_min
@@ -4791,7 +5471,7 @@ class VisionGraspNode(Node):
         # a stale or incorrect start state; executing such a trajectory would move
         # the arm to the wrong configuration before the first waypoint, driving it
         # in the wrong direction and risking self-collision.
-        if stage == 'move_post_grasp_lift' and resp.solution.joint_trajectory.points:
+        if resp.solution.joint_trajectory.points:
             first_pt = resp.solution.joint_trajectory.points[0]
             cur_joints = self.current_joint_positions
             if cur_joints and resp.solution.joint_trajectory.joint_names:
@@ -4810,26 +5490,66 @@ class VisionGraspNode(Node):
                         f'start-state deviation {worst_dev:.3f} rad on joint {worst_name}. '
                         f'MoveIt planned from a wrong configuration; executing would drive '
                         f'the arm in the wrong direction. Retrying with fresh state seed.')
-                    req_seg = float(self._post_grasp_lift_requested_segment_m or 0.0)
-                    if self._retry_post_grasp_lift(
-                        f'Rejected bad-start-state lift trajectory '
-                        f'(deviation={worst_dev:.3f} rad on {worst_name}).',
-                        req_seg,
-                    ):
-                        return
-                    self.reset_sequence(
-                        f'Lift trajectory rejected for bad start state after '
-                        f'{self._post_grasp_lift_retry_count} retries.'
+                    reason = (
+                        f'Cartesian trajectory for {stage} rejected: start-state deviation '
+                        f'{worst_dev:.3f} rad on {worst_name}.'
                     )
+                    if stage == 'move_post_grasp_lift':
+                        req_seg = float(self._post_grasp_lift_requested_segment_m or 0.0)
+                        if self._retry_post_grasp_lift(reason, req_seg):
+                            return
+                    if stage == 'move_grasp':
+                        self._halt_after_final_approach_failure(reason)
+                    elif self.holding_object:
+                        self._hold_closed_after_transport_failure(reason)
+                    else:
+                        self.reset_sequence(reason)
                     return
                 else:
-                    _safe_ros_log(self.get_logger(), "info", f'[Safety Validator] Lift trajectory start-state OK: '
-                        f'max joint deviation = {worst_dev:.3f} rad on {worst_name}.')
+                    _safe_ros_log(self.get_logger(), "info", f'[Safety Validator] Cartesian trajectory start-state OK: '
+                        f'stage={stage}, max joint deviation={worst_dev:.3f} rad on {worst_name}.')
 
         if stage != 'move_post_grasp_lift':
             _safe_ros_log(self.get_logger(), "info", f'Cartesian path {resp.fraction:.2f} at {stage}; executing.')
         if not self.execute_client.wait_for_server(timeout_sec=2.0):
             self.reset_sequence('ExecuteTrajectory action server unavailable.')
+            return
+        if final_waypoint is None:
+            self.reset_sequence(f'Cartesian stage {stage} has no final waypoint to confirm.')
+            return
+        target_pose = PoseStamped()
+        target_pose.header.frame_id = self.planning_frame
+        target_pose.header.stamp = self.get_clock().now().to_msg()
+        target_pose.pose = final_waypoint
+        if stage == 'move_post_grasp_lift' and float(resp.fraction) < 1.0:
+            # Partial segmented lifts are intentionally allowed when they still
+            # provide useful upward progress. Confirm the endpoint that MoveIt
+            # actually planned, then let the existing lift supervisor request
+            # the next segment. Never pretend the unplanned full waypoint was
+            # reached.
+            current_pose = self.get_current_link_pose_in_planning_frame()
+            requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
+            if current_pose is not None:
+                target_pose.pose = Pose()
+                target_pose.pose.position = Point(
+                    x=float(current_pose.position.x),
+                    y=float(current_pose.position.y),
+                    z=float(current_pose.position.z + requested_segment * float(resp.fraction)),
+                )
+                target_pose.pose.orientation = final_waypoint.orientation
+        if not self._register_pose_motion_confirmation(
+            stage,
+            expected_seq,
+            target_pose,
+            [0.0, 0.0, 0.0],
+            self.arm_pose_confirmation_position_tolerance_m,
+            final_waypoint.orientation,
+            self.arm_pose_confirmation_orientation_tolerance_rad,
+        ):
+            self._arm_motion_confirmation_failed(
+                stage,
+                'Blocked Cartesian execution because another arm stage is still active.',
+            )
             return
         goal = ExecuteTrajectory.Goal()
         if stage == 'move_post_grasp_lift':
@@ -4930,9 +5650,12 @@ class VisionGraspNode(Node):
 
     def reset_sequence(self, reason: str) -> None:
         _safe_ros_log(self.get_logger(), "warning", f'Resetting grasp sequence: {reason}')
+        self._cancel_active_moveit_goal()
+        self._cancel_active_gripper_goal()
         self.sequence_id += 1
         self._cancel_pending_timers()
         self._cancel_final_grasp_pose_check_timer()
+        self._clear_arm_motion_confirmation()
 
         # Clean up any post-grasp collision objects (floor plane + probe) from
         # the planning scene so the next grasp attempt starts clean.
@@ -5019,9 +5742,255 @@ class VisionGraspNode(Node):
         self._active_move_goal_handle = None
         self._refine_width_buffer = []
         self._refine_orientation_cam_last = None
-        self.target_history.clear()
+        self._clear_target_stability_history()
 
         self.publish_markers()
+
+    # ---------- whole-process arm motion confirmation ----------
+    def _clear_arm_motion_confirmation(self) -> None:
+        if getattr(self, '_arm_confirmation_timer', None) is not None:
+            try:
+                self._arm_confirmation_timer.cancel()
+            except Exception:
+                pass
+            self._arm_confirmation_timer = None
+        self._pending_arm_motion_confirmation = None
+        self._cartesian_plan_in_flight = None
+
+    def _register_joint_motion_confirmation(
+        self,
+        stage: str,
+        sequence_id: int,
+        joint_names,
+        joint_positions,
+    ) -> bool:
+        if self._pending_arm_motion_confirmation is not None:
+            _safe_ros_log(self.get_logger(), "error", f'Blocked overlapping arm command at stage={stage}; '
+                f'previous_stage={self._pending_arm_motion_confirmation.get("stage")}.')
+            return False
+        self._pending_arm_motion_confirmation = {
+            'kind': 'joint',
+            'stage': stage,
+            'sequence_id': sequence_id,
+            'command_start_sec': self._now_sec(),
+            'joint_names': [str(v) for v in joint_names],
+            'joint_positions': [float(v) for v in joint_positions],
+            'stable_samples': 0,
+        }
+        return True
+
+    def _register_pose_motion_confirmation(
+        self,
+        stage: str,
+        sequence_id: int,
+        target_pose: PoseStamped,
+        target_point_offset: List[float],
+        position_tolerance: float,
+        orientation: Optional[Quaternion],
+        orientation_tolerance: float,
+    ) -> bool:
+        if self._pending_arm_motion_confirmation is not None:
+            _safe_ros_log(self.get_logger(), "error", f'Blocked overlapping arm command at stage={stage}; '
+                f'previous_stage={self._pending_arm_motion_confirmation.get("stage")}.')
+            return False
+        self._pending_arm_motion_confirmation = {
+            'kind': 'pose',
+            'stage': stage,
+            'sequence_id': sequence_id,
+            'command_start_sec': self._now_sec(),
+            'target_pose': target_pose,
+            'target_point_offset': [float(v) for v in target_point_offset],
+            'position_tolerance': max(
+                float(position_tolerance),
+                self.arm_pose_confirmation_position_tolerance_m,
+            ),
+            'orientation': orientation,
+            'orientation_tolerance': max(
+                float(orientation_tolerance),
+                self.arm_pose_confirmation_orientation_tolerance_rad,
+            ),
+            'stable_samples': 0,
+        }
+        return True
+
+    def _arm_feedback_is_fresh(self, joint_names: List[str], command_start_sec: float) -> bool:
+        now_sec = self._now_sec()
+        for name in joint_names:
+            stamp = self.current_joint_update_sec.get(name)
+            if (
+                stamp is None
+                or float(stamp) < command_start_sec
+                or now_sec - float(stamp) > self.arm_feedback_max_age_sec
+            ):
+                return False
+        return True
+
+    def _pose_target_in_planning_frame(
+        self,
+        target_pose: PoseStamped,
+        orientation: Optional[Quaternion],
+    ) -> Optional[Tuple[np.ndarray, Optional[Quaternion]]]:
+        target_xyz = np.array([
+            float(target_pose.pose.position.x),
+            float(target_pose.pose.position.y),
+            float(target_pose.pose.position.z),
+        ], dtype=np.float64)
+        source_frame = target_pose.header.frame_id or self.planning_frame
+        if source_frame == self.planning_frame:
+            return target_xyz, orientation
+        try:
+            tfm = self.tf_buffer.lookup_transform(
+                self.planning_frame,
+                source_frame,
+                rclpy.time.Time(),
+            )
+        except TransformException as exc:
+            _safe_ros_log(self.get_logger(), "warning", f'Arm completion check cannot transform '
+                f'{source_frame} -> {self.planning_frame}: {exc}', throttle_duration_sec=1.0)
+            return None
+
+        R_tf = quat_to_matrix(tfm.transform.rotation)
+        t_tf = np.array([
+            float(tfm.transform.translation.x),
+            float(tfm.transform.translation.y),
+            float(tfm.transform.translation.z),
+        ], dtype=np.float64)
+        target_xyz = t_tf + R_tf @ target_xyz
+        target_orientation = orientation
+        if orientation is not None:
+            target_orientation = matrix_to_quat(R_tf @ quat_to_matrix(orientation))
+        return target_xyz, target_orientation
+
+    @staticmethod
+    def _quaternion_distance_rad(a: Quaternion, b: Quaternion) -> float:
+        qa = np.array([float(a.x), float(a.y), float(a.z), float(a.w)], dtype=np.float64)
+        qb = np.array([float(b.x), float(b.y), float(b.z), float(b.w)], dtype=np.float64)
+        na = float(np.linalg.norm(qa))
+        nb = float(np.linalg.norm(qb))
+        if na < 1e-9 or nb < 1e-9:
+            return math.inf
+        dot = abs(float(np.dot(qa / na, qb / nb)))
+        return 2.0 * math.acos(float(np.clip(dot, -1.0, 1.0)))
+
+    def _arm_motion_feedback_reached(self, pending: dict) -> Tuple[bool, str]:
+        command_start_sec = float(pending['command_start_sec'])
+        if pending['kind'] == 'joint':
+            names = pending['joint_names']
+            if not self._arm_feedback_is_fresh(names, command_start_sec):
+                return False, 'joint feedback is missing, stale, or predates the command'
+            worst_error = 0.0
+            worst_name = ''
+            for name, target in zip(names, pending['joint_positions']):
+                actual = self.current_joint_positions.get(name)
+                if actual is None:
+                    return False, f'joint {name} has no measured position'
+                error = abs(wrap_to_pi(float(actual) - float(target)))
+                if error > worst_error:
+                    worst_error = error
+                    worst_name = name
+            tolerance = max(self.joint_goal_tolerance, self.arm_joint_confirmation_tolerance_rad)
+            return (
+                worst_error <= tolerance,
+                f'worst_joint={worst_name}, error={worst_error:.4f}rad, tolerance={tolerance:.4f}rad',
+            )
+
+        if not self._arm_feedback_is_fresh(self.arm_feedback_joint_names, command_start_sec):
+            return False, 'arm feedback is missing, stale, or predates the pose command'
+        current = self.get_current_link_pose_in_planning_frame()
+        if current is None:
+            return False, 'current planning-link TF is unavailable'
+        transformed = self._pose_target_in_planning_frame(
+            pending['target_pose'],
+            pending['orientation'],
+        )
+        if transformed is None:
+            return False, 'target pose transform is unavailable'
+        target_xyz, target_orientation = transformed
+        R_current = quat_to_matrix(current.orientation)
+        offset = np.array(pending['target_point_offset'], dtype=np.float64)
+        actual_xyz = np.array([
+            float(current.position.x),
+            float(current.position.y),
+            float(current.position.z),
+        ], dtype=np.float64) + R_current @ offset
+        position_error = float(np.linalg.norm(actual_xyz - target_xyz))
+        orientation_error = 0.0
+        orientation_ok = True
+        if target_orientation is not None:
+            orientation_error = self._quaternion_distance_rad(current.orientation, target_orientation)
+            orientation_ok = orientation_error <= float(pending['orientation_tolerance'])
+        reached = (
+            position_error <= float(pending['position_tolerance'])
+            and orientation_ok
+        )
+        return reached, (
+            f'position_error={position_error:.4f}m/{float(pending["position_tolerance"]):.4f}m, '
+            f'orientation_error={orientation_error:.4f}rad/'
+            f'{float(pending["orientation_tolerance"]):.4f}rad'
+        )
+
+    def _start_arm_motion_confirmation(self, stage: str, sequence_id: int) -> None:
+        pending = self._pending_arm_motion_confirmation
+        if (
+            pending is None
+            or pending.get('stage') != stage
+            or pending.get('sequence_id') != sequence_id
+        ):
+            self._arm_motion_confirmation_failed(
+                stage,
+                'MoveIt succeeded but no matching measured-target confirmation was registered.',
+            )
+            return
+        if not self.arm_require_feedback_for_completion:
+            self._clear_arm_motion_confirmation()
+            self._handle_confirmed_arm_motion(stage)
+            return
+        pending['action_success_sec'] = self._now_sec()
+        pending['stable_samples'] = 0
+        self._arm_confirmation_timer = self.create_timer(
+            self.arm_feedback_check_period_sec,
+            self._arm_motion_confirmation_tick,
+        )
+
+    def _arm_motion_confirmation_tick(self) -> None:
+        pending = self._pending_arm_motion_confirmation
+        if pending is None:
+            self._clear_arm_motion_confirmation()
+            return
+        stage = str(pending['stage'])
+        if pending['sequence_id'] != self.sequence_id or self.sequence_stage != stage:
+            self._clear_arm_motion_confirmation()
+            return
+        elapsed = self._now_sec() - float(pending['action_success_sec'])
+        if elapsed < self.arm_feedback_settle_sec:
+            return
+        reached, detail = self._arm_motion_feedback_reached(pending)
+        pending['last_detail'] = detail
+        pending['stable_samples'] = int(pending['stable_samples']) + 1 if reached else 0
+        if int(pending['stable_samples']) >= self.arm_feedback_stable_samples:
+            _safe_ros_log(self.get_logger(), "info", f'Arm stage confirmed by action result + fresh measured state: '
+                f'stage={stage}, {detail}, stable_samples={pending["stable_samples"]}.')
+            self._clear_arm_motion_confirmation()
+            self._handle_confirmed_arm_motion(stage)
+            return
+        if elapsed >= self.arm_feedback_timeout_sec:
+            self._clear_arm_motion_confirmation()
+            self._arm_motion_confirmation_failed(
+                stage,
+                f'Measured arm state did not confirm the target after MoveIt success: {detail}.',
+            )
+
+    def _arm_motion_confirmation_failed(self, stage: str, reason: str) -> None:
+        if stage == 'move_pick_home_after_place':
+            self.finish_placement_successfully(returned_home=False, warning=reason)
+            return
+        if stage == 'move_grasp':
+            self._halt_after_final_pose_check_failure(reason)
+            return
+        if self.holding_object:
+            self._hold_closed_after_transport_failure(reason)
+            return
+        self.reset_sequence(reason)
 
     def send_pose_goal(self, pose: PoseStamped,
                         pos_tol: Optional[float] = None,
@@ -5032,7 +6001,9 @@ class VisionGraspNode(Node):
                         path_constraints: Optional[Constraints] = None,
                         velocity_scale: Optional[float] = None,
                         acceleration_scale: Optional[float] = None,
-                        arm_joints_only_start_state: bool = False) -> None:
+                        arm_joints_only_start_state: bool = False,
+                        planning_time_override: Optional[float] = None,
+                        num_attempts_override: Optional[int] = None) -> None:
         expected_stage = self.sequence_stage
         expected_seq = self.sequence_id
         if self._arm_motion_forbidden_now(expected_stage):
@@ -5050,8 +6021,14 @@ class VisionGraspNode(Node):
         else:
             goal.request.start_state.is_diff = True
         goal.request.group_name = self.planning_group
-        goal.request.num_planning_attempts = self.num_planning_attempts
-        goal.request.allowed_planning_time = self.allowed_planning_time
+        goal.request.num_planning_attempts = (
+            num_attempts_override if num_attempts_override is not None
+            else self.num_planning_attempts
+        )
+        goal.request.allowed_planning_time = (
+            planning_time_override if planning_time_override is not None
+            else self.allowed_planning_time
+        )
         goal.request.max_velocity_scaling_factor = float(
             self.velocity_scale if velocity_scale is None else velocity_scale
         )
@@ -5099,6 +6076,21 @@ class VisionGraspNode(Node):
         goal.planning_options.plan_only = False
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        confirmation_orientation = orientation_constraint if with_orientation else None
+        if not self._register_pose_motion_confirmation(
+            expected_stage,
+            expected_seq,
+            pose,
+            offset,
+            float(tol),
+            confirmation_orientation,
+            float(self.orientation_tol if orientation_tol is None else orientation_tol),
+        ):
+            self._arm_motion_confirmation_failed(
+                expected_stage,
+                'Blocked a pose command because another arm stage is still active.',
+            )
+            return
         future = self.move_group_client.send_goal_async(goal)
         future.add_done_callback(
             lambda fut, st=expected_stage, seq=expected_seq: self.on_goal_response(fut, st, seq)
@@ -5158,22 +6150,79 @@ class VisionGraspNode(Node):
         goal.planning_options.plan_only = False
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        if not self._register_joint_motion_confirmation(
+            expected_stage,
+            expected_seq,
+            joint_names,
+            joint_positions,
+        ):
+            self._arm_motion_confirmation_failed(
+                expected_stage,
+                'Blocked a joint command because another arm stage is still active.',
+            )
+            return
         future = self.move_group_client.send_goal_async(goal)
         future.add_done_callback(
             lambda fut, st=expected_stage, seq=expected_seq: self.on_goal_response(fut, st, seq)
         )
 
     def on_goal_response(self, future, expected_stage: str, expected_seq: int) -> None:
-        if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
-            _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale motion goal response for stage={expected_stage}; '
-                f'current_stage={self.sequence_stage}.')
-            return
         try:
             goal_handle = future.result()
         except Exception as exc:
+            if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
+                _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale failed motion goal response for stage={expected_stage}; '
+                    f'current_stage={self.sequence_stage}: {exc}')
+                return
+            self._clear_arm_motion_confirmation()
+            if expected_stage == 'move_pick_home_after_place':
+                self.finish_placement_successfully(
+                    returned_home=False,
+                    warning=f'Probe was placed, but the return-home goal could not be sent: {exc}',
+                )
+                return
+            if expected_stage == 'move_base_box_drop' or (
+                expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp
+            ):
+                self._hold_closed_after_transport_failure(
+                    f'MoveIt held-probe transport goal could not be sent: {exc}'
+                )
+                return
             self.reset_sequence(f'MoveIt goal send failed: {exc}')
             return
+        if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
+            # A reset can happen after send_goal_async() but before MoveIt
+            # returns the goal handle. Never leave that late-accepted goal
+            # executing underneath a newer process stage.
+            if goal_handle.accepted:
+                try:
+                    goal_handle.cancel_goal_async()
+                    _safe_ros_log(self.get_logger(), "warning", f'Cancelled stale accepted arm goal for stage={expected_stage}; '
+                        f'current_stage={self.sequence_stage}.')
+                except Exception as exc:
+                    _safe_ros_log(self.get_logger(), "error", f'Could not cancel stale accepted arm goal for stage={expected_stage}: {exc}')
+            else:
+                _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale rejected arm goal for stage={expected_stage}; '
+                    f'current_stage={self.sequence_stage}.')
+            return
         if not goal_handle.accepted:
+            self._clear_arm_motion_confirmation()
+            if expected_stage == 'move_pick_home_after_place':
+                self.finish_placement_successfully(
+                    returned_home=False,
+                    warning='Probe was placed, but MoveIt rejected the return-home goal.',
+                )
+                return
+            if expected_stage == 'move_base_box_drop':
+                self._hold_closed_after_transport_failure(
+                    'MoveIt rejected the motion to the base-box drop posture.'
+                )
+                return
+            if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
+                self._hold_closed_after_transport_failure(
+                    'MoveIt rejected the held-probe motion to pick_home.'
+                )
+                return
             self.reset_sequence(f'MoveIt rejected goal during stage {expected_stage}.')
             return
         self._active_move_goal_handle = goal_handle
@@ -5189,10 +6238,44 @@ class VisionGraspNode(Node):
         try:
             result_wrap = future.result()
         except Exception as exc:
+            self._clear_arm_motion_confirmation()
+            if expected_stage == 'move_pick_home_after_place':
+                self.finish_placement_successfully(
+                    returned_home=False,
+                    warning=f'Probe was placed, but the return-home result was unavailable: {exc}',
+                )
+                return
+            if expected_stage == 'move_base_box_drop' or (
+                expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp
+            ):
+                self._hold_closed_after_transport_failure(
+                    f'MoveIt held-probe transport result was unavailable: {exc}'
+                )
+                return
             self.reset_sequence(f'MoveIt result failed: {exc}')
             return
         self._active_move_goal_handle = None
         if result_wrap.status != GoalStatus.STATUS_SUCCEEDED:
+            self._clear_arm_motion_confirmation()
+            if expected_stage == 'move_pick_home_after_place':
+                self.finish_placement_successfully(
+                    returned_home=False,
+                    warning=(
+                        'Probe was placed, but the empty-arm return to pick_home failed '
+                        f'with status {result_wrap.status}.'
+                    ),
+                )
+                return
+            if expected_stage == 'move_base_box_drop':
+                self._hold_closed_after_transport_failure(
+                    f'MoveIt motion to the base-box drop posture failed with status {result_wrap.status}.'
+                )
+                return
+            if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
+                self._hold_closed_after_transport_failure(
+                    f'MoveIt held-probe motion to pick_home failed with status {result_wrap.status}.'
+                )
+                return
             if expected_stage == 'move_post_grasp_lift':
                 requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
                 if self._retry_post_grasp_lift(
@@ -5205,12 +6288,21 @@ class VisionGraspNode(Node):
                     f'after {self._post_grasp_lift_retry_count} retries.'
                 )
                 return
-            if expected_stage == 'move_pre_grasp' and self.pregrasp_finalize_even_if_moveit_silent:
+            if (
+                expected_stage == 'move_pre_grasp'
+                and self.pregrasp_finalize_even_if_moveit_silent
+                and not self.arm_require_feedback_for_completion
+            ):
                 _safe_ros_log(self.get_logger(), "warning", f'MoveIt pre-grasp returned status {result_wrap.status}; finalizing from current/locked target instead of restarting.')
                 self.handle_pregrasp_arrival()
                 return
             self.reset_sequence(f'MoveIt motion failed with status {result_wrap.status} at {expected_stage}.')
             return
+        self._start_arm_motion_confirmation(expected_stage, expected_seq)
+        return
+
+    def _handle_confirmed_arm_motion(self, expected_stage: str) -> None:
+        """Advance the state machine only after action and measured-state success."""
         if expected_stage == 'move_pre_grasp':
             self.handle_pregrasp_arrival()
 
@@ -5284,8 +6376,54 @@ class VisionGraspNode(Node):
         elif expected_stage == 'move_cartesian_retreat':
             self._do_joint_home()
 
-        elif expected_stage in ('move_retreat', 'move_retreat_home', 'move_pick_home'):
+        elif expected_stage == 'move_pick_home':
+            if self.place_in_base_box_after_grasp:
+                self.send_base_box_drop_closed()
+            else:
+                self.finish_successfully()
+
+        elif expected_stage == 'move_base_box_drop':
+            self.release_probe_in_base_box()
+
+        elif expected_stage == 'move_pick_home_after_place':
+            self.finish_placement_successfully(returned_home=True)
+
+        elif expected_stage in ('move_retreat', 'move_retreat_home'):
             self.finish_successfully()
+
+    def finish_placement_successfully(
+        self,
+        returned_home: bool,
+        warning: Optional[str] = None,
+    ) -> None:
+        """Mark the pick-and-place task complete after the probe was released."""
+        self._remove_post_grasp_collision_objects()
+        if warning:
+            _safe_ros_log(self.get_logger(), "warning", warning)
+        _safe_ros_log(self.get_logger(), "info", 'Probe placement finished successfully. '
+            f'Probe is in the rover base box; returned_home={returned_home}.')
+
+        self.task_complete = True
+        self.holding_object = False
+        self.success_until_sec = self._now_sec() + self.success_lockout_sec
+        self.pending_replan_after_motion = False
+        self.replan_count = 0
+        self._clear_target_stability_history()
+
+        if self.clear_target_after_success:
+            self.current_target_point_base = None
+            self.pre_grasp_pose = None
+            self.grasp_pose = None
+            self.retreat_pose = None
+
+        if not self.auto_restart_after_success:
+            self.busy = True
+            self.sequence_stage = 'done_placed'
+        else:
+            self.busy = False
+            self.sequence_stage = 'idle'
+
+        self.publish_markers()
 
     def finish_successfully(self) -> None:
         """
@@ -5304,7 +6442,7 @@ class VisionGraspNode(Node):
         self.success_until_sec = self._now_sec() + self.success_lockout_sec
         self.pending_replan_after_motion = False
         self.replan_count = 0
-        self.target_history.clear()
+        self._clear_target_stability_history()
 
         if self.clear_target_after_success:
             self.current_target_point_base = None
@@ -5335,6 +6473,10 @@ class VisionGraspNode(Node):
         arr.markers.append(self.make_deleteall_marker())
 
         marker_id = 1
+        if self.base_box_drop_marker_enabled and self._base_box_drop_pose_config_valid():
+            drop_markers = self.make_base_box_drop_markers(marker_id, now)
+            arr.markers.extend(drop_markers)
+            marker_id += len(drop_markers)
         if self.current_target_point_base is not None:
             arr.markers.append(self.make_sphere_marker(marker_id, self.marker_frame, now, self.current_target_point_base, 1.0, 0.9, 0.1, 0.95, 'vision_target'))
             marker_id += 1
@@ -5452,18 +6594,29 @@ class VisionGraspNode(Node):
         m.lifetime = Duration(sec=0, nanosec=0)
         return m
 
-    def make_pose_axes_markers(self, marker_id: int, frame: str, stamp, pose: PoseStamped) -> List[Marker]:
+    def make_pose_axes_markers(
+        self,
+        marker_id: int,
+        frame: str,
+        stamp,
+        pose: PoseStamped,
+        namespace_prefix: str = 'object_pose',
+        axis_length: Optional[float] = None,
+    ) -> List[Marker]:
         origin = np.array([
             float(pose.pose.position.x),
             float(pose.pose.position.y),
             float(pose.pose.position.z),
         ], dtype=np.float64)
         R = quat_to_matrix(pose.pose.orientation)
-        axis_len = max(float(self.object_pose_axis_length_m), float(self.marker_scale) * 2.0)
+        axis_len = max(
+            float(self.object_pose_axis_length_m) if axis_length is None else float(axis_length),
+            float(self.marker_scale) * 2.0,
+        )
         specs = [
-            ('object_pose_x', 1.0, 0.2, 0.2, R[:, 0]),
-            ('object_pose_y', 0.2, 1.0, 0.2, R[:, 1]),
-            ('object_pose_z', 0.2, 0.6, 1.0, R[:, 2]),
+            (f'{namespace_prefix}_x', 1.0, 0.2, 0.2, R[:, 0]),
+            (f'{namespace_prefix}_y', 0.2, 1.0, 0.2, R[:, 1]),
+            (f'{namespace_prefix}_z', 0.2, 0.6, 1.0, R[:, 2]),
         ]
         markers: List[Marker] = []
         for idx, (ns, r, g, b, axis) in enumerate(specs):
@@ -5487,6 +6640,51 @@ class VisionGraspNode(Node):
             m.lifetime = Duration(sec=0, nanosec=0)
             markers.append(m)
         return markers
+
+    def make_base_box_drop_markers(self, marker_id: int, stamp) -> List[Marker]:
+        """Show the configured release point and its gripper-link XYZ axes."""
+        pose = self.get_base_box_drop_pose()
+        point = Marker()
+        point.header.frame_id = pose.header.frame_id
+        point.header.stamp = stamp
+        point.ns = 'base_box_drop_point'
+        point.id = marker_id
+        point.type = Marker.SPHERE
+        point.action = Marker.ADD
+        point.pose = pose.pose
+        point.scale.x = self.base_box_drop_marker_scale_m
+        point.scale.y = self.base_box_drop_marker_scale_m
+        point.scale.z = self.base_box_drop_marker_scale_m
+        point.color = ColorRGBA(r=0.95, g=0.25, b=0.95, a=0.85)
+        point.lifetime = Duration(sec=0, nanosec=0)
+
+        axes = self.make_pose_axes_markers(
+            marker_id + 1,
+            pose.header.frame_id,
+            stamp,
+            pose,
+            namespace_prefix='base_box_drop',
+            axis_length=self.base_box_drop_marker_axes_length_m,
+        )
+
+        label = Marker()
+        label.header.frame_id = pose.header.frame_id
+        label.header.stamp = stamp
+        label.ns = 'base_box_drop_label'
+        label.id = marker_id + 4
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position = Point(
+            x=pose.pose.position.x,
+            y=pose.pose.position.y,
+            z=pose.pose.position.z + self.base_box_drop_marker_scale_m,
+        )
+        label.pose.orientation.w = 1.0
+        label.scale.z = max(0.025, self.base_box_drop_marker_scale_m * 0.65)
+        label.color = ColorRGBA(r=1.0, g=0.75, b=1.0, a=0.95)
+        label.text = 'BASE BOX DROP'
+        label.lifetime = Duration(sec=0, nanosec=0)
+        return [point, *axes, label]
 
     def make_camera_frustum_marker(self, marker_id: int, frame: str, stamp) -> Optional[Marker]:
         fx = float(self.camera_info.k[0])
