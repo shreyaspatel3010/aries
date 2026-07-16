@@ -5,6 +5,11 @@
 # max_velocity tuned for igus Rebel 6DOF with JOINT_VELOCITY_SCALE=1.0:
 #   jog% = vel_rad * 57.3  ->  at 1.5 rad/s: jog = 85.9%  (leaves 14% for P corrections)
 #   robot hardware max ~100 deg/s = 1.745 rad/s; 1.5 rad/s gives 86% of max, safe headroom.
+# How long the planning scene monitor waits for TF when caching link poses for
+# the octomap self-filter. The default 0.05s misses frames when the sim runs
+# below real time, which leaves robot links unfiltered in the octomap.
+shape_transform_cache_lookup_wait_time: 0.3
+
 joint_limits:
   joint1:
     has_velocity_limits: true

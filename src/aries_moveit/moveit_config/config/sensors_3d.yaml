@@ -16,7 +16,9 @@ gripper_camera_depth:
   near_clipping_plane_distance: 0.10
   far_clipping_plane_distance: 2.50
   shadow_threshold: 0.20
-  padding_scale: 1.0
-  padding_offset: 0.02
+  # Generous padding: the mask must still cover the gripper while the arm is
+  # moving, when TF lags the rendered depth frame slightly.
+  padding_scale: 1.2
+  padding_offset: 0.04
   max_update_rate: 5.0
   filtered_cloud_topic: /move_group/gripper_camera_filtered_cloud

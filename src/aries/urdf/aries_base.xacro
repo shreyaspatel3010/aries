@@ -70,18 +70,15 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/base_link_v2.stl" />
+                <mesh filename="${mesh_location}/base_link_v3.glb" />
             </geometry>
-            <material
-                name="">
-                <color rgba="1 1 1 1" />
-            </material>
+            
         </visual>
         <collision>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/base_link_v2.stl" />
+                <mesh filename="${mesh_location}/base_link_v3.stl" />
             </geometry>
         </collision>
     </link>

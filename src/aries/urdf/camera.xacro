@@ -23,8 +23,9 @@
             <material name="red" />
         </visual>
         <collision>
+            <origin xyz="-0.0126 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/d435.stl"/>
+                <box size="0.0252 0.090 0.025"/>
             </geometry>
         </collision>
         <xacro:box_inertia m="0.1" l="${camera_length}" w="${camera_width}" h="${camera_height}"

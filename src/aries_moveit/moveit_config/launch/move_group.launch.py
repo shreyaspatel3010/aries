@@ -322,7 +322,19 @@ def opaque_func(context, *args, **kwargs):
         parameters=rviz_parameters,
     )
     
-    return [
+    # One-shot: after move_group is up, allow <octomap> collisions for the
+    # rover's ground-contact links (wheels stand on the mapped floor) and
+    # clear voxels inserted before TF/self-filter were ready.
+    octomap_scene_setup_node = Node(
+        package="aries_moveit",
+        executable="octomap_scene_setup.py",
+        name="octomap_scene_setup",
+        namespace=namespace,
+        parameters=[{"use_sim_time": use_sim_time}],
+        output="screen",
+    )
+
+    entities = [
         move_group_node,
         servo_node,
         servo_collision_guard_node,
@@ -333,6 +345,9 @@ def opaque_func(context, *args, **kwargs):
         gripper_arc_visualizer_node,
         launch_rviz
     ]
+    if enable_depth_sensor:
+        entities.append(octomap_scene_setup_node)
+    return entities
 
 
 def generate_launch_description():

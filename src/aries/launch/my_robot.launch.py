@@ -213,14 +213,10 @@ def generate_launch_description():
         ]
     )
 
-    # Publish wheel joint states (not controlled by ros2_control)
-    wheel_joint_publisher_node = Node(
-        package='aries_moveit',
-        executable='publish_wheel_joints.py',
-        name='wheel_joint_publisher',
-        output='screen',
-        parameters=[{'use_sim_time': use_sim_time}]
-    )
+    # Rover wheel/rocker joint states come from the Gazebo JointStatePublisher
+    # plugin via the gz bridge (real physics values, sim-time stamps). Do not
+    # run publish_wheel_joints.py here: its zero-value, potentially wall-clock
+    # stamped messages corrupt TF and break the MoveIt octomap self-filter.
 
     # MoveIt move_group for arm control
     move_group_launch = IncludeLaunchDescription(
@@ -282,7 +278,6 @@ def generate_launch_description():
         spawn_robot_node,
         parameter_bridge_node,
         virtual_differential_node,
-        wheel_joint_publisher_node,
         move_group_launch,
         delay_controllers_after_spawn,  # Controllers spawn after robot spawns
     ])

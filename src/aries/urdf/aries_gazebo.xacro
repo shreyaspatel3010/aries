@@ -4,7 +4,7 @@
 
   <!-- Gazebo Materials -->
   <gazebo reference="base_link">
-    <material>Gazebo/Gray</material>
+ 
     <mu1>0.2</mu1>
     <mu2>0.2</mu2>
     <kp>1000000.0</kp>
@@ -53,7 +53,7 @@
   </gazebo>
   
   <gazebo reference="L_1_Wheel_Link">
-    <material>Gazebo/Black</material>
+   
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>
@@ -64,7 +64,7 @@
   </gazebo>
   
   <gazebo reference="L_2_Wheel_Link">
-    <material>Gazebo/Black</material>
+    
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>
@@ -75,7 +75,7 @@
   </gazebo>
   
   <gazebo reference="L_3_Wheel_Link">
-    <material>Gazebo/Black</material>
+    
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>
@@ -86,7 +86,7 @@
   </gazebo>
   
   <gazebo reference="R_1_Wheel_Link">
-    <material>Gazebo/Black</material>
+    
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>
@@ -97,7 +97,7 @@
   </gazebo>
   
   <gazebo reference="R_2_Wheel_Link">
-    <material>Gazebo/Black</material>
+    
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>
@@ -108,7 +108,7 @@
   </gazebo>
   
   <gazebo reference="R_3_Wheel_Link">
-    <material>Gazebo/Black</material>
+    
     <mu1>1.4</mu1>
     <mu2>0.35</mu2>
     <kp>1000000.0</kp>

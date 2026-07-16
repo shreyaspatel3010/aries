@@ -58,15 +58,15 @@
         <visual>
             <origin xyz="0 0 0" rpy="${-PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/L_1_Wheel_Link.STL"/>
+                <mesh filename="${mesh_location}/L_1_Wheel_Link_v2.glb"/>
             </geometry>
-            <material name="blue"/>
+            
         </visual>
         
         <collision>
-            <origin xyz="0 -0.035 0" rpy="${PI/2} 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+                <mesh filename="${mesh_location}/L_1_Wheel_Link_v2.stl"/>
             </geometry>
         </collision>
     </link>
@@ -98,14 +98,14 @@
         <visual>
             <origin xyz="0 0 0" rpy="${-PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/L_2_Wheel_Link.STL"/>
+                <mesh filename="${mesh_location}/L_2_Wheel_Link_v2.glb"/>
             </geometry>
-            <material name="blue"/>
+           
         </visual>
         <collision>
-            <origin xyz="0 -0.035 0" rpy="${PI/2} 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+                 <mesh filename="${mesh_location}/L_2_Wheel_Link_v2.stl"/>
             </geometry>
         </collision>
     </link>
@@ -134,14 +134,14 @@
         <visual>
             <origin xyz="0 0 0" rpy="${-PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/L_3_Wheel_Link.STL"/>
+                <mesh filename="${mesh_location}/L_3_Wheel_Link_v2.glb"/>
             </geometry>
-            <material name="blue"/>
+            
         </visual>
         <collision>
-            <origin xyz="0 -0.035 0" rpy="${PI/2} 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+                <mesh filename="${mesh_location}/L_3_Wheel_Link_v2.stl"/>
             </geometry>
         </collision>
     </link>
