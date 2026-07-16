@@ -24,6 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
+        DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
 
         DeclareLaunchArgument("start_rover", default_value="true"),
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto", choices=["auto", "odrive", "mock_hardware"]),
@@ -70,6 +71,7 @@ def generate_launch_description():
                 "serial_port": LaunchConfiguration("serial_port"),
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
+                "enable_depth_sensor": LaunchConfiguration("enable_depth_sensor"),
             }.items(),
         ),
 

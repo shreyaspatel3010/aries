@@ -171,6 +171,7 @@ def launch_setup(context, *args, **kwargs):
     use_gui = LaunchConfiguration("use_gui").perform(context)
     suppress_rebel_logs = LaunchConfiguration("suppress_rebel_logs").perform(context).lower() in ("1", "true", "yes", "on")
     suppress_moveit_execution_logs = LaunchConfiguration("suppress_moveit_execution_logs").perform(context).lower() in ("1", "true", "yes", "on")
+    enable_depth_sensor = LaunchConfiguration("enable_depth_sensor").perform(context).lower() in ("1", "true", "yes", "on")
 
     if arm_hardware_protocol == "auto":
         try:
@@ -206,6 +207,14 @@ def launch_setup(context, *args, **kwargs):
     kinematics_config = load_yaml(Path(kinematics_file.perform(context)))
     joint_limits_config = load_yaml(Path(joint_limits_file.perform(context)))
     ompl_config = load_yaml(Path(ompl_file.perform(context)))
+
+    if enable_depth_sensor:
+        sensors_3d_file = PathJoinSubstitution(
+            [FindPackageShare("aries_moveit"), "config", "sensors_3d.yaml"]
+        )
+        sensor_config = load_yaml(Path(sensors_3d_file.perform(context)))
+    else:
+        sensor_config = {"sensors": []}
 
     if "move_group" in ompl_config:
         ompl_config.update(ompl_config.pop("move_group"))
@@ -368,6 +377,7 @@ def launch_setup(context, *args, **kwargs):
         # At 100% it closes in ~0.2 s (limited by physical servo speed ~0.45 m/s).
         "default_velocity_scaling_factor": 1.0,
         "default_acceleration_scaling_factor": 1.0,
+        **sensor_config,
         **ompl_planning_yaml,
     }
 
@@ -554,6 +564,7 @@ def generate_launch_description():
             DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00", description="USB-serial port for the Teensy gripper controller"),
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),
+            DeclareLaunchArgument("enable_depth_sensor", default_value="true", description="Populate MoveIt's Octomap from the gripper depth camera"),
             OpaqueFunction(function=launch_setup),
         ]
     )

@@ -32,6 +32,9 @@ def opaque_func(context, *args, **kwargs):
     joy_layout = LaunchConfiguration("joy_layout")
     joy_dev = LaunchConfiguration("joy_dev")
     joystick_control_mode = LaunchConfiguration("joystick_control_mode")
+    enable_depth_sensor = LaunchConfiguration("enable_depth_sensor").perform(context).lower() in (
+        "1", "true", "yes", "on"
+    )
     servo_joystick_condition = IfCondition(PythonExpression([
         "'", use_joystick, "' == 'true' and '", joystick_control_mode, "' == 'servo'"
     ]))
@@ -131,11 +134,13 @@ def opaque_func(context, *args, **kwargs):
     kinematics_config = load_yaml(Path(robot_description_kinematics_file.perform(context)))
     joint_limits_config = load_yaml(Path(joint_limits_file.perform(context)))
 
-    sensor_manager_yaml = {
-        'moveit_sensor_manager': 'moveit_msgs/MoveItSensorManager',
-        'sensor_manager': '',
-        'octomap_resolution': 0.0,
-    }
+    if enable_depth_sensor:
+        sensors_3d_file = PathJoinSubstitution(
+            [FindPackageShare("aries_moveit"), "config", "sensors_3d.yaml"]
+        )
+        sensor_manager_yaml = load_yaml(Path(sensors_3d_file.perform(context)))
+    else:
+        sensor_manager_yaml = {"sensors": []}
 
     moveit_args_not_concatenated = [
         {"robot_description": ParameterValue(robot_description.perform(context), value_type=str)},
@@ -362,6 +367,11 @@ def generate_launch_description():
         choices=["move_group", "servo"],
         description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps",
     )
+    enable_depth_sensor_arg = DeclareLaunchArgument(
+        "enable_depth_sensor",
+        default_value="true",
+        description="Populate MoveIt's Octomap from the gripper depth camera",
+    )
     
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', 
@@ -384,6 +394,7 @@ def generate_launch_description():
     ld.add_action(joy_layout_arg)
     ld.add_action(joy_dev_arg)
     ld.add_action(joystick_control_mode_arg)
+    ld.add_action(enable_depth_sensor_arg)
     ld.add_action(hardware_protocol_arg)
 
     ld.add_action(OpaqueFunction(function=opaque_func))

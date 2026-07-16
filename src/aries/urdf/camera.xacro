@@ -18,13 +18,13 @@
     <link name="camera_link">
         <visual>
             <geometry>
-                <mesh filename="${mesh_location}/d435.dae"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
             <material name="red" />
         </visual>
         <collision>
             <geometry>
-                <mesh filename="${mesh_location}/d435.dae"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
         </collision>
         <xacro:box_inertia m="0.1" l="${camera_length}" w="${camera_width}" h="${camera_height}"

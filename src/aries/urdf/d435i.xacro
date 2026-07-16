@@ -45,14 +45,13 @@
         <visual>
             
             <geometry>
-                <mesh filename="${mesh_location}/d435.dae"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
             <material name="camera_aluminum"/>
         </visual>
         <collision>
-            <origin xyz="0 -0.0175 0" rpy="0 0 0"/>
             <geometry>
-                <box size="0.02505 0.090 0.025"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
         </collision>
         <inertial>

@@ -27,8 +27,11 @@ def _is_realsense_connected():
 
 def launch_setup(context, *args, **kwargs):
     actions = []
+    depth_sensor_mode = LaunchConfiguration("enable_depth_sensor").perform(context).lower()
+    camera_connected = _is_realsense_connected()
+    enable_depth_sensor = camera_connected if depth_sensor_mode == "auto" else depth_sensor_mode == "true"
 
-    if _is_realsense_connected():
+    if enable_depth_sensor:
         actions.append(
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -89,6 +92,7 @@ def launch_setup(context, *args, **kwargs):
                 "serial_port": LaunchConfiguration("serial_port"),
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
+                "enable_depth_sensor": "true" if enable_depth_sensor else "false",
             }.items(),
         )
     )
@@ -138,6 +142,12 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="false"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_depth_sensor",
+            default_value="auto",
+            choices=["auto", "true", "false"],
+            description="Auto-detect, force-enable, or disable the gripper RealSense and MoveIt Octomap input",
+        ),
 
         DeclareLaunchArgument("use_rover_drive", default_value="false"),
         DeclareLaunchArgument("use_rover_joystick", default_value="true"),

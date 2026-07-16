@@ -49,16 +49,15 @@
     <link name="gripper_camera_link">
         <visual>
             <geometry>
-                <mesh filename="${mesh_location}/d435.dae"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
             <material name="camera_aluminum">
                 <color rgba="0.5 0.5 0.5 1"/>
             </material>
         </visual>
         <collision>
-            <origin xyz="0 -0.0175 0" rpy="0 0 0"/>
             <geometry>
-                <box size="0.02505 0.090 0.025"/>
+                <mesh filename="${mesh_location}/d435.stl"/>
             </geometry>
         </collision>
         <inertial>
