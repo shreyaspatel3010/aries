@@ -5,13 +5,20 @@ Vision grasp node with RViz markers and adaptive gripper sizing.
 New gripper: gripper_gear_left_joint (revolute), open=-1.57 rad, closed=0.07 rad.
 The jaw gap varies with joint angle. This node estimates the 3D object width
 from the YOLO segmentation mask + depth image and computes the optimal close
-angle per object using the calibrated linear gap model:
-    gap_m = gripper_gap_at_zero_rad - gripper_gap_slope * q
-    (calibrated: q=0.07 -> gap=38.6 mm, q=0.0 -> gap=178.6 mm)
+angle per object using the calibrated four-bar gap table in
+``aries_vision_grasp.fourbar`` (measured from gripper_new.xacro +
+gripper_bucket.stl; e.g. a 45 mm probe needs q ≈ -0.20 rad).
+
+YOLO inference runs in a background thread (``aries_vision_grasp.inference``)
+so the rclpy executor — gripper ticks, action results, TF — is never blocked
+by the model. Each detection is processed against the exact color/depth frame
+pair that inference saw, with TF looked up at the depth frame's stamp.
 """
 
 import math
 import os
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -20,7 +27,9 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
@@ -46,121 +55,41 @@ from visualization_msgs.msg import Marker, MarkerArray
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-def _safe_ros_log(logger, level, msg, *fmt_args, **kwargs):
-    """Allow printf-style ROS log calls without crashing rclpy."""
-    text = msg
-    if fmt_args:
-        try:
-            text = str(msg) % tuple(fmt_args)
-        except Exception:
-            text = " ".join([str(msg), *(str(a) for a in fmt_args)])
-
-    try:
-        log_fn = getattr(logger, level, None) or getattr(logger, "info")
-        log_fn(str(text), **kwargs)
-    except TypeError:
-        try:
-            log_fn(str(text))
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
+from aries_vision_grasp import fourbar, stages
+from aries_vision_grasp.geometry import (
+    CameraOffsetEstimate,
+    estimate_stationary_target_camera_offset,
+    matrix_to_quat,
+    normalize,
+    quat_to_matrix,
+    quaternion_distance_rad,
+    quaternion_rotation_vector_error,
+    rpy_to_quat,
+    wrap_to_pi,
+)
+from aries_vision_grasp.inference import YoloWorker, load_yolo_model
 
 try:
-    from ultralytics import YOLO
+    import ultralytics  # noqa: F401
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
 
 
-def quat_to_matrix(q: Quaternion) -> np.ndarray:
-    x, y, z, w = q.x, q.y, q.z, q.w
-    xx, yy, zz = x * x, y * y, z * z
-    xy, xz, yz = x * y, x * z, y * z
-    wx, wy, wz = w * x, w * y, w * z
-    return np.array([
-        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
-        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
-        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
-    ], dtype=np.float64)
+@dataclass
+class FrameSnapshot:
+    """A color/depth frame pair captured together for one inference pass.
 
-
-def rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:
-    cr = math.cos(roll * 0.5)
-    sr = math.sin(roll * 0.5)
-    cp = math.cos(pitch * 0.5)
-    sp = math.sin(pitch * 0.5)
-    cy = math.cos(yaw * 0.5)
-    sy = math.sin(yaw * 0.5)
-    q = Quaternion()
-    q.w = cr * cp * cy + sr * sp * sy
-    q.x = sr * cp * cy - cr * sp * sy
-    q.y = cr * sp * cy + sr * cp * sy
-    q.z = cr * cp * sy - sr * sp * cy
-    return q
-
-
-def normalize(v: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(v)
-    return v if n < 1e-9 else v / n
-
-
-def wrap_to_pi(angle: float) -> float:
-    return math.atan2(math.sin(angle), math.cos(angle))
-
-
-def duration_to_sec(duration: Duration) -> float:
-    return float(duration.sec) + float(duration.nanosec) * 1e-9
-
-
-def sec_to_duration(seconds: float) -> Duration:
-    seconds = max(0.0, float(seconds))
-    sec = int(math.floor(seconds))
-    nanosec = int(round((seconds - sec) * 1e9))
-    if nanosec >= 1000000000:
-        sec += 1
-        nanosec -= 1000000000
-    return Duration(sec=sec, nanosec=nanosec)
-
-
-def robot_trajectory_duration_sec(robot_trajectory) -> float:
-    joint_traj = robot_trajectory.joint_trajectory
-    if not joint_traj.points:
-        return 0.0
-    return duration_to_sec(joint_traj.points[-1].time_from_start)
-
-
-def matrix_to_quat(R: np.ndarray) -> Quaternion:
-    """Convert a 3×3 rotation matrix to a ROS Quaternion (Shepperd method)."""
-    trace = R[0, 0] + R[1, 1] + R[2, 2]
-    q = Quaternion()
-    if trace > 0:
-        s = 0.5 / math.sqrt(trace + 1.0)
-        q.w = 0.25 / s
-        q.x = (R[2, 1] - R[1, 2]) * s
-        q.y = (R[0, 2] - R[2, 0]) * s
-        q.z = (R[1, 0] - R[0, 1]) * s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-        q.w = (R[2, 1] - R[1, 2]) / s
-        q.x = 0.25 * s
-        q.y = (R[0, 1] + R[1, 0]) / s
-        q.z = (R[0, 2] + R[2, 0]) / s
-    elif R[1, 1] > R[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-        q.w = (R[0, 2] - R[2, 0]) / s
-        q.x = (R[0, 1] + R[1, 0]) / s
-        q.y = 0.25 * s
-        q.z = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-        q.w = (R[1, 0] - R[0, 1]) / s
-        q.x = (R[0, 2] + R[2, 0]) / s
-        q.y = (R[1, 2] + R[2, 1]) / s
-        q.z = 0.25 * s
-    return q
+    Detection results are always processed against the frames inference
+    actually saw (not whatever arrived later), and TF is looked up at the
+    depth stamp, so a moving wrist camera cannot skew the 3D target.
+    """
+    color: np.ndarray
+    color_stamp_sec: float
+    depth: np.ndarray
+    depth_stamp_sec: float
+    depth_frame: str
+    stamp: rclpy.time.Time = field(default=None)
 
 
 class VisionGraspNode(Node):
@@ -184,6 +113,11 @@ class VisionGraspNode(Node):
         # image map 1-to-1 onto depth pixels.  Set False in simulation where the Gazebo
         # sensors already share the same optical frame.
         self.declare_parameter('use_aligned_depth', True)
+        # A detection is processed only when its color and depth frames were
+        # captured within this window of each other. On a moving wrist camera
+        # a mismatched pair projects the mask onto the wrong depth pixels.
+        self.declare_parameter('max_color_depth_stamp_gap_sec', 0.15)
+        self.declare_parameter('sensor_sync_queue_size', 20)
 
         # Close-range tracking:
         # YOLO often fails when the probe is very close, partially cropped,
@@ -216,7 +150,6 @@ class VisionGraspNode(Node):
 
         # Grasp distances
         self.declare_parameter('pre_grasp_distance', 0.15)
-        self.declare_parameter('surface_offset', 0.02)
         # Positive value means insert downward along the approach direction
         # below the detected probe surface.
         self.declare_parameter('grasp_depth_below_surface_m', 0.018)
@@ -235,6 +168,18 @@ class VisionGraspNode(Node):
         # Pre-grasp uses a large position sphere so IK can satisfy position + orientation together.
         # This prevents joint 6 from arriving in a random orientation before the Cartesian stroke.
         self.declare_parameter('pre_grasp_position_tol', 0.05)
+        # Raw detection calibration in depth-camera axes. Applying this before
+        # TF keeps the correction camera-relative as the wrist camera moves.
+        self.declare_parameter('grasp_target_offset_camera_xyz_m', [0.0, 0.0, 0.0])
+        self.declare_parameter('auto_calibrate_camera_offset_enabled', False)
+        self.declare_parameter('auto_calibrate_camera_offset_min_samples', 10)
+        self.declare_parameter('auto_calibrate_camera_offset_min_rotation_deg', 12.0)
+        self.declare_parameter('auto_calibrate_camera_offset_max_condition', 250.0)
+        self.declare_parameter('auto_calibrate_camera_offset_max_m', 0.060)
+        self.declare_parameter('auto_calibrate_camera_offset_max_rms_m', 0.012)
+        self.declare_parameter('auto_calibrate_camera_offset_min_improvement_m', 0.003)
+        self.declare_parameter('auto_calibrate_camera_offset_max_step_m', 0.015)
+        self.declare_parameter('auto_calibrate_camera_offset_max_samples', 80)
         # Small calibrated target bias in planning-frame axes. Use this for
         # repeatable rover-front/left/up camera calibration errors.
         self.declare_parameter('grasp_target_bias_base_x_m', 0.0)
@@ -297,15 +242,10 @@ class VisionGraspNode(Node):
         self.declare_parameter('gripper_require_action_success_for_completion', True)
 
         # Adaptive gripper sizing: estimate object 3D width from detection mask
-        # and compute the optimal close angle for each detected object.
-        # Gap model (linear, calibrated near q=0):
-        #   gap_m = gripper_gap_at_zero_rad - gripper_gap_slope * q
-        # Inverse: q = (gripper_gap_at_zero_rad - gap_m) / gripper_gap_slope
+        # and compute the optimal close angle for each detected object using
+        # the calibrated four-bar gap table (aries_vision_grasp.fourbar).
         self.declare_parameter('adaptive_gripper_enabled', True)
-        self.declare_parameter('gripper_gap_at_zero_rad', 0.1786)
-        self.declare_parameter('gripper_gap_slope', 2.0)
         self.declare_parameter('object_width_safety_margin_m', 0.015)
-        self.declare_parameter('adaptive_preclose_fraction', 0.5)
         self.declare_parameter('adaptive_gripper_min_width_m', 0.008)
         self.declare_parameter('adaptive_gripper_max_width_m', 0.15)
         self.declare_parameter('adaptive_gripper_width_percentile', 30.0)
@@ -331,31 +271,14 @@ class VisionGraspNode(Node):
         self.declare_parameter('hold_after_close_no_motion', True)
 
         # Post-grasp transport supervisor.
-        # After the gripper has closed, do NOT open it.  First lift the current
-        # tool pose straight up in the planning frame, then send only arm joints
-        # to the pick_home posture.  The gripper joint is intentionally excluded
-        # from pick_home so the object stays grasped.
+        # After the gripper has closed, do NOT open it: attach the probe mesh
+        # to the planning scene and send only arm joints to the pick_home
+        # posture through MoveGroup collision checking.  The gripper joint is
+        # intentionally excluded from pick_home so the object stays grasped.
+        # (The old segmented Cartesian vertical-lift subsystem and its
+        # post_grasp_lift_* tuning parameters were removed as dead code; see
+        # git history if it ever needs to be resurrected.)
         self.declare_parameter('post_grasp_lift_then_pick_home', True)
-        self.declare_parameter('post_grasp_lift_distance_m', 0.090)
-        self.declare_parameter('post_grasp_lift_speed_scale', 0.06)
-        self.declare_parameter('post_grasp_lift_segment_m', 0.040)
-        self.declare_parameter('post_grasp_lift_min_fraction', 0.05)
-        self.declare_parameter('post_grasp_lift_avoid_collisions', True)
-        self.declare_parameter('post_grasp_lift_escape_distance_m', 0.025)
-        self.declare_parameter('post_grasp_lift_waypoint_step_m', 0.003)
-        self.declare_parameter('post_grasp_lift_min_progress_m', 0.002)
-        self.declare_parameter('post_grasp_lift_max_retries', 6)
-        self.declare_parameter('post_grasp_lift_goal_position_tol_m', 0.004)
-        self.declare_parameter('post_grasp_lift_path_xy_tolerance_m', 0.012)
-        self.declare_parameter('post_grasp_lift_orientation_tol_rad', 0.12)
-        # Dense IK sampling and jump guard for Cartesian lift.
-        # jump_threshold=0.5 rad prevents the IK solver from leaping to a different arm
-        # configuration (IK branch flip) between consecutive vertical waypoints.
-        # A 2 mm step should require at most ~0.1 rad joint change; 0.5 is conservative.
-        self.declare_parameter('post_grasp_lift_jump_threshold', 0.5)
-        self.declare_parameter('post_grasp_lift_max_step_m', 0.002)
-        # After all Cartesian lift retries fail (singularity region), fall through to a
-        # direct MoveGroup joint goal to pick_home — OMPL finds a collision-free path.
         self.declare_parameter('post_grasp_planning_time_sec', 10.0)
         self.declare_parameter('pick_home_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
         self.declare_parameter('pick_home_joint_positions', [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098])
@@ -388,18 +311,11 @@ class VisionGraspNode(Node):
         self.declare_parameter('max_grasp_descent_below_target_m', 0.006)
         self.declare_parameter('min_grasp_height_above_floor_m', 0.035)
 
-        # Four-bar linkage contact point compensation.
-        # Derived from gripper_new.xacro: gear arm pivot Z=0.090 m, arm length=0.089 m,
-        # joint axis = +Y in arm_gripper_base_link (rpy = -90° -90° 0°).
-        # Z_gear_tip(q) = 0.090 + 0.089*cos(q)  → compensate as z_eff = z_ref + L*(cos(q)-cos(q_ref))
-        self.declare_parameter('gripper_contact_z_gear_arm_m', 0.089)
-        self.declare_parameter('gripper_contact_z_ref_q', 0.07)
-
-        # Exact four-bar geometry model from gripper_new.xacro + gripper_bucket.stl.
-        # This replaces the old linear gap model.  The old model incorrectly made
-        # q≈+0.068 rad for a 45 mm probe, but the real STL geometry gives almost
-        # zero jaw gap at that angle.  The correct q for ~45 mm gap is ≈ -0.20 rad.
-        self.declare_parameter('fourbar_use_urdf_geometry_model', True)
+        # Exact four-bar geometry model from gripper_new.xacro + gripper_bucket.stl
+        # (tables live in aries_vision_grasp.fourbar).  This replaced the old
+        # linear gap model, which incorrectly made q≈+0.068 rad for a 45 mm
+        # probe; the real STL geometry gives almost zero jaw gap at that angle.
+        # The correct q for a ~45 mm gap is ≈ -0.20 rad.
         self.declare_parameter('fourbar_contact_y_offset_m', 0.0259)
         self.declare_parameter('fourbar_contact_z_open_m', 0.1342)
         self.declare_parameter('fourbar_contact_z_closed_m', 0.2180)
@@ -416,10 +332,8 @@ class VisionGraspNode(Node):
         # planned contact point looks safe.
         self.declare_parameter('fourbar_ground_guard_enabled', True)
         self.declare_parameter('fourbar_bucket_tip_z_max_m', 0.275)
-        self.declare_parameter('fourbar_safe_contact_offset_z_min_m', 0.225)
-        self.declare_parameter('fourbar_ground_clearance_m', 0.035)
+        self.declare_parameter('fourbar_ground_clearance_m', 0.0)
         self.declare_parameter('floor_safe_contact_height_m', 0.060)
-        self.declare_parameter('post_grasp_min_link_z_m', 0.120)
 
         # 6D object pose tracking.
         # PCA on the masked point cloud yields a stable centroid + orientation.
@@ -500,6 +414,10 @@ class VisionGraspNode(Node):
         self.declare_parameter('gripper_confirm_timeout_sec', 12.0)
         self.declare_parameter('gripper_goal_tolerance', 0.006)
         self.declare_parameter('gripper_contact_min_position', 0.018)
+        self.declare_parameter('gripper_contact_stall_sec', 0.35)
+        self.declare_parameter('gripper_contact_position_epsilon_rad', 0.003)
+        self.declare_parameter('gripper_contact_min_closing_travel_rad', 0.20)
+        self.declare_parameter('gripper_contact_gap_tolerance_m', 0.015)
         self.declare_parameter('trust_gripper_contact_for_success', True)
         self.declare_parameter('lift_check_floor_fail_samples', 3)
         self.declare_parameter('never_open_after_contact_during_retry', True)
@@ -516,6 +434,9 @@ class VisionGraspNode(Node):
         self.declare_parameter('pregrasp_active_correction_max_cycles', 3)
         self.declare_parameter('close_in_one_go_after_pregrasp_refine', True)
         self.declare_parameter('lock_grasp_orientation_after_initial_plan', True)
+        self.declare_parameter('preserve_orientation_across_pregrasp_retries', True)
+        self.declare_parameter('pregrasp_retry_orientation_hold_sec', 120.0)
+        self.declare_parameter('pregrasp_retry_target_radius_m', 0.080)
         self.declare_parameter('fourbar_arc_guard_enabled', True)
         self.declare_parameter('fourbar_arc_sample_count', 15)
         self.declare_parameter('fourbar_open_close_guard_extra_m', 0.015)
@@ -600,6 +521,10 @@ class VisionGraspNode(Node):
         self.roi_half_size_px = int(p('roi_half_size_px').value)
         self.max_depth_m = float(p('max_depth_m').value)
         self.min_depth_m = float(p('min_depth_m').value)
+        self.max_color_depth_stamp_gap_sec = max(
+            0.0, float(p('max_color_depth_stamp_gap_sec').value)
+        )
+        self.sensor_sync_queue_size = max(2, int(p('sensor_sync_queue_size').value))
 
         self.refine_confidence_threshold = float(p('refine_confidence_threshold').value)
         self.refine_use_projection_fallback = bool(p('refine_use_projection_fallback').value)
@@ -623,7 +548,6 @@ class VisionGraspNode(Node):
         self.approach_axis_in_tool = normalize(np.array(p('approach_axis_in_tool').value, dtype=np.float64))
 
         self.pre_grasp_distance = float(p('pre_grasp_distance').value)
-        self.surface_offset = float(p('surface_offset').value)
         self.grasp_depth_below_surface_m = float(p('grasp_depth_below_surface_m').value)
         self.base_grasp_depth_below_surface_m = self.grasp_depth_below_surface_m
         self.retreat_distance = float(p('retreat_distance').value)
@@ -631,6 +555,42 @@ class VisionGraspNode(Node):
         self.use_orientation_constraint = bool(p('use_orientation_constraint').value)
         self.min_pose_z = float(p('min_pose_z').value)
         self.pre_grasp_position_tol = float(p('pre_grasp_position_tol').value)
+        camera_offset = list(p('grasp_target_offset_camera_xyz_m').value)
+        if len(camera_offset) != 3:
+            raise ValueError(
+                'grasp_target_offset_camera_xyz_m must contain exactly three values: [x, y, z].'
+            )
+        self.grasp_target_offset_in_camera = np.array(
+            [float(v) for v in camera_offset], dtype=np.float64
+        )
+        self.auto_calibrate_camera_offset_enabled = bool(
+            p('auto_calibrate_camera_offset_enabled').value
+        )
+        self.auto_calibrate_camera_offset_min_samples = max(
+            4, int(p('auto_calibrate_camera_offset_min_samples').value)
+        )
+        self.auto_calibrate_camera_offset_min_rotation_rad = math.radians(max(
+            1.0, float(p('auto_calibrate_camera_offset_min_rotation_deg').value)
+        ))
+        self.auto_calibrate_camera_offset_max_condition = max(
+            1.0, float(p('auto_calibrate_camera_offset_max_condition').value)
+        )
+        self.auto_calibrate_camera_offset_max_m = max(
+            0.001, float(p('auto_calibrate_camera_offset_max_m').value)
+        )
+        self.auto_calibrate_camera_offset_max_rms_m = max(
+            0.0005, float(p('auto_calibrate_camera_offset_max_rms_m').value)
+        )
+        self.auto_calibrate_camera_offset_min_improvement_m = max(
+            0.0, float(p('auto_calibrate_camera_offset_min_improvement_m').value)
+        )
+        self.auto_calibrate_camera_offset_max_step_m = max(
+            0.001, float(p('auto_calibrate_camera_offset_max_step_m').value)
+        )
+        self.auto_calibrate_camera_offset_max_samples = max(
+            self.auto_calibrate_camera_offset_min_samples,
+            int(p('auto_calibrate_camera_offset_max_samples').value),
+        )
         self.grasp_target_bias_in_base = np.array([
             float(p('grasp_target_bias_base_x_m').value),
             float(p('grasp_target_bias_base_y_m').value),
@@ -719,10 +679,7 @@ class VisionGraspNode(Node):
         )
 
         self.adaptive_gripper_enabled = bool(p('adaptive_gripper_enabled').value)
-        self.gripper_gap_at_zero_rad = float(p('gripper_gap_at_zero_rad').value)
-        self.gripper_gap_slope = float(p('gripper_gap_slope').value)
         self.object_width_safety_margin_m = float(p('object_width_safety_margin_m').value)
-        self.adaptive_preclose_fraction = float(p('adaptive_preclose_fraction').value)
         self.adaptive_gripper_min_width_m = float(p('adaptive_gripper_min_width_m').value)
         self.adaptive_gripper_max_width_m = float(p('adaptive_gripper_max_width_m').value)
         self.adaptive_gripper_width_percentile = float(p('adaptive_gripper_width_percentile').value)
@@ -739,20 +696,6 @@ class VisionGraspNode(Node):
         self.freeze_arm_during_gripper_enabled = bool(p('freeze_arm_during_gripper_enabled').value)
         self.hold_after_close_no_motion = bool(p('hold_after_close_no_motion').value)
         self.post_grasp_lift_then_pick_home = bool(p('post_grasp_lift_then_pick_home').value)
-        self.post_grasp_lift_distance_m = float(p('post_grasp_lift_distance_m').value)
-        self.post_grasp_lift_speed_scale = float(np.clip(float(p('post_grasp_lift_speed_scale').value), 0.01, 1.0))
-        self.post_grasp_lift_segment_m = max(0.005, float(p('post_grasp_lift_segment_m').value))
-        self.post_grasp_lift_min_fraction = float(np.clip(float(p('post_grasp_lift_min_fraction').value), 0.0, 1.0))
-        self.post_grasp_lift_avoid_collisions = bool(p('post_grasp_lift_avoid_collisions').value)
-        self.post_grasp_lift_escape_distance_m = max(0.0, float(p('post_grasp_lift_escape_distance_m').value))
-        self.post_grasp_lift_waypoint_step_m = max(0.001, float(p('post_grasp_lift_waypoint_step_m').value))
-        self.post_grasp_lift_min_progress_m = max(0.001, float(p('post_grasp_lift_min_progress_m').value))
-        self.post_grasp_lift_max_retries = max(1, int(p('post_grasp_lift_max_retries').value))
-        self.post_grasp_lift_goal_position_tol_m = max(0.001, float(p('post_grasp_lift_goal_position_tol_m').value))
-        self.post_grasp_lift_path_xy_tolerance_m = max(0.002, float(p('post_grasp_lift_path_xy_tolerance_m').value))
-        self.post_grasp_lift_orientation_tol_rad = max(0.01, float(p('post_grasp_lift_orientation_tol_rad').value))
-        self.post_grasp_lift_jump_threshold = max(0.0, float(p('post_grasp_lift_jump_threshold').value))
-        self.post_grasp_lift_max_step_m = max(0.001, float(p('post_grasp_lift_max_step_m').value))
         self.post_grasp_planning_time_sec = max(1.0, float(p('post_grasp_planning_time_sec').value))
         self.pick_home_joint_names = list(p('pick_home_joint_names').value)
         self.pick_home_joint_positions = [float(v) for v in p('pick_home_joint_positions').value]
@@ -781,16 +724,13 @@ class VisionGraspNode(Node):
             0.02, float(p('base_box_drop_marker_axes_length_m').value)
         )
         if not self._base_box_drop_pose_config_valid():
-            _safe_ros_log(self.get_logger(), "error", 'Invalid base-box pose configuration: base_box_drop_frame must be non-empty, '
+            self.get_logger().error('Invalid base-box pose configuration: base_box_drop_frame must be non-empty, '
                 'and base_box_drop_xyz/base_box_drop_rpy must each contain exactly three values. '
                 'The drop marker and pose-based placement will remain disabled.')
         self.floor_safe_grasp_enabled = bool(p('floor_safe_grasp_enabled').value)
         self.max_grasp_descent_below_target_m = float(p('max_grasp_descent_below_target_m').value)
         self.min_grasp_height_above_floor_m = float(p('min_grasp_height_above_floor_m').value)
 
-        self.gripper_contact_z_gear_arm_m = float(p('gripper_contact_z_gear_arm_m').value)
-        self.gripper_contact_z_ref_q = float(p('gripper_contact_z_ref_q').value)
-        self.fourbar_use_urdf_geometry_model = bool(p('fourbar_use_urdf_geometry_model').value)
         self.fourbar_contact_y_offset_m = float(p('fourbar_contact_y_offset_m').value)
         self.fourbar_contact_z_open_m = float(p('fourbar_contact_z_open_m').value)
         self.fourbar_contact_z_closed_m = float(p('fourbar_contact_z_closed_m').value)
@@ -800,10 +740,8 @@ class VisionGraspNode(Node):
         self.fourbar_min_arc_clearance_m = float(p('fourbar_min_arc_clearance_m').value)
         self.fourbar_ground_guard_enabled = bool(p('fourbar_ground_guard_enabled').value)
         self.fourbar_bucket_tip_z_max_m = float(p('fourbar_bucket_tip_z_max_m').value)
-        self.fourbar_safe_contact_offset_z_min_m = float(p('fourbar_safe_contact_offset_z_min_m').value)
         self.fourbar_ground_clearance_m = float(p('fourbar_ground_clearance_m').value)
         self.floor_safe_contact_height_m = float(p('floor_safe_contact_height_m').value)
-        self.post_grasp_min_link_z_m = float(p('post_grasp_min_link_z_m').value)
         self.publish_object_pose_enabled = bool(p('publish_object_pose').value)
         self.object_pose_topic = p('object_pose_topic').value
         self.object_pose_axis_length_m = float(p('object_pose_axis_length_m').value)
@@ -893,6 +831,16 @@ class VisionGraspNode(Node):
         self.gripper_confirm_timeout_sec = float(p('gripper_confirm_timeout_sec').value)
         self.gripper_goal_tolerance = float(p('gripper_goal_tolerance').value)
         self.gripper_contact_min_position = float(p('gripper_contact_min_position').value)
+        self.gripper_contact_stall_sec = max(0.0, float(p('gripper_contact_stall_sec').value))
+        self.gripper_contact_position_epsilon_rad = max(
+            0.0, float(p('gripper_contact_position_epsilon_rad').value)
+        )
+        self.gripper_contact_min_closing_travel_rad = max(
+            0.0, float(p('gripper_contact_min_closing_travel_rad').value)
+        )
+        self.gripper_contact_gap_tolerance_m = max(
+            0.0, float(p('gripper_contact_gap_tolerance_m').value)
+        )
         self.trust_gripper_contact_for_success = bool(p('trust_gripper_contact_for_success').value)
         self.lift_check_floor_fail_samples = int(p('lift_check_floor_fail_samples').value)
         self.never_open_after_contact_during_retry = bool(p('never_open_after_contact_during_retry').value)
@@ -907,6 +855,15 @@ class VisionGraspNode(Node):
         self.pregrasp_active_correction_max_cycles = int(p('pregrasp_active_correction_max_cycles').value)
         self.close_in_one_go_after_pregrasp_refine = bool(p('close_in_one_go_after_pregrasp_refine').value)
         self.lock_grasp_orientation_after_initial_plan = bool(p('lock_grasp_orientation_after_initial_plan').value)
+        self.preserve_orientation_across_pregrasp_retries = bool(
+            p('preserve_orientation_across_pregrasp_retries').value
+        )
+        self.pregrasp_retry_orientation_hold_sec = max(
+            0.0, float(p('pregrasp_retry_orientation_hold_sec').value)
+        )
+        self.pregrasp_retry_target_radius_m = max(
+            0.001, float(p('pregrasp_retry_target_radius_m').value)
+        )
         self.fourbar_arc_guard_enabled = bool(p('fourbar_arc_guard_enabled').value)
         self.fourbar_arc_sample_count = max(3, int(p('fourbar_arc_sample_count').value))
         self.fourbar_open_close_guard_extra_m = float(p('fourbar_open_close_guard_extra_m').value)
@@ -966,9 +923,28 @@ class VisionGraspNode(Node):
         self.reject_targets_below_floor = bool(p('reject_targets_below_floor').value)
 
         self.latest_color: Optional[np.ndarray] = None
+        self.latest_color_stamp: Optional[rclpy.time.Time] = None
         self.latest_depth: Optional[np.ndarray] = None
+        self.latest_depth_stamp: Optional[rclpy.time.Time] = None
         self.latest_depth_frame: Optional[str] = None
+        self._color_frame_queue = deque(maxlen=self.sensor_sync_queue_size)
+        self._depth_frame_queue = deque(maxlen=self.sensor_sync_queue_size)
+        self._last_inference_pair_key = None
+        self._camera_calibration_raw_world = deque(
+            maxlen=self.auto_calibrate_camera_offset_max_samples
+        )
+        self._camera_calibration_rotations = deque(
+            maxlen=self.auto_calibrate_camera_offset_max_samples
+        )
+        self._camera_calibration_last_raw_world: Optional[np.ndarray] = None
+        self._camera_calibration_last_rotation: Optional[np.ndarray] = None
+        self._pending_camera_offset_estimate: Optional[CameraOffsetEstimate] = None
+        self._auto_camera_calibration_applied_for_sequence = False
+        self._post_grasp_floor_active = False
+        self._post_grasp_probe_attached = False
         self.camera_info: Optional[CameraInfo] = None
+        self._yolo_worker: Optional[YoloWorker] = None
+        self._stamp_gap_warned_sec = 0.0
         self.busy = False
         self.sequence_stage = 'idle'
         self.current_target_point_base: Optional[np.ndarray] = None
@@ -984,6 +960,9 @@ class VisionGraspNode(Node):
         self.grasp_pose: Optional[PoseStamped] = None
         self.retreat_pose: Optional[PoseStamped] = None
         self.grasp_orientation: Optional[Quaternion] = None
+        self._retry_grasp_orientation: Optional[Quaternion] = None
+        self._retry_grasp_target: Optional[np.ndarray] = None
+        self._retry_grasp_orientation_until_sec: float = 0.0
         self.sequence_wrist_value: Optional[float] = None
         self.current_joint_positions: dict = {}
         self.current_joint_update_sec: dict = {}
@@ -1037,13 +1016,6 @@ class VisionGraspNode(Node):
         self.detected_object_yaw_rad: Optional[float] = None              # yaw in planning_frame
         self._lift_check_timer = None
         self._lift_check_start_sec = 0.0
-        self._post_grasp_lift_target_z: Optional[float] = None
-        self._post_grasp_lift_last_link_z: Optional[float] = None
-        self._post_grasp_lift_start_z: Optional[float] = None
-        self._post_grasp_lift_escape_z: Optional[float] = None
-        self._post_grasp_lift_requested_segment_m: Optional[float] = None
-        self._post_grasp_lift_segment_cap_m: Optional[float] = None
-        self._post_grasp_lift_retry_count: int = 0
 
         # Gripper confirmation state
         self._gripper_wait_timer = None
@@ -1052,6 +1024,9 @@ class VisionGraspNode(Node):
         self._gripper_wait_cb: Optional[Callable[[], None]] = None
         self._gripper_wait_seq: int = 0
         self._gripper_wait_stage: str = ''
+        self._gripper_wait_start_position: Optional[float] = None
+        self._gripper_wait_last_position: Optional[float] = None
+        self._gripper_wait_last_motion_sec: float = 0.0
         self._gripper_command_used_action = False
         self._gripper_action_goal_handle = None
         self._gripper_action_accepted = False
@@ -1067,6 +1042,7 @@ class VisionGraspNode(Node):
         self.preclosed_in_air = False
         self.pregrasp_correction_count = 0
         self._pregrasp_motion_start_sec = 0.0
+        self._auto_camera_calibration_applied_for_sequence = False
         self._pregrasp_watchdog_timer = None
         self._final_grasp_pose_check_timer = None
         self._final_grasp_pose_check_start_sec = 0.0
@@ -1091,10 +1067,15 @@ class VisionGraspNode(Node):
                        if use_aligned else '/gripper_camera/depth/image_rect_raw')
         info_topic  = ('/gripper_camera/color/camera_info'
                        if use_aligned else '/gripper_camera/depth/camera_info')
-        _safe_ros_log(self.get_logger(), "info", f'Depth source: {depth_topic}  |  Camera info: {info_topic}')
-        self.color_sub = self.create_subscription(Image, '/gripper_camera/color/image_raw', self.color_cb, 10)
-        self.depth_sub = self.create_subscription(Image, depth_topic, self.depth_cb, 10)
-        self.info_sub  = self.create_subscription(CameraInfo, info_topic, self.info_cb, 10)
+        self.get_logger().info(f'Depth source: {depth_topic}  |  Camera info: {info_topic}')
+        # Sensor-data QoS (best-effort, shallow queue): only the newest frame
+        # matters, and buffering ten stale images just adds latency and memory.
+        self.color_sub = self.create_subscription(
+            Image, '/gripper_camera/color/image_raw', self.color_cb, qos_profile_sensor_data)
+        self.depth_sub = self.create_subscription(
+            Image, depth_topic, self.depth_cb, qos_profile_sensor_data)
+        self.info_sub = self.create_subscription(
+            CameraInfo, info_topic, self.info_cb, qos_profile_sensor_data)
         self.joint_states_sub = self.create_subscription(JointState, '/joint_states', self._joint_states_cb, 10)
         self.rover_motion_sub = None
         if self.pause_arm_when_rover_moving and self.rover_motion_cmd_vel_topic:
@@ -1104,7 +1085,7 @@ class VisionGraspNode(Node):
                 self._rover_cmd_vel_cb,
                 10,
             )
-            _safe_ros_log(self.get_logger(), "info", f'Rover-motion arm safety enabled: topic={self.rover_motion_cmd_vel_topic}, '
+            self.get_logger().info(f'Rover-motion arm safety enabled: topic={self.rover_motion_cmd_vel_topic}, '
                 f'linear>{self.rover_motion_linear_threshold_mps:.3f} m/s or '
                 f'angular>{self.rover_motion_angular_threshold_radps:.3f} rad/s pauses arm motion.')
         self.det_vis_pub = self.create_publisher(Image, '/vision_grasp/detection_image', 10)
@@ -1119,16 +1100,24 @@ class VisionGraspNode(Node):
 
         if YOLO_AVAILABLE:
             try:
-                self.model = YOLO(self.model_path)
-                _safe_ros_log(self.get_logger(), "info", f'Loaded YOLO model: {self.model_path}')
+                self.model, _device = load_yolo_model(
+                    self.model_path, logger=self.get_logger()
+                )
+                # Inference runs in a background thread so it never blocks the
+                # executor (gripper ticks, action results, TF). The main
+                # thread submits the newest frame pair and consumes the newest
+                # completed result on the next detect tick.
+                self._yolo_worker = YoloWorker(
+                    self.model, device=_device, logger=self.get_logger()
+                )
             except Exception as exc:
                 self.model = None
-                _safe_ros_log(self.get_logger(), "error", f'Failed to load YOLO model {self.model_path}: {exc}')
+                self.get_logger().error(f'Failed to load YOLO model {self.model_path}: {exc}')
         else:
             self.model = None
-            _safe_ros_log(self.get_logger(), "error", 'ultralytics is not installed in this environment.')
+            self.get_logger().error('ultralytics is not installed in this environment.')
 
-        _safe_ros_log(self.get_logger(), "info", f'vision_grasp_node ready | target_class={self.target_class} | planning_group={self.planning_group} | '
+        self.get_logger().info(f'vision_grasp_node ready | target_class={self.target_class} | planning_group={self.planning_group} | '
             f'planning_link={self.planning_link} | planning_frame={self.planning_frame} | gripper_mode={self.gripper_command_mode}')
 
     def _joint_states_cb(self, msg: JointState) -> None:
@@ -1140,8 +1129,10 @@ class VisionGraspNode(Node):
     def color_cb(self, msg: Image) -> None:
         try:
             self.latest_color = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+            self.latest_color_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+            self._color_frame_queue.append((self.latest_color_stamp, self.latest_color))
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "error", f'Color conversion failed: {exc}')
+            self.get_logger().error(f'Color conversion failed: {exc}')
 
     def depth_cb(self, msg: Image) -> None:
         try:
@@ -1153,8 +1144,14 @@ class VisionGraspNode(Node):
                 self.latest_depth = depth_mm.astype(np.float32) / 1000.0
             else:
                 self.latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough').astype(np.float32)
+            self.latest_depth_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+            self._depth_frame_queue.append((
+                self.latest_depth_stamp,
+                self.latest_depth_frame,
+                self.latest_depth,
+            ))
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "error", f'Depth conversion failed: {exc}')
+            self.get_logger().error(f'Depth conversion failed: {exc}')
 
     def info_cb(self, msg: CameraInfo) -> None:
         self.camera_info = msg
@@ -1176,7 +1173,7 @@ class VisionGraspNode(Node):
             if timer is not None:
                 timer.cancel()
             if seq != self.sequence_id:
-                _safe_ros_log(self.get_logger(), "warning", 'Ignoring stale delayed callback from an old grasp sequence.')
+                self.get_logger().warning('Ignoring stale delayed callback from an old grasp sequence.')
                 return
             cb()
 
@@ -1209,6 +1206,7 @@ class VisionGraspNode(Node):
         self.sequence_locked_object_long_axis_base = None
         self.preclosed_in_air = False
         self.pregrasp_correction_count = 0
+        self._auto_camera_calibration_applied_for_sequence = False
         self._pregrasp_force_finalize = False
         self._pregrasp_final_replan_count = 0
         self._pregrasp_motion_start_sec = 0.0
@@ -1241,16 +1239,10 @@ class VisionGraspNode(Node):
         if not self.perception_frozen_for_sequence:
             return False
 
-        allowed_live_feedback_stages = {
-            'open_gripper',
-            'move_pre_grasp',
-            'pregrasp_finalizing',
-            'refine',
-        }
-        if self.sequence_stage in allowed_live_feedback_stages:
+        if self.sequence_stage in stages.LIVE_FEEDBACK_STAGES:
             return False
 
-        return self.sequence_stage not in ('idle', 'done_holding', 'done_placed')
+        return self.sequence_stage not in stages.TERMINAL_STAGES
 
     def _rover_motion_active(self) -> bool:
         if not self.pause_arm_when_rover_moving:
@@ -1288,7 +1280,7 @@ class VisionGraspNode(Node):
         )
 
         if not was_active:
-            _safe_ros_log(self.get_logger(), "warning", f'Rover motion detected on {self.rover_motion_cmd_vel_topic}: '
+            self.get_logger().warning(f'Rover motion detected on {self.rover_motion_cmd_vel_topic}: '
                 f'linear={linear_speed:.3f} m/s angular={angular_speed:.3f} rad/s. '
                 'Pausing/canceling arm motion until the rover stops.')
 
@@ -1301,7 +1293,7 @@ class VisionGraspNode(Node):
         if not self.busy and self.sequence_stage == 'idle':
             return
 
-        _safe_ros_log(self.get_logger(), "warning", f'{reason} Arm auto-grasp is paused; no arm trajectory will be sent while '
+        self.get_logger().warning(f'{reason} Arm auto-grasp is paused; no arm trajectory will be sent while '
             f'rover cmd_vel remains above threshold. Last rover speed: '
             f'linear={self.last_rover_linear_speed:.3f} m/s, '
             f'angular={self.last_rover_angular_speed:.3f} rad/s.')
@@ -1311,7 +1303,7 @@ class VisionGraspNode(Node):
 
     def _arm_motion_forbidden_now(self, requested_stage: str) -> bool:
         if self._rover_motion_active():
-            _safe_ros_log(self.get_logger(), "warning", f'Blocked arm motion during rover movement: requested_stage={requested_stage}. '
+            self.get_logger().warning(f'Blocked arm motion during rover movement: requested_stage={requested_stage}. '
                 f'linear={self.last_rover_linear_speed:.3f} m/s, '
                 f'angular={self.last_rover_angular_speed:.3f} rad/s.', throttle_duration_sec=1.0)
             if self.busy and self.rover_motion_cancel_active_arm_motion:
@@ -1324,15 +1316,7 @@ class VisionGraspNode(Node):
             return False
         # No MoveIt/Cartesian arm command may be created while a gripper stage is
         # active.  Only pure gripper commands are allowed in these stages.
-        gripper_stages = {
-            'preclose_in_air',
-            'verify_final_grasp_pose',
-            'preclose_gripper',
-            'close_gripper',
-            'verify_gripper',
-            'release_in_base_box',
-        }
-        if self.sequence_stage in gripper_stages:
+        if self.sequence_stage in stages.GRIPPER_STAGES:
             return True
         if self.hold_after_close_no_motion and self.sequence_stage == 'verify_gripper':
             return True
@@ -1347,9 +1331,7 @@ class VisionGraspNode(Node):
             self.gripper_safe_upper_limit,
         ))
         if not math.isclose(requested, limited, rel_tol=0.0, abs_tol=1e-9):
-            _safe_ros_log(
-                self.get_logger(),
-                "warning",
+            self.get_logger().warning(
                 f'Clamped {description} gripper target from {requested:.5f} to '
                 f'{limited:.5f}; safe range is '
                 f'[{self.gripper_safe_lower_limit:.5f}, '
@@ -1365,16 +1347,16 @@ class VisionGraspNode(Node):
             sent = self.send_gripper_action(width)
             if sent:
                 self._gripper_command_used_action = True
-                _safe_ros_log(self.get_logger(), "info", f'Gripper action submitted; waiting for controller acceptance: target={width:.5f}')
+                self.get_logger().info(f'Gripper action submitted; waiting for controller acceptance: target={width:.5f}')
         if not sent and mode in ('auto', 'topic'):
             msg = Float64()
             msg.data = width
             self.gripper_pub.publish(msg)
-            _safe_ros_log(self.get_logger(), "info", f'Gripper topic command -> {width:.5f}')
+            self.get_logger().info(f'Gripper topic command -> {width:.5f}')
 
     def send_gripper_action(self, width: float) -> bool:
         if not self.gripper_action_client.wait_for_server(timeout_sec=self.gripper_action_timeout_sec):
-            _safe_ros_log(self.get_logger(), "warning", 'Gripper action server not available; falling back to topic command.')
+            self.get_logger().warning('Gripper action server not available; falling back to topic command.')
             return False
         expected_seq = self.sequence_id
         expected_stage = self.sequence_stage
@@ -1444,20 +1426,20 @@ class VisionGraspNode(Node):
                 try:
                     goal_handle.cancel_goal_async()
                 except Exception as exc:
-                    _safe_ros_log(self.get_logger(), "error", f'Could not cancel stale gripper goal: {exc}')
+                    self.get_logger().error(f'Could not cancel stale gripper goal: {exc}')
             return
 
         if not goal_handle.accepted:
             self._gripper_action_failed_reason = (
                 f'controller rejected target {expected_target:.5f}'
             )
-            _safe_ros_log(self.get_logger(), "error", f'Gripper action rejected by controller: '
+            self.get_logger().error(f'Gripper action rejected by controller: '
                 f'stage={expected_stage}, target={expected_target:.5f}.')
             return
 
         self._gripper_action_goal_handle = goal_handle
         self._gripper_action_accepted = True
-        _safe_ros_log(self.get_logger(), "info", f'Gripper action accepted by controller: '
+        self.get_logger().info(f'Gripper action accepted by controller: '
             f'stage={expected_stage}, target={expected_target:.5f}.')
         goal_handle.get_result_async().add_done_callback(
             lambda fut, seq=expected_seq, stage=expected_stage, target=expected_target:
@@ -1488,7 +1470,7 @@ class VisionGraspNode(Node):
             and error_code == successful_code
         ):
             self._gripper_action_succeeded = True
-            _safe_ros_log(self.get_logger(), "info", f'Gripper controller reported action success: '
+            self.get_logger().info(f'Gripper controller reported action success: '
                 f'stage={expected_stage}, target={expected_target:.5f}.')
             return
 
@@ -1497,7 +1479,7 @@ class VisionGraspNode(Node):
             f'action finished with status={result_wrap.status}, '
             f'error_code={error_code}, error="{error_string}"'
         )
-        _safe_ros_log(self.get_logger(), "error", f'Gripper controller action failed: '
+        self.get_logger().error(f'Gripper controller action failed: '
             f'stage={expected_stage}, target={expected_target:.5f}, '
             f'{self._gripper_action_failed_reason}.')
 
@@ -1533,10 +1515,16 @@ class VisionGraspNode(Node):
         self._gripper_wait_target = float(width)
         self._gripper_wait_cb = cb
         self._gripper_wait_start_sec = self._now_sec()
+        start_position = self.current_joint_positions.get(self.gripper_joint_name)
+        self._gripper_wait_start_position = (
+            float(start_position) if start_position is not None else None
+        )
+        self._gripper_wait_last_position = self._gripper_wait_start_position
+        self._gripper_wait_last_motion_sec = self._gripper_wait_start_sec
         self._gripper_wait_seq = self.sequence_id
         self._gripper_wait_stage = stage_name
 
-        _safe_ros_log(self.get_logger(), "info", f'Gripper command requested ({description}): {width:.5f}')
+        self.get_logger().info(f'Gripper command requested ({description}): {width:.5f}')
 
         self.publish_gripper(width)
 
@@ -1553,14 +1541,14 @@ class VisionGraspNode(Node):
             if self._gripper_wait_timer is not None:
                 self._gripper_wait_timer.cancel()
                 self._gripper_wait_timer = None
-            _safe_ros_log(self.get_logger(), "warning", 'Ignoring stale gripper wait from an old grasp sequence.')
+            self.get_logger().warning('Ignoring stale gripper wait from an old grasp sequence.')
             return
 
         if self.sequence_stage != self._gripper_wait_stage:
             if self._gripper_wait_timer is not None:
                 self._gripper_wait_timer.cancel()
                 self._gripper_wait_timer = None
-            _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale gripper wait for stage={self._gripper_wait_stage}; '
+            self.get_logger().warning(f'Ignoring stale gripper wait for stage={self._gripper_wait_stage}; '
                 f'current_stage={self.sequence_stage}.')
             return
 
@@ -1576,14 +1564,6 @@ class VisionGraspNode(Node):
         if self.sequence_stage == 'release_in_base_box' and self.base_box_release_wait_sec > 0.0:
             minimum_completion_sec = max(minimum_completion_sec, self.base_box_release_wait_sec)
 
-        if self._gripper_command_used_action and self._gripper_action_failed_reason is not None:
-            reason = (
-                f'Gripper controller did not execute the command: '
-                f'{self._gripper_action_failed_reason}. target={target:.5f}'
-            )
-            self._finish_failed_gripper_wait(reason, current)
-            return
-
         feedback_stamp = self.current_joint_update_sec.get(self.gripper_joint_name)
         feedback_fresh = (
             current is not None
@@ -1596,6 +1576,72 @@ class VisionGraspNode(Node):
             and abs(float(current) - target) <= self.gripper_goal_tolerance
         )
         minimum_time_elapsed = elapsed >= minimum_completion_sec
+
+        if current is not None:
+            if (
+                self._gripper_wait_last_position is None
+                or abs(float(current) - self._gripper_wait_last_position)
+                > self.gripper_contact_position_epsilon_rad
+            ):
+                self._gripper_wait_last_motion_sec = now_sec
+                self._gripper_wait_last_position = float(current)
+
+        contact_stalled = (
+            now_sec - self._gripper_wait_last_motion_sec
+        ) >= self.gripper_contact_stall_sec
+        contact_confirmed = (
+            self.sequence_stage == 'close_gripper'
+            and minimum_time_elapsed
+            and feedback_fresh
+            and current is not None
+            and self._gripper_wait_start_position is not None
+            and contact_stalled
+            and fourbar.plausible_probe_contact(
+                self._gripper_wait_start_position,
+                float(current),
+                float(target),
+                self.minimum_probe_width_m,
+                self.maximum_probe_width_m,
+                target_tolerance_rad=self.gripper_goal_tolerance,
+                minimum_closing_travel_rad=self.gripper_contact_min_closing_travel_rad,
+                gap_tolerance_m=self.gripper_contact_gap_tolerance_m,
+            )
+        )
+
+        # A rigid probe is expected to stop an intentionally over-closed final
+        # command. Do not wait for the trajectory controller to abort that valid
+        # contact: fresh, stationary feedback plus calibrated jaw geometry is a
+        # stronger completion signal for this close stage.
+        if contact_confirmed:
+            actual_gap = fourbar.gap_from_q(float(current))
+            self.gripper_contact_detected = True
+            if self._gripper_wait_timer is not None:
+                self._gripper_wait_timer.cancel()
+                self._gripper_wait_timer = None
+            cb = self._gripper_wait_cb
+            self._gripper_wait_cb = None
+            self.last_gripper_actual = float(current)
+            self.last_gripper_target = float(target)
+            self._cancel_active_gripper_goal()
+            self.get_logger().warning(
+                'Final close confirmed by fresh stalled-contact feedback: '
+                f'target={target:.5f}, actual={current:.5f}, '
+                f'jaw_gap={actual_gap*1000.0:.1f}mm, elapsed={elapsed:.2f}s. '
+                'Continuing with lift verification while keeping the gripper closed.'
+            )
+            if cb is not None:
+                cb()
+            return
+
+        if self._gripper_command_used_action and self._gripper_action_failed_reason is not None:
+            reason = (
+                'Gripper controller did not execute the command and measured '
+                'feedback was not consistent with probe contact: '
+                f'{self._gripper_action_failed_reason}. target={target:.5f}'
+            )
+            self._finish_failed_gripper_wait(reason, current)
+            return
+
         action_complete = (
             not self._gripper_command_used_action
             or not self.gripper_require_action_success_for_completion
@@ -1634,12 +1680,12 @@ class VisionGraspNode(Node):
             self.last_gripper_target = float(target)
 
             if feedback_complete:
-                _safe_ros_log(self.get_logger(), "info", f'Gripper command confirmed by time + fresh joint feedback: '
+                self.get_logger().info(f'Gripper command confirmed by time + fresh joint feedback: '
                     f'target={target:.5f}, actual={current:.5f}, elapsed={elapsed:.2f}s, '
                     f'minimum_time={minimum_completion_sec:.2f}s, '
                     f'action_success={self._gripper_action_succeeded}.')
             else:
-                _safe_ros_log(self.get_logger(), "warning", f'Legacy open-loop gripper completion: target={target:.5f}, '
+                self.get_logger().warning(f'Legacy open-loop gripper completion: target={target:.5f}, '
                     f'elapsed={elapsed:.2f}s. This mode is disabled by default.')
 
             if cb is not None:
@@ -1680,26 +1726,6 @@ class VisionGraspNode(Node):
             )
             return
 
-        # A final close may legitimately stop short of its target because the
-        # probe is between the fingers. Accept that only with fresh position
-        # feedback past the configured contact threshold and after the full
-        # minimum command time. A pre-close must still reach its exact target.
-        contact_confirmed = (
-            self.sequence_stage == 'close_gripper'
-            and minimum_time_elapsed
-            and feedback_fresh
-            and current is not None
-            and float(current) >= self.gripper_contact_min_position
-            and action_complete
-        )
-        if contact_confirmed:
-            self.gripper_contact_detected = True
-            _safe_ros_log(self.get_logger(), "warning", f'Gripper close confirmed by timed fresh contact feedback: '
-                f'target={target:.5f}, actual={current:.5f}. The probe may be blocking full closure.')
-            if cb is not None:
-                cb()
-            return
-
         if self.sequence_stage == 'close_gripper':
             self._hold_closed_after_failed_grasp_check(
                 f'Final gripper close was not confirmed: target={target:.5f}, {feedback_detail}.'
@@ -1737,7 +1763,7 @@ class VisionGraspNode(Node):
         try:
             self.det_vis_pub.publish(self.bridge.cv2_to_imgmsg(img, encoding='bgr8'))
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Failed to publish detection image: {exc}')
+            self.get_logger().warning(f'Failed to publish detection image: {exc}')
 
     def _annotate_yolo_results(self, img: np.ndarray, results) -> np.ndarray:
         annotated = img
@@ -1775,6 +1801,7 @@ class VisionGraspNode(Node):
         expected_depth_m: Optional[float] = None,
         depth_band_m: Optional[float] = None,
         prefer_nearest: bool = False,
+        depth_image: Optional[np.ndarray] = None,
     ) -> Optional[float]:
         """
         Depth Agent:
@@ -1784,11 +1811,15 @@ class VisionGraspNode(Node):
         gripper finger, or floor/background. This version supports
         a larger ROI and optional filtering around the predicted depth
         of the locked target.
+
+        ``depth_image`` selects the frame to sample (a snapshot paired with a
+        detection); it defaults to the latest received depth image.
         """
-        if self.latest_depth is None:
+        depth = depth_image if depth_image is not None else self.latest_depth
+        if depth is None:
             return None
 
-        h, w = self.latest_depth.shape[:2]
+        h, w = depth.shape[:2]
 
         if u < 0 or v < 0 or u >= w or v >= h:
             return None
@@ -1800,7 +1831,7 @@ class VisionGraspNode(Node):
         x0, x1 = max(0, u - hs), min(w, u + hs + 1)
         y0, y1 = max(0, v - hs), min(h, v + hs + 1)
 
-        roi = self.latest_depth[y0:y1, x0:x1]
+        roi = depth[y0:y1, x0:x1]
 
         valid = roi[np.isfinite(roi) & (roi > min_d) & (roi < max_d)]
 
@@ -1917,56 +1948,29 @@ class VisionGraspNode(Node):
             return self.minimum_probe_width_m
 
         if raw > self.maximum_probe_width_m:
-            _safe_ros_log(self.get_logger(), "warning", f'Detected width {raw*1000:.1f} mm is above physical probe max '
+            self.get_logger().warning(f'Detected width {raw*1000:.1f} mm is above physical probe max '
                 f'{self.maximum_probe_width_m*1000:.1f} mm; using nominal '
                 f'{self.nominal_probe_width_m*1000:.1f} mm for q_close.', throttle_duration_sec=1.0)
             return float(np.clip(self.nominal_probe_width_m, self.minimum_probe_width_m, self.maximum_probe_width_m))
 
         return raw
 
-    def _fourbar_actual_gap_from_q(self, q: float) -> float:
-        """Actual bucket inner gap from gripper_new.xacro + gripper_bucket.stl."""
-        q_tbl = np.array([-1.570, -1.365, -1.160, -0.955, -0.750,
-                          -0.545, -0.340, -0.2879, -0.2271, -0.1976,
-                          -0.1861, -0.1385, -0.0498, 0.0093, 0.070], dtype=np.float64)
-        g_tbl = np.array([0.1826, 0.1790, 0.1684, 0.1512, 0.1281,
-                          0.1002, 0.0685, 0.0600, 0.0500, 0.0451,
-                          0.0431, 0.0351, 0.0200, 0.0099, 0.0000], dtype=np.float64)
-        q_clip = float(np.clip(q, q_tbl[0], q_tbl[-1]))
-        return float(np.interp(q_clip, q_tbl, g_tbl))
-
     def _fourbar_q_from_actual_gap(self, gap_m: float) -> float:
-        """Invert actual four-bar gap table: desired jaw gap -> joint q."""
-        q_tbl = np.array([-1.570, -1.365, -1.160, -0.955, -0.750,
-                          -0.545, -0.340, -0.2879, -0.2271, -0.1976,
-                          -0.1861, -0.1385, -0.0498, 0.0093, 0.070], dtype=np.float64)
-        g_tbl = np.array([0.1826, 0.1790, 0.1684, 0.1512, 0.1281,
-                          0.1002, 0.0685, 0.0600, 0.0500, 0.0451,
-                          0.0431, 0.0351, 0.0200, 0.0099, 0.0000], dtype=np.float64)
-        q = float(np.interp(float(gap_m), g_tbl[::-1], q_tbl[::-1]))
+        """Desired jaw gap -> joint q, clamped to this task's safe q window."""
+        q = fourbar.q_from_gap(gap_m)
         q = float(np.clip(q, self.gripper_open, self.gripper_close))
         q = float(np.clip(q, self.fourbar_q_min_for_floor_grasp, self.fourbar_q_max_for_floor_grasp))
         return q
 
     def _fourbar_actual_contact_offset(self, q: float) -> np.ndarray:
-        """arm_gripper_base_link -> object-centre offset from true bucket midpoint.
-
-        Derived from the uploaded gripper_new.xacro joint chain and the
-        gripper_bucket.stl mesh.  Near a 45 mm probe grasp the true midpoint is
-        approximately (x=0, y=25.9 mm, z=218 mm), not (0,0,249 mm).
-        """
-        q_tbl = np.array([-1.570, -1.000, -0.500, -0.200, -0.140,
-                          -0.050, 0.000, 0.070], dtype=np.float64)
-        z_tbl = np.array([0.1342, 0.1680, 0.2092, 0.2180, 0.2189,
-                          0.2196, 0.2197, 0.2195], dtype=np.float64)
-        z = float(np.interp(float(np.clip(q, q_tbl[0], q_tbl[-1])), q_tbl, z_tbl))
-        return np.array([0.0, float(self.fourbar_contact_y_offset_m), z], dtype=np.float64)
+        """arm_gripper_base_link -> object-centre offset from true bucket midpoint."""
+        return fourbar.contact_offset(q, self.fourbar_contact_y_offset_m)
 
     def _compute_adaptive_gripper_close(self, object_width_m: float) -> Tuple[float, float]:
         """
         Layer — Actual Four-Bar Jaw-Gap Agent.
 
-        Uses the true URDF/STL four-bar gap curve instead of the old linear model.
+        Uses the true URDF/STL four-bar gap curve (aries_vision_grasp.fourbar).
         This is essential: for the real gripper, q≈+0.07 rad is almost fully
         closed, not a 45 mm gap.  A 45 mm probe needs q≈-0.20 rad.
         """
@@ -1974,66 +1978,27 @@ class VisionGraspNode(Node):
         final_gap = max(object_width_eff + self.object_width_final_clearance_m, 0.006)
         preclose_gap = max(object_width_eff + self.object_width_preclose_clearance_m, final_gap + 0.002)
 
-        if self.fourbar_use_urdf_geometry_model:
-            q_close = self._fourbar_q_from_actual_gap(final_gap)
-            q_preclose = self._fourbar_q_from_actual_gap(preclose_gap)
-            # Ensure preclose is more open than close.
-            if q_preclose > q_close - self.preclose_min_q_margin_rad:
-                q_preclose = max(self.gripper_open, q_close - self.preclose_min_q_margin_rad)
-            actual_final_gap = self._fourbar_actual_gap_from_q(q_close)
-            actual_pre_gap = self._fourbar_actual_gap_from_q(q_preclose)
-            _safe_ros_log(self.get_logger(), "info", f'Actual four-bar sizing: object_width={object_width_m*1000:.1f} mm  '
-                f'used_width={object_width_eff*1000:.1f} mm  '
-                f'target_final_gap={final_gap*1000:.1f} mm  '
-                f'q_close={q_close:.4f} rad -> actual_gap={actual_final_gap*1000:.1f} mm  '
-                f'q_preclose={q_preclose:.4f} rad -> actual_pre_gap={actual_pre_gap*1000:.1f} mm')
-            return float(q_close), float(q_preclose)
-
-        # Fallback: old linear model.
-        q_close = (self.gripper_gap_at_zero_rad - final_gap) / self.gripper_gap_slope
-        q_preclose = (self.gripper_gap_at_zero_rad - preclose_gap) / self.gripper_gap_slope
-        q_close = float(np.clip(q_close, self.gripper_open, self.gripper_close))
-        q_preclose = float(np.clip(q_preclose, self.gripper_open, self.gripper_close))
+        q_close = self._fourbar_q_from_actual_gap(final_gap)
+        q_preclose = self._fourbar_q_from_actual_gap(preclose_gap)
+        # Ensure preclose is more open than close.
         if q_preclose > q_close - self.preclose_min_q_margin_rad:
             q_preclose = max(self.gripper_open, q_close - self.preclose_min_q_margin_rad)
-        _safe_ros_log(self.get_logger(), "info", f'Legacy linear gripper sizing: object_width={object_width_m*1000:.1f} mm  '
-            f'final_gap={final_gap*1000:.1f} mm q_close={q_close:.4f} rad')
-        return q_close, q_preclose
+        actual_final_gap = fourbar.gap_from_q(q_close)
+        actual_pre_gap = fourbar.gap_from_q(q_preclose)
+        self.get_logger().info(f'Actual four-bar sizing: object_width={object_width_m*1000:.1f} mm  '
+            f'used_width={object_width_eff*1000:.1f} mm  '
+            f'target_final_gap={final_gap*1000:.1f} mm  '
+            f'q_close={q_close:.4f} rad -> actual_gap={actual_final_gap*1000:.1f} mm  '
+            f'q_preclose={q_preclose:.4f} rad -> actual_pre_gap={actual_pre_gap*1000:.1f} mm')
+        return float(q_close), float(q_preclose)
 
-    def _fourbar_contact_z_offset_model(self, q_close: float) -> float:
-        """Silent contact-depth model used by the arc guard."""
-        if self.fourbar_use_urdf_geometry_model:
-            return float(self._fourbar_actual_contact_offset(float(q_close))[2])
-        L = self.gripper_contact_z_gear_arm_m
-        q_ref = self.gripper_contact_z_ref_q
-        z_ref = float(self.target_point_offset_in_link[2])
-        z_model = z_ref + L * (math.cos(float(q_close)) - math.cos(q_ref))
-        return float(max(float(z_model), float(self.fourbar_safe_contact_offset_z_min_m)))
-
-    def _compute_contact_z_offset(self, q_close: float) -> float:
-        """
-        Layer — Four-Bar Contact Point Compensation Agent.
-
-        Returns the local Z of the true contact midpoint for the selected q_close.
-        The full XYZ offset is set elsewhere from _fourbar_actual_contact_offset().
-        """
-        if self.fourbar_use_urdf_geometry_model:
-            off = self._fourbar_actual_contact_offset(float(q_close))
-            _safe_ros_log(self.get_logger(), "info", f'Actual 4-bar contact offset at q={q_close:.4f}: '
-                f'x={off[0]*1000:.1f} y={off[1]*1000:.1f} z={off[2]*1000:.1f} mm  '
-                f'actual_gap={self._fourbar_actual_gap_from_q(q_close)*1000:.1f} mm')
-            return float(off[2])
-
-        z_ref = float(self.target_point_offset_in_link[2])
-        L = self.gripper_contact_z_gear_arm_m
-        q_ref = self.gripper_contact_z_ref_q
-        z_model = z_ref + L * (math.cos(float(q_close)) - math.cos(q_ref))
-        z_eff = self._fourbar_contact_z_offset_model(q_close)
-        _safe_ros_log(self.get_logger(), "info", f'4-bar closed-contact depth: q={q_close:.4f} rad → '
-            f'z_model={z_model * 1000:.1f} mm, '
-            f'z_eff={z_eff * 1000:.1f} mm '
-            f'(min_safe={self.fourbar_safe_contact_offset_z_min_m * 1000:.1f} mm)')
-        return float(z_eff)
+    def _apply_fourbar_contact_offset(self, q_close: float) -> None:
+        """Set the effective link->contact offset for the selected close angle."""
+        off = self._fourbar_actual_contact_offset(float(q_close))
+        self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
+        self.get_logger().info(f'Actual 4-bar contact offset at q={q_close:.4f}: '
+            f'x={off[0]*1000:.1f} y={off[1]*1000:.1f} z={off[2]*1000:.1f} mm  '
+            f'actual_gap={fourbar.gap_from_q(q_close)*1000:.1f} mm')
 
     def _estimate_object_orientation_3d(
         self,
@@ -2122,7 +2087,7 @@ class VisionGraspNode(Node):
             return None
         ratio = float(eigenvalues[0] / eigenvalues[1])
         if ratio < self.object_orientation_min_eigenratio:
-            _safe_ros_log(self.get_logger(), "info", f'Object orientation skipped: eigenratio={ratio:.1f} '
+            self.get_logger().info(f'Object orientation skipped: eigenratio={ratio:.1f} '
                 f'< min={self.object_orientation_min_eigenratio:.1f} '
                 f'(object too round to determine orientation reliably)', throttle_duration_sec=1.0)
             return None
@@ -2132,7 +2097,7 @@ class VisionGraspNode(Node):
         if np.linalg.det(R) < 0:
             R[:, 2] = -R[:, 2]
 
-        _safe_ros_log(self.get_logger(), "info", f'Object 3D orientation: eigenratio={ratio:.1f}  '
+        self.get_logger().info(f'Object 3D orientation: eigenratio={ratio:.1f}  '
             f'long_axis_cam=[{R[0,0]:.2f},{R[1,0]:.2f},{R[2,0]:.2f}]', throttle_duration_sec=1.0)
         return centroid, R
 
@@ -2144,14 +2109,18 @@ class VisionGraspNode(Node):
         self,
         centroid_cam: np.ndarray,
         R_obj_cam: np.ndarray,
+        depth_frame: Optional[str] = None,
+        stamp: Optional[rclpy.time.Time] = None,
     ) -> Optional[Tuple[PoseStamped, np.ndarray]]:
-        if self.latest_depth_frame is None:
+        depth_frame = depth_frame or self.latest_depth_frame
+        if depth_frame is None:
             return None
 
         centroid_base = self.transform_point(
             np.array(centroid_cam, dtype=np.float64),
-            self.latest_depth_frame,
+            depth_frame,
             self.planning_frame,
+            stamp=stamp,
         )
         if centroid_base is None:
             return None
@@ -2159,12 +2128,19 @@ class VisionGraspNode(Node):
         try:
             tfm = self.tf_buffer.lookup_transform(
                 self.planning_frame,
-                self.latest_depth_frame,
-                rclpy.time.Time(),
+                depth_frame,
+                stamp if stamp is not None else rclpy.time.Time(),
             )
-        except TransformException as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'TF lookup for object pose failed: {exc}')
-            return None
+        except TransformException:
+            try:
+                tfm = self.tf_buffer.lookup_transform(
+                    self.planning_frame,
+                    depth_frame,
+                    rclpy.time.Time(),
+                )
+            except TransformException as exc:
+                self.get_logger().warning(f'TF lookup for object pose failed: {exc}')
+                return None
 
         R_tf = quat_to_matrix(tfm.transform.rotation)
         long_axis = normalize(R_tf @ R_obj_cam[:, 0].reshape(3,))
@@ -2196,8 +2172,12 @@ class VisionGraspNode(Node):
         self,
         centroid_cam: np.ndarray,
         R_obj_cam: np.ndarray,
+        depth_frame: Optional[str] = None,
+        stamp: Optional[rclpy.time.Time] = None,
     ) -> None:
-        pose_result = self._compute_object_pose_in_planning_frame(centroid_cam, R_obj_cam)
+        pose_result = self._compute_object_pose_in_planning_frame(
+            centroid_cam, R_obj_cam, depth_frame=depth_frame, stamp=stamp
+        )
         if pose_result is None:
             self._clear_detected_object_pose()
             return
@@ -2210,7 +2190,7 @@ class VisionGraspNode(Node):
             self.object_pose_pub.publish(pose_msg)
 
         p = pose_msg.pose.position
-        _safe_ros_log(self.get_logger(), "info", f'6D object pose tracked: '
+        self.get_logger().info(f'6D object pose tracked: '
             f'x={p.x:.3f} y={p.y:.3f} z={p.z:.3f}', throttle_duration_sec=1.0)
 
     def _compute_grasp_yaw_from_object(
@@ -2246,7 +2226,7 @@ class VisionGraspNode(Node):
                     rclpy.time.Time(),
                 )
             except TransformException as exc:
-                _safe_ros_log(self.get_logger(), "warning", f'TF lookup for object yaw failed: {exc}')
+                self.get_logger().warning(f'TF lookup for object yaw failed: {exc}')
                 return None
 
             R_tf = quat_to_matrix(tfm.transform.rotation)
@@ -2272,7 +2252,7 @@ class VisionGraspNode(Node):
             key=lambda yaw: abs(wrap_to_pi(yaw - reference_yaw)),
         )
 
-        _safe_ros_log(self.get_logger(), "info", f'Object yaw in {self.planning_frame}: {math.degrees(yaw_obj):.1f}°  '
+        self.get_logger().info(f'Object yaw in {self.planning_frame}: {math.degrees(yaw_obj):.1f}°  '
             f'Gripper yaw (+ {self.object_yaw_rotation_offset_deg:.0f}° offset, nearest symmetric): '
             f'{math.degrees(yaw_gripper):.1f}°')
         return float(yaw_gripper)
@@ -2332,7 +2312,7 @@ class VisionGraspNode(Node):
         corrected = ref + perpendicular + parallel_scale * parallel
 
         if abs(parallel_mag) > 0.010 and abs(parallel_mag) > 1.5 * float(np.linalg.norm(perpendicular)):
-            _safe_ros_log(self.get_logger(), "info", f'Probe shape-aware center hold during {reason}: '
+            self.get_logger().info(f'Probe shape-aware center hold during {reason}: '
                 f'parallel_drift={parallel_mag:.3f}m, '
                 f'perpendicular={float(np.linalg.norm(perpendicular)):.3f}m, '
                 f'parallel_scale={parallel_scale:.2f}.', throttle_duration_sec=0.7)
@@ -2397,7 +2377,7 @@ class VisionGraspNode(Node):
         pix = self.camera_point_to_pixel(pred_cam)
 
         if pix is None:
-            _safe_ros_log(self.get_logger(), "warning", 'Projection fallback: locked target is outside the close camera image.', throttle_duration_sec=0.7)
+            self.get_logger().warning('Projection fallback: locked target is outside the close camera image.', throttle_duration_sec=0.7)
             return None
 
         u, v = pix
@@ -2414,7 +2394,7 @@ class VisionGraspNode(Node):
         )
 
         if depth is None:
-            _safe_ros_log(self.get_logger(), "warning", f'Projection fallback: no valid local depth around u={u}, v={v}. '
+            self.get_logger().warning(f'Projection fallback: no valid local depth around u={u}, v={v}. '
                 f'Predicted depth={pred_cam[2]:.3f}m. Using locked target if refinement times out.', throttle_duration_sec=0.7)
             return None
 
@@ -2423,36 +2403,187 @@ class VisionGraspNode(Node):
         if point_cam is None:
             return None
 
-        point_base = self.transform_point(
+        point_base = self._camera_grasp_target_to_planning_frame(
             point_cam,
             self.latest_depth_frame,
-            self.planning_frame,
         )
 
         if point_base is None:
             return None
 
-        _safe_ros_log(self.get_logger(), "info", f'Projection fallback sample: u={u} v={v} depth={depth:.3f} '
+        self.get_logger().info(f'Projection fallback sample: u={u} v={v} depth={depth:.3f} '
             f'base=({point_base[0]:.3f},{point_base[1]:.3f},{point_base[2]:.3f})', throttle_duration_sec=0.5)
 
         return point_base
 
-    def transform_point(self, point_xyz: np.ndarray, source_frame: str, target_frame: str) -> Optional[np.ndarray]:
-        try:
-            tfm = self.tf_buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
-        except TransformException as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'TF lookup failed {source_frame} -> {target_frame}: {exc}')
+    def transform_point(
+        self,
+        point_xyz: np.ndarray,
+        source_frame: str,
+        target_frame: str,
+        stamp: Optional[rclpy.time.Time] = None,
+    ) -> Optional[np.ndarray]:
+        """Transform a point, preferring TF at the sensor stamp.
+
+        On a moving wrist camera, using the latest TF for an older image skews
+        the 3D target by however far the camera moved since the frame was
+        captured. When the exact stamp is not yet available in the buffer,
+        fall back to the latest transform rather than dropping the detection.
+        """
+        tfm = self._lookup_transform(source_frame, target_frame, stamp)
+        if tfm is None:
             return None
         q = tfm.transform.rotation
         t = tfm.transform.translation
         return quat_to_matrix(q) @ point_xyz.reshape(3,) + np.array([t.x, t.y, t.z], dtype=np.float64)
+
+    def _lookup_transform(
+        self,
+        source_frame: str,
+        target_frame: str,
+        stamp: Optional[rclpy.time.Time] = None,
+    ):
+        """Look up target<-source TF with the sensor-stamp fallback policy."""
+        tfm = None
+        if stamp is not None:
+            try:
+                tfm = self.tf_buffer.lookup_transform(target_frame, source_frame, stamp)
+            except TransformException:
+                self.get_logger().warning(
+                    f'TF at image stamp unavailable for {source_frame} -> {target_frame}; '
+                    'using latest transform for this detection.',
+                    throttle_duration_sec=5.0,
+                )
+        if tfm is None:
+            try:
+                tfm = self.tf_buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
+            except TransformException as exc:
+                self.get_logger().warning(f'TF lookup failed {source_frame} -> {target_frame}: {exc}')
+                return None
+        return tfm
+
+    def _camera_grasp_target_to_planning_frame(
+        self,
+        point_camera: np.ndarray,
+        camera_frame: str,
+        stamp: Optional[rclpy.time.Time] = None,
+    ) -> Optional[np.ndarray]:
+        """Apply camera-axis grasp calibration, then transform to the planning frame."""
+        tfm = self._lookup_transform(camera_frame, self.planning_frame, stamp)
+        if tfm is None:
+            return None
+        rotation = quat_to_matrix(tfm.transform.rotation)
+        translation = np.array([
+            float(tfm.transform.translation.x),
+            float(tfm.transform.translation.y),
+            float(tfm.transform.translation.z),
+        ], dtype=np.float64)
+        point_camera = np.array(point_camera, dtype=np.float64).reshape(3,)
+        raw_world = rotation @ point_camera + translation
+        self._record_camera_offset_calibration_sample(raw_world, rotation)
+        return raw_world + rotation @ self.grasp_target_offset_in_camera
+
+    def _record_camera_offset_calibration_sample(
+        self,
+        raw_world: np.ndarray,
+        rotation_world_camera: np.ndarray,
+    ) -> None:
+        """Build a guarded multi-view estimate while the probe is stationary."""
+        if (
+            not self.auto_calibrate_camera_offset_enabled
+            or self.holding_object
+            or self.task_complete
+            or self.sequence_stage not in ('idle', 'open_gripper', 'move_pre_grasp')
+            or abs(self.last_rover_linear_speed) > self.rover_motion_linear_threshold_mps
+            or abs(self.last_rover_angular_speed) > self.rover_motion_angular_threshold_radps
+        ):
+            return
+
+        raw_world = np.asarray(raw_world, dtype=np.float64).reshape(3,)
+        rotation_world_camera = np.asarray(
+            rotation_world_camera, dtype=np.float64
+        ).reshape(3, 3)
+        self._camera_calibration_raw_world.append(raw_world.copy())
+        self._camera_calibration_rotations.append(rotation_world_camera.copy())
+        self._camera_calibration_last_raw_world = raw_world.copy()
+        self._camera_calibration_last_rotation = rotation_world_camera.copy()
+
+        if len(self._camera_calibration_raw_world) < self.auto_calibrate_camera_offset_min_samples:
+            return
+        estimate = estimate_stationary_target_camera_offset(
+            np.stack(self._camera_calibration_raw_world),
+            np.stack(self._camera_calibration_rotations),
+        )
+        if estimate is None:
+            return
+        improvement = estimate.raw_rms_m - estimate.corrected_rms_m
+        offset_norm = float(np.linalg.norm(estimate.offset_camera))
+        accepted = (
+            estimate.rotation_span_rad >= self.auto_calibrate_camera_offset_min_rotation_rad
+            and estimate.condition_number <= self.auto_calibrate_camera_offset_max_condition
+            and offset_norm <= self.auto_calibrate_camera_offset_max_m
+            and estimate.corrected_rms_m <= self.auto_calibrate_camera_offset_max_rms_m
+            and improvement >= self.auto_calibrate_camera_offset_min_improvement_m
+        )
+        if not accepted:
+            self.get_logger().info(
+                'Camera-offset auto-calibration not yet trustworthy: '
+                f'samples={len(self._camera_calibration_raw_world)}, '
+                f'rotation_span={math.degrees(estimate.rotation_span_rad):.1f}deg, '
+                f'condition={estimate.condition_number:.1f}, '
+                f'offset_norm={offset_norm*1000.0:.1f}mm, '
+                f'raw_rms={estimate.raw_rms_m*1000.0:.1f}mm, '
+                f'corrected_rms={estimate.corrected_rms_m*1000.0:.1f}mm.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        self._pending_camera_offset_estimate = estimate
+
+    def _commit_pending_camera_offset_calibration(self) -> bool:
+        """Apply one bounded calibration step immediately before finalization."""
+        estimate = self._pending_camera_offset_estimate
+        if (
+            estimate is None
+            or self._auto_camera_calibration_applied_for_sequence
+            or self._camera_calibration_last_raw_world is None
+            or self._camera_calibration_last_rotation is None
+        ):
+            return False
+
+        desired = np.asarray(estimate.offset_camera, dtype=np.float64)
+        delta = desired - self.grasp_target_offset_in_camera
+        delta_norm = float(np.linalg.norm(delta))
+        if delta_norm > self.auto_calibrate_camera_offset_max_step_m:
+            delta *= self.auto_calibrate_camera_offset_max_step_m / delta_norm
+        applied = self.grasp_target_offset_in_camera + delta
+        corrected_target = (
+            self._camera_calibration_last_raw_world
+            + self._camera_calibration_last_rotation @ applied
+        )
+
+        self.grasp_target_offset_in_camera = applied
+        self.current_target_point_base = corrected_target.copy()
+        self.live_target_point_base = corrected_target.copy()
+        self.sequence_locked_target_point_base = corrected_target.copy()
+        self.live_target_stamp_sec = self._now_sec()
+        self._auto_camera_calibration_applied_for_sequence = True
+        self._pending_camera_offset_estimate = None
+        self.get_logger().warning(
+            'Applied bounded automatic camera grasp calibration: '
+            f'xyz=({applied[0]:.4f}, {applied[1]:.4f}, {applied[2]:.4f}) m, '
+            f'estimated=({desired[0]:.4f}, {desired[1]:.4f}, {desired[2]:.4f}) m, '
+            f'corrected_rms={estimate.corrected_rms_m*1000.0:.1f} mm. '
+            'To persist after restart, copy the applied xyz into '
+            'grasp_target_offset_camera_xyz_m in pick_place.yaml.'
+        )
+        return True
 
     def get_current_tool_orientation_in_planning_frame(self) -> Optional[Quaternion]:
         try:
             tfm = self.tf_buffer.lookup_transform(self.planning_frame, self.planning_link, rclpy.time.Time())
             return tfm.transform.rotation
         except TransformException as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Could not read current tool transform: {exc}')
+            self.get_logger().warning(f'Could not read current tool transform: {exc}')
             return None
 
     def get_current_link_pose_in_planning_frame(self) -> Optional[Pose]:
@@ -2466,7 +2597,7 @@ class VisionGraspNode(Node):
         try:
             tfm = self.tf_buffer.lookup_transform(self.planning_frame, self.planning_link, rclpy.time.Time())
         except TransformException as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Could not read current link pose for post-grasp lift: {exc}')
+            self.get_logger().warning(f'Could not read current link pose for post-grasp lift: {exc}')
             return None
 
         pose = Pose()
@@ -2535,7 +2666,8 @@ class VisionGraspNode(Node):
         obj.primitives = [box]
         obj.primitive_poses = [box_pose]
         self._collision_object_pub.publish(obj)
-        _safe_ros_log(self.get_logger(), "info", f'[CollisionWorld] Added floor plane at z={floor_z:.4f} m '
+        self._post_grasp_floor_active = True
+        self.get_logger().info(f'[CollisionWorld] Added floor plane at z={floor_z:.4f} m '
             f'(slab top at z={(floor_z - 0.010):.4f} m)')
 
     # ------------------------------------------------------------------ #
@@ -2595,48 +2727,8 @@ class VisionGraspNode(Node):
                 mesh.triangles.append(mt)
             return mesh
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'[CollisionWorld] STL load failed ({path}): {exc}')
+            self.get_logger().warning(f'[CollisionWorld] STL load failed ({path}): {exc}')
             return None
-
-    def _quaternion_to_rotation_matrix(self, q: Quaternion) -> np.ndarray:
-        """Convert geometry_msgs/Quaternion → 3×3 numpy rotation matrix."""
-        x, y, z, w = q.x, q.y, q.z, q.w
-        return np.array([
-            [1 - 2*(y*y + z*z),   2*(x*y - z*w),   2*(x*z + y*w)],
-            [  2*(x*y + z*w), 1 - 2*(x*x + z*z),   2*(y*z - x*w)],
-            [  2*(x*z - y*w),   2*(y*z + x*w), 1 - 2*(x*x + y*y)],
-        ], dtype=float)
-
-    def _rotation_matrix_to_quaternion(self, R: np.ndarray) -> Quaternion:
-        """Convert 3×3 numpy rotation matrix → geometry_msgs/Quaternion (Shepperd)."""
-        trace = R[0, 0] + R[1, 1] + R[2, 2]
-        if trace > 0.0:
-            s = 0.5 / math.sqrt(trace + 1.0)
-            w = 0.25 / s
-            x = (R[2, 1] - R[1, 2]) * s
-            y = (R[0, 2] - R[2, 0]) * s
-            z = (R[1, 0] - R[0, 1]) * s
-        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-            s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-            w = (R[2, 1] - R[1, 2]) / s
-            x = 0.25 * s
-            y = (R[0, 1] + R[1, 0]) / s
-            z = (R[0, 2] + R[2, 0]) / s
-        elif R[1, 1] > R[2, 2]:
-            s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-            w = (R[0, 2] - R[2, 0]) / s
-            x = (R[0, 1] + R[1, 0]) / s
-            y = 0.25 * s
-            z = (R[1, 2] + R[2, 1]) / s
-        else:
-            s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-            w = (R[1, 0] - R[0, 1]) / s
-            x = (R[0, 2] + R[2, 0]) / s
-            y = (R[1, 2] + R[2, 1]) / s
-            z = 0.25 * s
-        q = Quaternion()
-        q.x, q.y, q.z, q.w = float(x), float(y), float(z), float(w)
-        return q
 
     def _attach_probe_object(self) -> None:
         """Attach the probe mesh (probe.stl) to arm_gripper_base_link.
@@ -2693,11 +2785,11 @@ class VisionGraspNode(Node):
         # would be wrong — producing the "mirrored" STL seen in RViz.
         if self.grasp_orientation is not None:
             # grasp_orientation is arm_gripper_base_link in base_link = R_link_in_world
-            R_link_in_world = self._quaternion_to_rotation_matrix(self.grasp_orientation)
+            R_link_in_world = quat_to_matrix(self.grasp_orientation)
             R_world_in_link = R_link_in_world.T
         else:
             R_world_in_link = np.eye(3)
-            _safe_ros_log(self.get_logger(), "warning", '[CollisionWorld] grasp_orientation not set; using identity rotation for STL.')
+            self.get_logger().warning('[CollisionWorld] grasp_orientation not set; using identity rotation for STL.')
 
         # ── Contact point: actual fourbar offset used during the grasp ───────────
         # effective_target_point_offset_in_link is the probe centre in
@@ -2709,7 +2801,7 @@ class VisionGraspNode(Node):
             contact_in_link = np.array([float(eff[0]), float(eff[1]), float(eff[2])])
         else:
             contact_in_link = np.array([0.0, contact_y, contact_z])
-        _safe_ros_log(self.get_logger(), "info", f'[CollisionWorld] Probe centre in link (grasp-time offset): '
+        self.get_logger().info(f'[CollisionWorld] Probe centre in link (grasp-time offset): '
             f'[{contact_in_link[0]:.3f}, {contact_in_link[1]:.3f}, {contact_in_link[2]:.3f}]')
 
         # ── R_stl_in_world: STL basis vectors in world frame ────────────────────
@@ -2732,7 +2824,7 @@ class VisionGraspNode(Node):
         mesh_pose.position.x = float(origin_in_link[0])
         mesh_pose.position.y = float(origin_in_link[1])
         mesh_pose.position.z = float(origin_in_link[2])
-        mesh_pose.orientation = self._rotation_matrix_to_quaternion(R_stl_in_link)
+        mesh_pose.orientation = matrix_to_quat(R_stl_in_link)
 
         # ── Load STL mesh ───────────────────────────────────────────────────────
         stl_path = self._find_probe_stl()
@@ -2784,185 +2876,49 @@ class VisionGraspNode(Node):
             'gripper_camera_link',
         ]
         self._attached_object_pub.publish(aco)
-        _safe_ros_log(self.get_logger(), "info", f'[CollisionWorld] Attached probe: {shape_info}')
+        self._post_grasp_probe_attached = True
+        self.get_logger().info(f'[CollisionWorld] Attached probe: {shape_info}')
 
     def _remove_post_grasp_collision_objects(self) -> None:
         """Remove the floor plane and detach the probe from the collision world."""
-        # Remove floor plane
-        floor_obj = CollisionObject()
-        floor_obj.header.frame_id = self.planning_frame
-        floor_obj.header.stamp = self.get_clock().now().to_msg()
-        floor_obj.id = 'post_grasp_floor'
-        floor_obj.operation = CollisionObject.REMOVE
-        self._collision_object_pub.publish(floor_obj)
+        removed = []
+        if self._post_grasp_floor_active:
+            floor_obj = CollisionObject()
+            floor_obj.header.frame_id = self.planning_frame
+            floor_obj.header.stamp = self.get_clock().now().to_msg()
+            floor_obj.id = 'post_grasp_floor'
+            floor_obj.operation = CollisionObject.REMOVE
+            self._collision_object_pub.publish(floor_obj)
+            self._post_grasp_floor_active = False
+            removed.append('floor')
 
-        # Detach probe: publish AttachedCollisionObject with REMOVE operation
-        det_inner = CollisionObject()
-        det_inner.header.frame_id = self.planning_link
-        det_inner.header.stamp = self.get_clock().now().to_msg()
-        det_inner.id = 'post_grasp_probe'
-        det_inner.operation = CollisionObject.REMOVE
+        if self._post_grasp_probe_attached:
+            # Detach only when this node actually attached the object. MoveIt
+            # otherwise emits a misleading ERROR on every pre-grasp reset.
+            det_inner = CollisionObject()
+            det_inner.header.frame_id = self.planning_link
+            det_inner.header.stamp = self.get_clock().now().to_msg()
+            det_inner.id = 'post_grasp_probe'
+            det_inner.operation = CollisionObject.REMOVE
 
-        det_aco = AttachedCollisionObject()
-        det_aco.link_name = self.planning_link
-        det_aco.object = det_inner
-        self._attached_object_pub.publish(det_aco)
+            det_aco = AttachedCollisionObject()
+            det_aco.link_name = self.planning_link
+            det_aco.object = det_inner
+            self._attached_object_pub.publish(det_aco)
 
-        # Also remove the detached object from the world scene
-        world_probe = CollisionObject()
-        world_probe.header.frame_id = self.planning_frame
-        world_probe.header.stamp = self.get_clock().now().to_msg()
-        world_probe.id = 'post_grasp_probe'
-        world_probe.operation = CollisionObject.REMOVE
-        self._collision_object_pub.publish(world_probe)
+            world_probe = CollisionObject()
+            world_probe.header.frame_id = self.planning_frame
+            world_probe.header.stamp = self.get_clock().now().to_msg()
+            world_probe.id = 'post_grasp_probe'
+            world_probe.operation = CollisionObject.REMOVE
+            self._collision_object_pub.publish(world_probe)
+            self._post_grasp_probe_attached = False
+            removed.append('probe')
 
-        _safe_ros_log(self.get_logger(), "info", '[CollisionWorld] Removed floor plane and probe attachment.')
-
-    def _build_post_grasp_lift_path_constraints(self, start_pose: Pose, target_pose: Pose) -> Constraints:
-        constraints = Constraints()
-
-        corridor = PositionConstraint()
-        corridor.header.frame_id = self.planning_frame
-        corridor.header.stamp = self.get_clock().now().to_msg()
-        corridor.link_name = self.planning_link
-        corridor.target_point_offset = Vector3(x=0.0, y=0.0, z=0.0)
-
-        region = BoundingVolume()
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [
-            float(self.post_grasp_lift_path_xy_tolerance_m * 2.0),
-            float(self.post_grasp_lift_path_xy_tolerance_m * 2.0),
-            float(max(0.01, abs(float(target_pose.position.z) - float(start_pose.position.z)) + 0.01)),
-        ]
-        region.primitives.append(box)
-
-        corridor_pose = Pose()
-        corridor_pose.position = Point(
-            x=float(start_pose.position.x),
-            y=float(start_pose.position.y),
-            z=float((float(start_pose.position.z) + float(target_pose.position.z)) * 0.5),
-        )
-        corridor_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-        region.primitive_poses.append(corridor_pose)
-        corridor.constraint_region = region
-        corridor.weight = 1.0
-        constraints.position_constraints.append(corridor)
-
-        ori = OrientationConstraint()
-        ori.header.frame_id = self.planning_frame
-        ori.header.stamp = corridor.header.stamp
-        ori.link_name = self.planning_link
-        ori.orientation = start_pose.orientation
-        ori.absolute_x_axis_tolerance = self.post_grasp_lift_orientation_tol_rad
-        ori.absolute_y_axis_tolerance = self.post_grasp_lift_orientation_tol_rad
-        ori.absolute_z_axis_tolerance = self.post_grasp_lift_orientation_tol_rad
-        ori.weight = 1.0
-        constraints.orientation_constraints.append(ori)
-        return constraints
-
-    def _send_post_grasp_lift_movegroup_segment(self, start_pose: Pose, target_pose: Pose) -> None:
-        target_xyz = np.array([
-            float(target_pose.position.x),
-            float(target_pose.position.y),
-            float(target_pose.position.z),
-        ], dtype=np.float64)
-        pose_stamped = self.make_pose(target_xyz, target_pose.orientation)
-        path_constraints = self._build_post_grasp_lift_path_constraints(start_pose, target_pose)
-        lift_speed_scale = min(self.velocity_scale, self.post_grasp_lift_speed_scale)
-
-        self.send_pose_goal(
-            pose_stamped,
-            pos_tol=self.post_grasp_lift_goal_position_tol_m,
-            with_orientation=True,
-            orientation_override=target_pose.orientation,
-            orientation_tol=self.post_grasp_lift_orientation_tol_rad,
-            target_point_offset=[0.0, 0.0, 0.0],
-            path_constraints=path_constraints,
-            velocity_scale=lift_speed_scale,
-            acceleration_scale=min(self.acceleration_scale, lift_speed_scale),
-            arm_joints_only_start_state=True,
-        )
-
-    def _build_post_grasp_lift_waypoints(self, start_pose: Pose, next_z: float) -> List[Pose]:
-        total_lift = max(0.0, float(next_z) - float(start_pose.position.z))
-        if total_lift <= 1e-6:
-            return []
-
-        num_steps = max(1, int(math.ceil(total_lift / self.post_grasp_lift_waypoint_step_m)))
-        waypoints: List[Pose] = []
-        for step_idx in range(1, num_steps + 1):
-            alpha = step_idx / float(num_steps)
-            pose = Pose()
-            pose.position = Point(
-                x=float(start_pose.position.x),
-                y=float(start_pose.position.y),
-                z=float(start_pose.position.z + total_lift * alpha),
+        if removed:
+            self.get_logger().info(
+                f'[CollisionWorld] Removed post-grasp objects: {", ".join(removed)}.'
             )
-            pose.orientation = Quaternion(
-                x=float(start_pose.orientation.x),
-                y=float(start_pose.orientation.y),
-                z=float(start_pose.orientation.z),
-                w=float(start_pose.orientation.w),
-            )
-            waypoints.append(pose)
-        return waypoints
-
-    def _post_grasp_lift_escape_active(self, current_link_z: float) -> bool:
-        if self._post_grasp_lift_escape_z is None:
-            return False
-        clearance_margin = max(0.001, 0.5 * self.post_grasp_lift_waypoint_step_m)
-        return float(current_link_z) < float(self._post_grasp_lift_escape_z) - clearance_margin
-
-    def _retry_post_grasp_lift(self, reason: str, current_segment: Optional[float] = None) -> bool:
-        if self.sequence_stage != 'move_post_grasp_lift':
-            return False
-
-        if self._post_grasp_lift_retry_count >= self.post_grasp_lift_max_retries:
-            return False
-
-        base_segment = float(
-            current_segment
-            if current_segment is not None and current_segment > 0.0
-            else (self._post_grasp_lift_segment_cap_m or self.post_grasp_lift_segment_m)
-        )
-        min_segment = max(
-            self.post_grasp_lift_waypoint_step_m,
-            min(self.post_grasp_lift_min_progress_m, self.post_grasp_lift_segment_m),
-        )
-        if base_segment <= min_segment + 1e-6:
-            return False
-
-        next_segment = max(min_segment, base_segment * 0.5)
-        if next_segment >= base_segment - 1e-6:
-            next_segment = max(min_segment, base_segment - self.post_grasp_lift_waypoint_step_m)
-        if next_segment >= base_segment - 1e-6:
-            return False
-
-        self._post_grasp_lift_segment_cap_m = float(next_segment)
-        self._post_grasp_lift_retry_count += 1
-        _safe_ros_log(self.get_logger(), "warning", f'{reason} Retrying post-grasp lift with a smaller straight-up segment '
-            f'of {next_segment:.3f} m '
-            f'(retry {self._post_grasp_lift_retry_count}/{self.post_grasp_lift_max_retries}).')
-        self._send_next_post_grasp_lift_segment()
-        return True
-
-    def _scale_robot_trajectory_timing(self, robot_trajectory, speed_scale: float) -> None:
-        if speed_scale >= 0.999 or speed_scale <= 0.0:
-            return
-
-        joint_traj = robot_trajectory.joint_trajectory
-        if not joint_traj.points:
-            return
-
-        inv_speed = 1.0 / float(speed_scale)
-        accel_scale = float(speed_scale) * float(speed_scale)
-        for point in joint_traj.points:
-            point.time_from_start = sec_to_duration(duration_to_sec(point.time_from_start) * inv_speed)
-            if point.velocities:
-                point.velocities = [float(v) * float(speed_scale) for v in point.velocities]
-            if point.accelerations:
-                point.accelerations = [float(a) * accel_scale for a in point.accelerations]
 
     def compute_approach_axis_in_planning_frame(self, orientation: Quaternion) -> np.ndarray:
         return normalize(quat_to_matrix(orientation) @ self.approach_axis_in_tool.reshape(3,))
@@ -2973,7 +2929,7 @@ class VisionGraspNode(Node):
         # 6D Pose Agent: align gripper yaw with detected object orientation.
         if self.object_yaw_align_enabled and self.detected_object_yaw_rad is not None:
             yaw = self.detected_object_yaw_rad
-            _safe_ros_log(self.get_logger(), "info", f'Grasp orientation from object 6D pose: '
+            self.get_logger().info(f'Grasp orientation from object 6D pose: '
                 f'roll=180° pitch=0° yaw={math.degrees(yaw):.1f}° '
                 f'(object long axis + {self.object_yaw_rotation_offset_deg:.0f}° offset)')
             return rpy_to_quat(math.pi, 0.0, yaw)
@@ -2982,13 +2938,13 @@ class VisionGraspNode(Node):
         # then build roll=pi, pitch=0, yaw=<current_yaw> quaternion.
         cur = self.get_current_tool_orientation_in_planning_frame()
         if cur is None:
-            _safe_ros_log(self.get_logger(), "warning", 'TF unavailable; using fixed RPY for grasp orientation.')
+            self.get_logger().warning('TF unavailable; using fixed RPY for grasp orientation.')
             return rpy_to_quat(self.fixed_roll, self.fixed_pitch, self.fixed_yaw)
         # Extract yaw of current end-effector about Z-axis in planning frame
         R = quat_to_matrix(cur)
         yaw = math.atan2(R[1, 0], R[0, 0])  # yaw = atan2(R10, R00)
         result = rpy_to_quat(math.pi, 0.0, yaw)
-        _safe_ros_log(self.get_logger(), "info", f'Downward orientation from arm: roll=180° pitch=0° yaw={math.degrees(yaw):.1f}°')
+        self.get_logger().info(f'Downward orientation from arm: roll=180° pitch=0° yaw={math.degrees(yaw):.1f}°')
         return result
 
     def choose_target_orientation(self) -> Optional[Quaternion]:
@@ -3103,32 +3059,11 @@ class VisionGraspNode(Node):
         """
         if not self.fourbar_ground_guard_enabled:
             return
-        if self.fourbar_use_urdf_geometry_model:
-            off = self._fourbar_actual_contact_offset(float(self.computed_gripper_close))
-            self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
-            _safe_ros_log(self.get_logger(), "info", f'Actual four-bar offset locked: '
-                f'({off[0]*1000:.1f}, {off[1]*1000:.1f}, {off[2]*1000:.1f}) mm. '
-                'Ground guard will lift contact point if required; offset will not be inflated.')
-            return
-
-        # Legacy fallback behavior.
-        offset = np.array(self.effective_target_point_offset_in_link, dtype=np.float64)
-        R = quat_to_matrix(orientation)
-        z_axis_world = float(R[2, 2])
-        min_world_z = float(self.floor_z_min + self.fourbar_ground_clearance_m)
-        contact_z = float(contact_point[2])
-        required = float(self.fourbar_safe_contact_offset_z_min_m)
-        if z_axis_world < -0.25:
-            required_from_floor = (
-                float(self.fourbar_bucket_tip_z_max_m)
-                + (min_world_z - contact_z) / (-z_axis_world)
-            )
-            required = max(required, required_from_floor)
-        if required > float(offset[2]) + 1e-5:
-            old = float(offset[2])
-            offset[2] = required
-            self.effective_target_point_offset_in_link = [float(offset[0]), float(offset[1]), float(offset[2])]
-            _safe_ros_log(self.get_logger(), "warning", f'Legacy four-bar ground guard raised contact offset z {old*1000:.1f} → {required*1000:.1f} mm.')
+        off = self._fourbar_actual_contact_offset(float(self.computed_gripper_close))
+        self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
+        self.get_logger().info(f'Actual four-bar offset locked: '
+            f'({off[0]*1000:.1f}, {off[1]*1000:.1f}, {off[2]*1000:.1f}) mm. '
+            'Ground guard will lift contact point if required; offset will not be inflated.')
 
     def _predict_fourbar_arc_min_z(self, contact_point: np.ndarray, orientation: Quaternion) -> Tuple[float, float]:
         """Predict lowest bucket z while closing from open to q_close."""
@@ -3140,30 +3075,30 @@ class VisionGraspNode(Node):
         samples = np.linspace(float(self.gripper_open), float(self.computed_gripper_close), n)
         min_z = float('inf')
         for q_sample in samples:
-            if self.fourbar_use_urdf_geometry_model:
-                local_contact = self._fourbar_actual_contact_offset(float(q_sample))
-                # Bucket tip is below the local contact point by approximately
-                # max_z-contact_z.  Use actual STL max z, but do not inflate the
-                # contact offset.  This protects the sweep without making the
-                # gripper miss the object.
-                local_bucket_z = max(
-                    float(local_contact[2]),
-                    float(self.fourbar_bucket_tip_z_max_m),
-                ) + float(self.fourbar_open_close_guard_extra_m)
-            else:
-                local_contact_z = self._fourbar_contact_z_offset_model(float(q_sample))
-                local_bucket_z = max(float(local_contact_z), float(self.fourbar_bucket_tip_z_max_m)) + float(self.fourbar_open_close_guard_extra_m)
+            local_contact = self._fourbar_actual_contact_offset(float(q_sample))
+            # Bucket tip is below the local contact point by approximately
+            # max_z-contact_z.  Use actual STL max z, but do not inflate the
+            # contact offset.  This protects the sweep without making the
+            # gripper miss the object.
+            local_bucket_z = max(
+                float(local_contact[2]),
+                float(self.fourbar_bucket_tip_z_max_m),
+            ) + float(self.fourbar_open_close_guard_extra_m)
             p_bucket = link_origin + R @ np.array([0.0, float(self.fourbar_contact_y_offset_m), local_bucket_z], dtype=np.float64)
             min_z = min(min_z, float(p_bucket[2]))
-        required = float(self.floor_z_min + self.fourbar_ground_clearance_m)
+        required = float(self.floor_z_min + max(0.0, self.fourbar_ground_clearance_m))
         return min_z, float(min_z - required)
 
     def apply_fourbar_arc_guard_to_grasp_point(self, grasp_point: np.ndarray, orientation: Quaternion) -> np.ndarray:
-        """Lift contact point only as much as required and never by a huge amount."""
+        """Lift the contact only enough for the configured physical arc clearance."""
         if not self.fourbar_arc_guard_enabled:
             return grasp_point
         min_z, clearance = self._predict_fourbar_arc_min_z(grasp_point, orientation)
-        required = float(self.floor_z_min + self.fourbar_ground_clearance_m + self.fourbar_min_arc_clearance_m)
+        required = float(
+            self.floor_z_min
+            + max(0.0, self.fourbar_ground_clearance_m)
+            + max(0.0, self.fourbar_min_arc_clearance_m)
+        )
         if min_z < required:
             lift = required - min_z
             configured_cap = max(0.0, float(self.fourbar_max_contact_lift_m))
@@ -3173,16 +3108,16 @@ class VisionGraspNode(Node):
                 # clearance. A safety guard must never knowingly return an
                 # unsafe pose. Apply the full required lift; a missed grasp is
                 # recoverable, a floor collision is not.
-                _safe_ros_log(self.get_logger(), "warning", f'Required four-bar floor lift {lift*1000:.1f} mm exceeds '
+                self.get_logger().warning(f'Required four-bar floor lift {lift*1000:.1f} mm exceeds '
                     f'configured advisory cap {configured_cap*1000:.1f} mm; applying the full safety correction.')
             grasp_point = np.array(grasp_point, dtype=np.float64).copy()
             grasp_point[2] += float(lift)
             min_z_after, clearance_after = self._predict_fourbar_arc_min_z(grasp_point, orientation)
-            _safe_ros_log(self.get_logger(), "warning", f'Four-bar actual closing-arc guard lifted contact point by {lift*1000:.1f} mm: '
+            self.get_logger().warning(f'Four-bar actual closing-arc guard lifted contact point by {lift*1000:.1f} mm: '
                 f'predicted_min_bucket_z {min_z:.3f} < required {required:.3f}. '
                 f'After lift min_z={min_z_after:.3f}, clearance={clearance_after*1000:.1f}mm.')
         else:
-            _safe_ros_log(self.get_logger(), "info", f'Four-bar actual closing-arc clearance OK: min_bucket_z={min_z:.3f}, '
+            self.get_logger().info(f'Four-bar actual closing-arc clearance OK: min_bucket_z={min_z:.3f}, '
                 f'clearance={clearance*1000:.1f}mm.')
         return grasp_point
 
@@ -3194,7 +3129,7 @@ class VisionGraspNode(Node):
         used_width = self.last_estimated_object_width_m
         if used_width is None and self._last_detected_width_m is not None:
             used_width = self._last_detected_width_m
-        _safe_ros_log(self.get_logger(), "info", f'[{label}] committed grasp geometry: '
+        self.get_logger().info(f'[{label}] committed grasp geometry: '
             f'target=({self.current_target_point_base[0]:.3f},{self.current_target_point_base[1]:.3f},{self.current_target_point_base[2]:.3f}) '
             f'grasp=({grasp_point[0]:.3f},{grasp_point[1]:.3f},{grasp_point[2]:.3f}) '
             f'width={(used_width*1000.0 if used_width is not None else -1):.1f}mm '
@@ -3209,26 +3144,27 @@ class VisionGraspNode(Node):
         if self.current_target_point_base is None:
             return False
 
-        if self.adaptive_gripper_enabled and self._last_detected_width_m is not None:
-            self.computed_gripper_close, self.computed_gripper_preclose = self._compute_adaptive_gripper_close(
+        if self.adaptive_gripper_enabled:
+            width_for_grasp = (
                 self._last_detected_width_m
+                if self._last_detected_width_m is not None
+                else self.nominal_probe_width_m
             )
-            self.last_estimated_object_width_m = self._last_detected_width_m
+            self.computed_gripper_close, self.computed_gripper_preclose = self._compute_adaptive_gripper_close(
+                width_for_grasp
+            )
+            self.last_estimated_object_width_m = width_for_grasp
+            if self._last_detected_width_m is None:
+                self.get_logger().warning(
+                    'No reliable 3D width estimate; using nominal_probe_width_m '
+                    f'({width_for_grasp*1000.0:.1f} mm) instead of commanding the gripper fully closed.'
+                )
         else:
             self.computed_gripper_close = self.gripper_close
             self.computed_gripper_preclose = self.gripper_preclose
 
         # One-go close: final geometry must be based on q_close, not preclose.
-        eff_z = self._compute_contact_z_offset(self.computed_gripper_close)
-        if self.fourbar_use_urdf_geometry_model:
-            off = self._fourbar_actual_contact_offset(self.computed_gripper_close)
-            self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
-        else:
-            self.effective_target_point_offset_in_link = [
-                float(self.target_point_offset_in_link[0]),
-                float(self.target_point_offset_in_link[1]),
-                float(eff_z),
-            ]
+        self._apply_fourbar_contact_offset(self.computed_gripper_close)
 
         orientation_locked = (
             self.lock_grasp_orientation_after_initial_plan
@@ -3243,7 +3179,7 @@ class VisionGraspNode(Node):
         if orientation_locked:
             orientation = self.grasp_orientation
             if self._last_detected_orientation_cam is not None:
-                _safe_ros_log(self.get_logger(), "info", f'Keeping initial grasp orientation during {label}; '
+                self.get_logger().info(f'Keeping initial grasp orientation during {label}; '
                     'close-range object yaw update ignored so the final Cartesian descent stays straight.')
         else:
             orientation = self.choose_target_orientation()
@@ -3265,7 +3201,7 @@ class VisionGraspNode(Node):
             bias_base = np.array(bias_base, dtype=np.float64).reshape(3,)
             if float(np.linalg.norm(bias_base)) >= 1e-9:
                 corrected = corrected + bias_base
-                _safe_ros_log(self.get_logger(), "info", f'Applying calibrated grasp target base bias: '
+                self.get_logger().info(f'Applying calibrated grasp target base bias: '
                     f'({bias_base[0]*1000:.1f},{bias_base[1]*1000:.1f},{bias_base[2]*1000:.1f})mm.')
 
         bias_tool = getattr(self, 'grasp_target_bias_in_tool', None)
@@ -3278,7 +3214,7 @@ class VisionGraspNode(Node):
 
         bias_world = quat_to_matrix(orientation) @ bias_tool
         corrected = corrected + bias_world
-        _safe_ros_log(self.get_logger(), "info", f'Applying calibrated grasp target bias: '
+        self.get_logger().info(f'Applying calibrated grasp target bias: '
             f'tool=({bias_tool[0]*1000:.1f},{bias_tool[1]*1000:.1f},{bias_tool[2]*1000:.1f})mm '
             f'world=({bias_world[0]*1000:.1f},{bias_world[1]*1000:.1f},{bias_world[2]*1000:.1f})mm.')
         return corrected
@@ -3294,8 +3230,7 @@ class VisionGraspNode(Node):
         # Positive grasp_depth_below_surface_m pushes the finger contacts
         # further along the approach axis, past the detected surface, so the
         # fingers actually wrap around the probe body instead of just touching
-        # its top.  surface_offset is kept at 0 so the depth value is the
-        # sole determinant of the grasp insertion distance.
+        # its top.
         grasp_point = motion_target + approach_axis * self.grasp_depth_below_surface_m
 
         if self.floor_safe_grasp_enabled:
@@ -3305,7 +3240,7 @@ class VisionGraspNode(Node):
             downward_descent = float(target[2] - grasp_point[2])
             if downward_descent > self.max_grasp_descent_below_target_m:
                 grasp_point[2] = float(target[2] - self.max_grasp_descent_below_target_m)
-                _safe_ros_log(self.get_logger(), "warning", f'Floor-safe grasp clamp: descent {downward_descent*1000:.1f} mm '
+                self.get_logger().warning(f'Floor-safe grasp clamp: descent {downward_descent*1000:.1f} mm '
                     f'limited to {self.max_grasp_descent_below_target_m*1000:.1f} mm.')
 
             # Stronger floor clamp: the contact target must be high enough for a
@@ -3317,7 +3252,7 @@ class VisionGraspNode(Node):
             if grasp_point[2] < min_contact_z:
                 lift = min_contact_z - float(grasp_point[2])
                 grasp_point[2] = min_contact_z
-                _safe_ros_log(self.get_logger(), "warning", f'Floor-safe grasp lifted contact point by {lift*1000:.1f} mm '
+                self.get_logger().warning(f'Floor-safe grasp lifted contact point by {lift*1000:.1f} mm '
                     f'to keep contact target above floor-safe height.')
 
             # After the contact point is decided, update the local offset so the
@@ -3356,7 +3291,7 @@ class VisionGraspNode(Node):
             or lateral > self.refine_lateral_max_m
             or vertical > self.refine_vertical_max_m
         ):
-            _safe_ros_log(self.get_logger(), "warning", f'Refinement rejected: jump total={total:.3f}m '
+            self.get_logger().warning(f'Refinement rejected: jump total={total:.3f}m '
                 f'lateral={lateral:.3f}m vertical={vertical:.3f}m. '
                 f'Keeping original target.', throttle_duration_sec=0.5)
             return False
@@ -3386,9 +3321,7 @@ class VisionGraspNode(Node):
         self._expire_target_stability_history(now_sec)
 
         if confidence < self.target_lock_min_confidence:
-            _safe_ros_log(
-                self.get_logger(),
-                "info",
+            self.get_logger().info(
                 f'Probe confidence {confidence:.2f} is below lock threshold '
                 f'{self.target_lock_min_confidence:.2f}; not adding it to the '
                 'target stability window.',
@@ -3403,9 +3336,7 @@ class VisionGraspNode(Node):
             )
             outlier_distance = float(np.linalg.norm(candidate - existing_center))
             if outlier_distance > self.target_filter_outlier_distance_m:
-                _safe_ros_log(
-                    self.get_logger(),
-                    "warning",
+                self.get_logger().warning(
                     f'Resetting probe stability window after a '
                     f'{outlier_distance*1000.0:.1f} mm 3D detection jump.',
                     throttle_duration_sec=0.5,
@@ -3477,7 +3408,7 @@ class VisionGraspNode(Node):
             return mask_bool
 
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Failed to read YOLO segmentation mask: {exc}', throttle_duration_sec=1.0)
+            self.get_logger().warning(f'Failed to read YOLO segmentation mask: {exc}', throttle_duration_sec=1.0)
             return None
 
     def _mask_depth_target(
@@ -3485,7 +3416,8 @@ class VisionGraspNode(Node):
         mask_bool: np.ndarray,
         expected_depth_m: Optional[float] = None,
         depth_band_m: Optional[float] = None,
-        prefer_nearest: bool = True
+        prefer_nearest: bool = True,
+        depth_image: Optional[np.ndarray] = None,
     ) -> Optional[Tuple[int, int, float]]:
         """
         Convert segmentation mask into a robust pixel+depth target.
@@ -3496,10 +3428,11 @@ class VisionGraspNode(Node):
           - empty background,
           - cropped part of object.
         """
-        if self.latest_depth is None:
+        depth_img = depth_image if depth_image is not None else self.latest_depth
+        if depth_img is None:
             return None
 
-        h, w = self.latest_depth.shape[:2]
+        h, w = depth_img.shape[:2]
 
         if mask_bool.shape[0] != h or mask_bool.shape[1] != w:
             mask_bool = cv2.resize(
@@ -3512,7 +3445,7 @@ class VisionGraspNode(Node):
         if xs.size < self.mask_min_pixels:
             return None
 
-        depths = self.latest_depth[ys, xs]
+        depths = depth_img[ys, xs]
         valid = np.isfinite(depths) & (depths > self.min_depth_m) & (depths < self.max_depth_m)
 
         if expected_depth_m is not None and depth_band_m is not None:
@@ -3564,12 +3497,15 @@ class VisionGraspNode(Node):
 
         return u, v, depth
 
-    def _select_best_detection(self, results, confidence_threshold: float):
+    def _select_best_detection(self, results, confidence_threshold: float,
+                               image_shape: Optional[Tuple[int, ...]] = None):
         """
         Select best YOLO detection and keep its segmentation mask if available.
         """
         best = None
         best_conf = -1.0
+        if image_shape is None and self.latest_color is not None:
+            image_shape = self.latest_color.shape
 
         for result in results:
             boxes = result.boxes
@@ -3586,7 +3522,7 @@ class VisionGraspNode(Node):
 
                 if conf > best_conf:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    mask_bool = self._get_result_mask_for_box(result, i, self.latest_color.shape)
+                    mask_bool = self._get_result_mask_for_box(result, i, image_shape)
 
                     best = {
                         'name': name,
@@ -3603,6 +3539,74 @@ class VisionGraspNode(Node):
 
         return best
 
+    def _poll_inference(self) -> Optional[Tuple[FrameSnapshot, list]]:
+        """Submit the newest consistent frame pair and return the newest
+        completed inference, or None while one is still in flight.
+
+        The model runs in a background thread, so this never blocks the
+        executor. Results always come with the exact FrameSnapshot they were
+        computed from (typically one detect tick old); downstream depth
+        sampling and TF use that snapshot, never newer sensor data.
+        """
+        if self._yolo_worker is None:
+            return None
+
+        best_pair = None
+        best_key = None
+        for color_stamp, color in self._color_frame_queue:
+            for depth_stamp, depth_frame, depth in self._depth_frame_queue:
+                gap_sec = abs((color_stamp - depth_stamp).nanoseconds) * 1e-9
+                newest_sec = max(color_stamp.nanoseconds, depth_stamp.nanoseconds) * 1e-9
+                key = (gap_sec, -newest_sec)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_pair = (
+                        color_stamp, color, depth_stamp, depth_frame, depth, gap_sec
+                    )
+
+        if best_pair is not None:
+            color_stamp, color, depth_stamp, depth_frame, depth, gap_sec = best_pair
+            if gap_sec <= self.max_color_depth_stamp_gap_sec:
+                pair_key = (color_stamp.nanoseconds, depth_stamp.nanoseconds)
+                if pair_key != self._last_inference_pair_key:
+                    self._last_inference_pair_key = pair_key
+                    # Drop submitted/older frames so an old exact pair cannot
+                    # permanently beat newer near-synchronized pairs.
+                    self._color_frame_queue = deque(
+                        (item for item in self._color_frame_queue
+                         if item[0].nanoseconds > color_stamp.nanoseconds),
+                        maxlen=self.sensor_sync_queue_size,
+                    )
+                    self._depth_frame_queue = deque(
+                        (item for item in self._depth_frame_queue
+                         if item[0].nanoseconds > depth_stamp.nanoseconds),
+                        maxlen=self.sensor_sync_queue_size,
+                    )
+                    snap = FrameSnapshot(
+                        color=color.copy(),
+                        color_stamp_sec=color_stamp.nanoseconds * 1e-9,
+                        # depth_cb replaces the array, never mutates it in place,
+                        # so holding a reference is safe.
+                        depth=depth,
+                        depth_stamp_sec=depth_stamp.nanoseconds * 1e-9,
+                        depth_frame=depth_frame,
+                        stamp=depth_stamp,
+                    )
+                    self._yolo_worker.submit(snap, snap.color)
+            else:
+                now_sec = self._now_sec()
+                if now_sec - self._stamp_gap_warned_sec > 5.0:
+                    self._stamp_gap_warned_sec = now_sec
+                    self.get_logger().warning(
+                        f'Waiting for synchronized camera frames: closest color/depth pair differs by '
+                        f'{gap_sec:.3f}s (> {self.max_color_depth_stamp_gap_sec:.3f}s '
+                        'max_color_depth_stamp_gap_sec). A mismatched pair on a '
+                        'moving camera yields a wrong 3D target; check camera rates '
+                        'if this persists.'
+                    )
+
+        return self._yolo_worker.take_result()
+
     def detect_target_once(
         self,
         publish_debug: bool = True,
@@ -3611,15 +3615,13 @@ class VisionGraspNode(Node):
         """
         Segmentation Perception Agent:
         Use yolo26-seg mask first. Fall back to bbox center only if no mask exists.
+
+        Consumes the newest completed background inference (submitted on a
+        previous call) and submits the current frames for the next one.
         """
-        if (
-            self.latest_color is None
-            or self.latest_depth is None
-            or self.camera_info is None
-            or self.model is None
-        ):
-            if allow_state_updates:
-                self._clear_detected_object_pose()
+        completed = self._poll_inference()
+
+        if completed is None or self.camera_info is None:
             if publish_debug and self.latest_color is not None:
                 annotated = self.latest_color.copy()
                 if not allow_state_updates and self.busy:
@@ -3630,29 +3632,18 @@ class VisionGraspNode(Node):
                 self.publish_debug_image(annotated)
             return None
 
-        img = self.latest_color.copy()
+        snap, results = completed
 
-        try:
-            results = self.model(img, verbose=False)
-        except Exception as exc:
-            _safe_ros_log(self.get_logger(), "error", f'YOLO inference failed: {exc}')
-            if publish_debug:
-                if not allow_state_updates and self.busy:
-                    self._stamp_debug_status(
-                        img,
-                        f'Live detect view: {self.sequence_stage}',
-                    )
-                self.publish_debug_image(img)
-            return None
-
-        annotated = self._annotate_yolo_results(img, results)
+        annotated = self._annotate_yolo_results(snap.color, results)
         if not allow_state_updates and self.busy:
             self._stamp_debug_status(
                 annotated,
                 f'Live detect view: {self.sequence_stage}',
             )
 
-        best = self._select_best_detection(results, self.confidence_threshold)
+        best = self._select_best_detection(
+            results, self.confidence_threshold, image_shape=snap.color.shape
+        )
 
         if best is None:
             if allow_state_updates:
@@ -3670,18 +3661,15 @@ class VisionGraspNode(Node):
                 # For the floor probe task, use the geometric mask centre.
                 # Nearest-surface bias pulls the pick point toward the visible
                 # upper edge of the probe instead of its middle.
-                prefer_nearest=False
+                prefer_nearest=False,
+                depth_image=snap.depth,
             )
 
         # Object Width Estimator Agent: estimate 3D size for adaptive gripper sizing.
         if allow_state_updates:
             self._last_detected_width_m = None
-            if (
-                self.adaptive_gripper_enabled
-                and best['mask'] is not None
-                and self.latest_depth is not None
-            ):
-                w3d = self._estimate_object_width_3d(best['mask'], self.latest_depth)
+            if self.adaptive_gripper_enabled and best['mask'] is not None:
+                w3d = self._estimate_object_width_3d(best['mask'], snap.depth)
                 if (
                     w3d is not None
                     and self.adaptive_gripper_min_width_m <= w3d <= self.adaptive_gripper_max_width_m
@@ -3695,12 +3683,16 @@ class VisionGraspNode(Node):
             allow_state_updates
             and self.object_yaw_align_enabled
             and best['mask'] is not None
-            and self.latest_depth is not None
         ):
-            pose_estimate = self._estimate_object_orientation_3d(best['mask'], self.latest_depth)
+            pose_estimate = self._estimate_object_orientation_3d(best['mask'], snap.depth)
             if pose_estimate is not None:
                 centroid_cam, self._last_detected_orientation_cam = pose_estimate
-                self._update_detected_object_pose_from_camera(centroid_cam, self._last_detected_orientation_cam)
+                self._update_detected_object_pose_from_camera(
+                    centroid_cam,
+                    self._last_detected_orientation_cam,
+                    depth_frame=snap.depth_frame,
+                    stamp=snap.stamp,
+                )
             else:
                 self._clear_detected_object_pose()
         elif allow_state_updates:
@@ -3712,7 +3704,7 @@ class VisionGraspNode(Node):
         else:
             u = best['u_bbox']
             v = best['v_bbox']
-            depth = self.get_depth_roi_median(u, v)
+            depth = self.get_depth_roi_median(u, v, depth_image=snap.depth)
 
         if depth is None:
             if publish_debug:
@@ -3730,15 +3722,15 @@ class VisionGraspNode(Node):
 
         point_cam = self.pixel_to_point_camera(u, v, depth)
 
-        if point_cam is None or self.latest_depth_frame is None:
+        if point_cam is None:
             if publish_debug:
                 self.publish_debug_image(annotated)
             return None
 
-        point_base = self.transform_point(
+        point_base = self._camera_grasp_target_to_planning_frame(
             point_cam,
-            self.latest_depth_frame,
-            self.planning_frame,
+            snap.depth_frame,
+            stamp=snap.stamp,
         )
 
         if point_base is None:
@@ -3760,7 +3752,7 @@ class VisionGraspNode(Node):
                 self.publish_debug_image(annotated)
 
             if allow_state_updates:
-                _safe_ros_log(self.get_logger(), "warning", f'Rejecting target below floor threshold: '
+                self.get_logger().warning(f'Rejecting target below floor threshold: '
                     f'z={point_base[2]:.3f} < floor_z_min={self.floor_z_min:.3f}', throttle_duration_sec=1.0)
             return None
 
@@ -3798,7 +3790,7 @@ class VisionGraspNode(Node):
             self.publish_debug_image(annotated)
 
         if allow_state_updates:
-            _safe_ros_log(self.get_logger(), "info", f'Detection [{source}]: x={point_base[0]:.3f} '
+            self.get_logger().info(f'Detection [{source}]: x={point_base[0]:.3f} '
                 f'y={point_base[1]:.3f} z={point_base[2]:.3f} '
                 f'conf={best["conf"]:.2f}', throttle_duration_sec=1.0)
 
@@ -3816,7 +3808,7 @@ class VisionGraspNode(Node):
             return
 
         if self._perception_updates_forbidden_now():
-            _safe_ros_log(self.get_logger(), "info", f'Perception freeze active during {self.sequence_stage}: '
+            self.get_logger().info(f'Perception freeze active during {self.sequence_stage}: '
                 'ignoring live YOLO/depth target update.', throttle_duration_sec=1.0)
             return
 
@@ -3836,26 +3828,7 @@ class VisionGraspNode(Node):
         if not self.busy or self.current_target_point_base is None:
             return
 
-        if self.sequence_stage in (
-            'preclose_in_air',
-            'move_grasp',
-            'refine',
-            'preclose_gripper',
-            'close_gripper',
-            'verify_gripper',
-            'move_post_grasp_lift',
-            'move_pick_home',
-            'move_base_box_drop',
-            'release_in_base_box',
-            'move_pick_home_after_place',
-            'move_lift_check',
-            'verify_lift',
-            'retry_open_gripper',
-            'move_cartesian_retreat',
-            'move_retreat_home',
-            'done_holding',
-            'done_placed',
-        ):
+        if self.sequence_stage in stages.LIVE_TRACK_LOCKED_STAGES:
             return
 
         moved = float(np.linalg.norm(point_base - self.current_target_point_base))
@@ -3864,12 +3837,12 @@ class VisionGraspNode(Node):
             if self.sequence_stage == 'move_pre_grasp' and self.ignore_live_replan_during_pregrasp:
                 # The wrist camera is moving during pre-grasp. Apparent target motion
                 # is usually projection/depth drift, not real probe motion. Verify after arrival.
-                _safe_ros_log(self.get_logger(), "warning", f'Apparent live target shift {moved:.3f}m during move_pre_grasp; '
+                self.get_logger().warning(f'Apparent live target shift {moved:.3f}m during move_pre_grasp; '
                     f'not aborting. Will verify/refine at pre-grasp.', throttle_duration_sec=0.7)
                 return
 
             self.pending_replan_after_motion = True
-            _safe_ros_log(self.get_logger(), "warning", f'Live target moved {moved:.3f}m during {self.sequence_stage}; '
+            self.get_logger().warning(f'Live target moved {moved:.3f}m during {self.sequence_stage}; '
                 f'will replan before final grasp.', throttle_duration_sec=0.7)
 
     def _target_recent_enough(self) -> bool:
@@ -3883,14 +3856,14 @@ class VisionGraspNode(Node):
     def detect_and_maybe_grasp(self) -> None:
         now_sec = self._now_sec()
         if self._rover_motion_active():
-            _safe_ros_log(self.get_logger(), "warning", 'Vision grasp paused because rover is moving.', throttle_duration_sec=1.0)
+            self.get_logger().warning('Vision grasp paused because rover is moving.', throttle_duration_sec=1.0)
             return
 
         if self.paused_after_failure:
             if now_sec < self.blocked_until_sec:
                 return
             self.paused_after_failure = False
-            _safe_ros_log(self.get_logger(), "info", 'Failure lockout expired; auto-grasp may acquire a new stable target.')
+            self.get_logger().info('Failure lockout expired; auto-grasp may acquire a new stable target.')
 
         if now_sec < self.blocked_until_sec:
             return
@@ -3927,9 +3900,7 @@ class VisionGraspNode(Node):
         point_base, name, conf = detection
 
         if not self.is_target_stable(point_base, conf):
-            _safe_ros_log(
-                self.get_logger(),
-                "info",
+            self.get_logger().info(
                 f'Target seen but waiting for stable filtered 3D position '
                 f'({len(self.target_history)}/{self.target_stability_samples} samples, '
                 f'max residual={self.target_filter_max_residual_m*1000.0:.1f} mm, '
@@ -3974,31 +3945,29 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'open_gripper'
 
         # Gripper Sizing Agent: compute optimal close angle from detected object width.
-        if self.adaptive_gripper_enabled and self._last_detected_width_m is not None:
+        if self.adaptive_gripper_enabled:
+            width_for_grasp = (
+                self._last_detected_width_m
+                if self._last_detected_width_m is not None
+                else self.nominal_probe_width_m
+            )
             self.computed_gripper_close, self.computed_gripper_preclose = \
-                self._compute_adaptive_gripper_close(self._last_detected_width_m)
-            self.last_estimated_object_width_m = self._last_detected_width_m
+                self._compute_adaptive_gripper_close(width_for_grasp)
+            self.last_estimated_object_width_m = width_for_grasp
+            if self._last_detected_width_m is None:
+                self.get_logger().warning(
+                    'No reliable 3D width estimate at target lock; using '
+                    f'nominal_probe_width_m={width_for_grasp*1000.0:.1f} mm.'
+                )
         else:
             self.computed_gripper_close = self.gripper_close
             self.computed_gripper_preclose = self.gripper_preclose
             self.last_estimated_object_width_m = None
 
         # Four-Bar Contact Point Compensation Agent:
-        # Update effective Z offset so the arm positions the object correctly at the
-        # fingertip contact surface for whatever closing angle is needed.
-        # Final descent will be executed with the gripper already pre-closed,
-        # therefore the Cartesian contact offset must correspond to q_preclose,
-        # not to q_close and not to the fully-open state.
-        eff_z = self._compute_contact_z_offset(self.computed_gripper_close)
-        if self.fourbar_use_urdf_geometry_model:
-            off = self._fourbar_actual_contact_offset(self.computed_gripper_close)
-            self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
-        else:
-            self.effective_target_point_offset_in_link = [
-                float(self.target_point_offset_in_link[0]),
-                float(self.target_point_offset_in_link[1]),
-                float(eff_z),
-            ]
+        # Update the effective offset so the arm positions the object correctly
+        # at the bucket contact surface for whatever closing angle is needed.
+        self._apply_fourbar_contact_offset(self.computed_gripper_close)
 
         # 6D Pose Agent — Yaw: compute gripper approach yaw from object orientation.
         self.detected_object_yaw_rad = None
@@ -4007,7 +3976,7 @@ class VisionGraspNode(Node):
                 self._last_detected_orientation_cam
             )
 
-        _safe_ros_log(self.get_logger(), "info", f'Stable target acquired in {self.planning_frame}: '
+        self.get_logger().info(f'Stable target acquired in {self.planning_frame}: '
             f'x={point_base[0]:.3f}, y={point_base[1]:.3f}, '
             f'z={point_base[2]:.3f}, median_conf={conf:.2f}, '
             f'max_residual={self.target_filter_max_residual_m*1000.0:.1f}mm, '
@@ -4019,7 +3988,27 @@ class VisionGraspNode(Node):
         if self.current_target_point_base is None:
             self.reset_sequence('No target point available.')
             return
-        orientation = self.choose_target_orientation()
+        orientation = None
+        retry_orientation_valid = (
+            self.preserve_orientation_across_pregrasp_retries
+            and self._retry_grasp_orientation is not None
+            and self._retry_grasp_target is not None
+            and self._now_sec() <= self._retry_grasp_orientation_until_sec
+            and float(np.linalg.norm(
+                self.current_target_point_base - self._retry_grasp_target
+            )) <= self.pregrasp_retry_target_radius_m
+        )
+        if retry_orientation_valid:
+            orientation = self._retry_grasp_orientation
+            self.get_logger().info(
+                'Reusing the original locked grasp orientation after a pre-grasp retry; '
+                'the moving wrist-camera PCA yaw will not replace it.'
+            )
+        else:
+            self._retry_grasp_orientation = None
+            self._retry_grasp_target = None
+            self._retry_grasp_orientation_until_sec = 0.0
+            orientation = self.choose_target_orientation()
         if orientation is None:
             self.reset_sequence('Could not determine tool orientation.')
             return
@@ -4028,14 +4017,14 @@ class VisionGraspNode(Node):
         if self.lock_wrist_joint:
             self.sequence_wrist_value = self.current_joint_positions.get(self.lock_wrist_joint_name)
             if self.sequence_wrist_value is None:
-                _safe_ros_log(self.get_logger(), "warning", f'Joint "{self.lock_wrist_joint_name}" not found in /joint_states; wrist lock disabled for this sequence.')
+                self.get_logger().warning(f'Joint "{self.lock_wrist_joint_name}" not found in /joint_states; wrist lock disabled for this sequence.')
         target = self.current_target_point_base
         self.update_contact_poses_from_target(target, orientation)
 
         pre_grasp_point = self._pose_xyz(self.pre_grasp_pose)
         grasp_point = self._pose_xyz(self.grasp_pose)
         self.publish_markers()
-        _safe_ros_log(self.get_logger(), "info", 'Grasp plan | target=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f) '
+        self.get_logger().info('Grasp plan | target=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f) '
             'offset_in_link=(%.3f, %.3f, %.3f) use_ori=%s' % (
                 target[0], target[1], target[2],
                 pre_grasp_point[0], pre_grasp_point[1], pre_grasp_point[2],
@@ -4043,7 +4032,7 @@ class VisionGraspNode(Node):
                 self.target_point_offset_in_link[0], self.target_point_offset_in_link[1], self.target_point_offset_in_link[2],
                 str(self.use_orientation_constraint),
             ))
-        _safe_ros_log(self.get_logger(), "info", 'Effective offset (four-bar compensated): (%.3f, %.3f, %.3f)' % (
+        self.get_logger().info('Effective offset (four-bar compensated): (%.3f, %.3f, %.3f)' % (
                 self.effective_target_point_offset_in_link[0],
                 self.effective_target_point_offset_in_link[1],
                 self.effective_target_point_offset_in_link[2],
@@ -4076,7 +4065,9 @@ class VisionGraspNode(Node):
                 pass
             self._pregrasp_watchdog_timer = None
 
-        used_live_update = False
+        auto_calibration_applied = self._commit_pending_camera_offset_calibration()
+
+        used_live_update = auto_calibration_applied
         moved = 0.0
         recent = False
         age = 999.0
@@ -4093,7 +4084,7 @@ class VisionGraspNode(Node):
             recent = age <= self.pregrasp_recent_target_max_age_sec
 
         if recent and not self.use_recent_live_target_after_pregrasp:
-            _safe_ros_log(self.get_logger(), "info", 'Pre-grasp live correction disabled; using the originally locked probe center.')
+            self.get_logger().info('Pre-grasp live correction disabled; using the originally locked probe center.')
         elif recent:
             # Use live feedback at pre-grasp as an advisory final correction,
             # but do not create another endless pre-grasp orbit. Small drift is
@@ -4102,10 +4093,10 @@ class VisionGraspNode(Node):
                 if moved > 0.003:
                     self.current_target_point_base = live_target_point.copy()
                     used_live_update = True
-                    _safe_ros_log(self.get_logger(), "info", f'Pre-grasp final live correction committed once: moved={moved:.3f}m age={age:.2f}s. '
+                    self.get_logger().info(f'Pre-grasp final live correction committed once: moved={moved:.3f}m age={age:.2f}s. '
                         'No more pre-grasp replans will be sent; next step is bounded refinement/final descent.')
             else:
-                _safe_ros_log(self.get_logger(), "warning", f'Pre-grasp live jump {moved:.3f}m is larger than accept limit '
+                self.get_logger().warning(f'Pre-grasp live jump {moved:.3f}m is larger than accept limit '
                     f'{self.pregrasp_live_update_accept_m:.3f}m; ignoring it and using locked target.')
         elif not self.continue_if_live_target_stale_after_pregrasp:
             self.reset_sequence(f'Pre-grasp live track is stale: age={age:.2f}s.')
@@ -4132,7 +4123,7 @@ class VisionGraspNode(Node):
         """
         if self.disable_live_replan_after_lock:
             if self.pending_replan_after_motion:
-                _safe_ros_log(self.get_logger(), "warning", f'Live replan suppressed during {reason}: target is locked until sequence completion.')
+                self.get_logger().warning(f'Live replan suppressed during {reason}: target is locked until sequence completion.')
             self.pending_replan_after_motion = False
             return False
 
@@ -4173,7 +4164,7 @@ class VisionGraspNode(Node):
 
         self.publish_markers()
 
-        _safe_ros_log(self.get_logger(), "warning", f'Replanning pre-grasp from live target because {reason}: '
+        self.get_logger().warning(f'Replanning pre-grasp from live target because {reason}: '
             f'moved={moved:.3f}m, '
             f'replan={self.replan_count}/{self.max_replans_per_grasp}')
 
@@ -4204,9 +4195,9 @@ class VisionGraspNode(Node):
             return
         try:
             gh.cancel_goal_async()
-            _safe_ros_log(self.get_logger(), "warning", 'Requested cancellation of active arm motion goal.')
+            self.get_logger().warning('Requested cancellation of active arm motion goal.')
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Could not cancel active MoveIt goal cleanly: {exc}')
+            self.get_logger().warning(f'Could not cancel active MoveIt goal cleanly: {exc}')
         self._active_move_goal_handle = None
         self._clear_arm_motion_confirmation()
 
@@ -4216,9 +4207,9 @@ class VisionGraspNode(Node):
         if goal_handle is not None:
             try:
                 goal_handle.cancel_goal_async()
-                _safe_ros_log(self.get_logger(), "warning", 'Requested cancellation of active gripper action.')
+                self.get_logger().warning('Requested cancellation of active gripper action.')
             except Exception as exc:
-                _safe_ros_log(self.get_logger(), "warning", f'Could not cancel active gripper action cleanly: {exc}')
+                self.get_logger().warning(f'Could not cancel active gripper action cleanly: {exc}')
         self._gripper_action_goal_handle = None
         self._gripper_command_used_action = False
         self._gripper_action_accepted = False
@@ -4259,7 +4250,7 @@ class VisionGraspNode(Node):
         if timed_out and not self.pregrasp_watchdog_force_after_timeout and not near:
             return
         if self.arm_require_feedback_for_completion:
-            _safe_ros_log(self.get_logger(), "info", 'Pre-grasp watchdog sees the arm near its target, but strict whole-process '
+            self.get_logger().info('Pre-grasp watchdog sees the arm near its target, but strict whole-process '
                 'confirmation is enabled; waiting for MoveIt success plus stable measured feedback '
                 'before advancing.', throttle_duration_sec=1.0)
             return
@@ -4273,7 +4264,7 @@ class VisionGraspNode(Node):
         # Stop treating late MoveIt result as authoritative. The watchdog is now
         # the owner of this transition and will call handle_pregrasp_arrival().
         self.sequence_stage = 'pregrasp_finalizing'
-        _safe_ros_log(self.get_logger(), "warning", 'Pre-grasp watchdog is finalizing the sequence: '
+        self.get_logger().warning('Pre-grasp watchdog is finalizing the sequence: '
             f'elapsed={elapsed:.2f}s, link_dist={(dist if dist is not None else -1):.3f}m, '
             f'near={near}, timed_out={timed_out}. This prevents endless pre-grasp refinement.')
         self._cancel_active_moveit_goal()
@@ -4303,23 +4294,14 @@ class VisionGraspNode(Node):
 
         # Always use closed contact geometry for the final link pose because the
         # object should be centred at the end of the one-go close.
-        eff_z = self._compute_contact_z_offset(self.computed_gripper_close)
-        if self.fourbar_use_urdf_geometry_model:
-            off = self._fourbar_actual_contact_offset(self.computed_gripper_close)
-            self.effective_target_point_offset_in_link = [float(off[0]), float(off[1]), float(off[2])]
-        else:
-            self.effective_target_point_offset_in_link = [
-                float(self.target_point_offset_in_link[0]),
-                float(self.target_point_offset_in_link[1]),
-                float(eff_z),
-            ]
+        self._apply_fourbar_contact_offset(self.computed_gripper_close)
 
         if self.current_target_point_base is not None and self.grasp_orientation is not None:
             self.update_contact_poses_from_target(self.current_target_point_base, self.grasp_orientation)
             self.publish_markers()
             self._log_committed_grasp_geometry('final-before-descent')
 
-        _safe_ros_log(self.get_logger(), "info", 'No preclose will be used. Gripper stays open during final approach; '
+        self.get_logger().info('No preclose will be used. Gripper stays open during final approach; '
             'after reaching grasp pose it closes once using the refined four-bar geometry.')
         self.send_grasp()
 
@@ -4336,7 +4318,7 @@ class VisionGraspNode(Node):
 
         self.grasp_attempt_count += 1
 
-        _safe_ros_log(self.get_logger(), "info", f'Starting physical grasp attempt '
+        self.get_logger().info(f'Starting physical grasp attempt '
             f'{self.grasp_attempt_count}/{self.max_grasp_attempts}')
 
         self.sequence_stage = 'move_grasp'
@@ -4354,7 +4336,7 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'refine'
 
         if self._perception_updates_forbidden_now():
-            _safe_ros_log(self.get_logger(), "info", 'Close-range refinement requested but perception is still frozen; using current committed target.')
+            self.get_logger().info('Close-range refinement requested but perception is still frozen; using current committed target.')
             self.preclose_before_grasp_then_send_grasp()
             return
 
@@ -4362,7 +4344,7 @@ class VisionGraspNode(Node):
         self._refine_width_buffer = []
         self._refine_orientation_cam_last = None
         self._refine_start_sec = self.get_clock().now().nanoseconds * 1e-9
-        _safe_ros_log(self.get_logger(), "info", 'Pre-grasp refinement active: collecting close-range YOLO/depth samples, '
+        self.get_logger().info('Pre-grasp refinement active: collecting close-range YOLO/depth samples, '
             'then calculating one-go close contact point and four-bar closing arc.')
         # Poll at the same rate as detect_period_sec
         self._refine_timer = self.create_timer(self.detect_period_sec, self._refine_tick)
@@ -4384,30 +4366,28 @@ class VisionGraspNode(Node):
                     if self._refine_orientation_cam_last is not None:
                         self._last_detected_orientation_cam = self._refine_orientation_cam_last
                     self._refresh_grasp_geometry_from_latest_estimates('pregrasp-refine-timeout-commit')
-                    _safe_ros_log(self.get_logger(), "warning", f'Refinement timed out after {self.refine_timeout_sec}s with '
+                    self.get_logger().warning(f'Refinement timed out after {self.refine_timeout_sec}s with '
                         f'{len(self._refine_buffer)} sample(s); committing bounded average and proceeding.')
                 else:
-                    _safe_ros_log(self.get_logger(), "warning", f'Refinement timed out after {self.refine_timeout_sec}s; average sample rejected. '
+                    self.get_logger().warning(f'Refinement timed out after {self.refine_timeout_sec}s; average sample rejected. '
                         'Using locked target and proceeding.')
             else:
-                _safe_ros_log(self.get_logger(), "warning", f'Refinement timed out after {self.refine_timeout_sec}s '
+                self.get_logger().warning(f'Refinement timed out after {self.refine_timeout_sec}s '
                     f'({len(self._refine_buffer)} samples). Using original grasp pose and proceeding.')
             self.preclose_before_grasp_then_send_grasp()
             return
-        if self.latest_color is None or self.latest_depth is None or self.camera_info is None:
+        if self.camera_info is None:
             return
-        img = self.latest_color.copy()
-        try:
-            results = self.model(img, verbose=False)
-        except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Refinement YOLO failed: {exc}')
-            self._stamp_debug_status(img, 'Refine live view', color=(255, 255, 0))
-            self.publish_debug_image(img)
+        completed = self._poll_inference()
+        if completed is None:
             return
-        annotated = self._annotate_yolo_results(img, results)
+        snap, results = completed
+        annotated = self._annotate_yolo_results(snap.color, results)
         self._stamp_debug_status(annotated, 'Refine live view', color=(255, 255, 0))
         self.publish_debug_image(annotated)
-        best = self._select_best_detection(results, self.refine_confidence_threshold)
+        best = self._select_best_detection(
+            results, self.refine_confidence_threshold, image_shape=snap.color.shape
+        )
 
         point_base = None
         source = 'none'
@@ -4415,21 +4395,25 @@ class VisionGraspNode(Node):
         if best is not None:
             mask_target = None
 
-            if best['mask'] is not None and self.latest_depth is not None:
-                w3d = self._estimate_object_width_3d(best['mask'], self.latest_depth)
+            if best['mask'] is not None:
+                w3d = self._estimate_object_width_3d(best['mask'], snap.depth)
                 if w3d is not None and self.adaptive_gripper_min_width_m <= w3d <= self.adaptive_gripper_max_width_m:
                     self._refine_width_buffer.append(float(w3d))
-                pose_estimate = self._estimate_object_orientation_3d(best['mask'], self.latest_depth)
+                pose_estimate = self._estimate_object_orientation_3d(best['mask'], snap.depth)
                 if pose_estimate is not None:
                     centroid_ref_cam, R_ref = pose_estimate
                     self._refine_orientation_cam_last = R_ref
-                    self._update_detected_object_pose_from_camera(centroid_ref_cam, R_ref)
+                    self._update_detected_object_pose_from_camera(
+                        centroid_ref_cam, R_ref,
+                        depth_frame=snap.depth_frame, stamp=snap.stamp,
+                    )
 
             if best['mask'] is not None:
                 mask_target = self._mask_depth_target(
                     best['mask'],
                     # Keep refinement aligned with the initial center pick.
-                    prefer_nearest=False
+                    prefer_nearest=False,
+                    depth_image=snap.depth,
                 )
 
             if mask_target is not None:
@@ -4446,16 +4430,17 @@ class VisionGraspNode(Node):
                     min_depth_m=self.refine_min_depth_m,
                     max_depth_m=self.max_depth_m,
                     prefer_nearest=True,
+                    depth_image=snap.depth,
                 )
 
             if depth is not None:
                 point_cam = self.pixel_to_point_camera(u, v, depth)
 
-                if point_cam is not None and self.latest_depth_frame is not None:
-                    point_base = self.transform_point(
+                if point_cam is not None:
+                    point_base = self._camera_grasp_target_to_planning_frame(
                         point_cam,
-                        self.latest_depth_frame,
-                        self.planning_frame,
+                        snap.depth_frame,
+                        stamp=snap.stamp,
                     )
 
         if point_base is None and self.refine_use_projection_fallback:
@@ -4463,7 +4448,7 @@ class VisionGraspNode(Node):
             point_base = self.projected_locked_target_refinement()
 
         if point_base is None:
-            _safe_ros_log(self.get_logger(), "info", 'Refinement: YOLO/depth target unavailable this frame; keeping previous lock.', throttle_duration_sec=0.5)
+            self.get_logger().info('Refinement: YOLO/depth target unavailable this frame; keeping previous lock.', throttle_duration_sec=0.5)
             return
 
         point_base = self._apply_probe_shape_aware_target_correction(
@@ -4486,16 +4471,16 @@ class VisionGraspNode(Node):
                 self._refine_timer.cancel()
                 self.try_replan_from_live_target('visual refinement')
             else:
-                _safe_ros_log(self.get_logger(), "warning", 'Rejected refinement was ignored completely; locked target remains unchanged.')
+                self.get_logger().warning('Rejected refinement was ignored completely; locked target remains unchanged.')
 
             return
 
         if self._refine_buffer:
             if np.linalg.norm(point_base - self._refine_buffer[-1]) > self.refine_max_jump_m:
-                _safe_ros_log(self.get_logger(), "info", 'Refinement: noisy frame discarded.', throttle_duration_sec=0.5)
+                self.get_logger().info('Refinement: noisy frame discarded.', throttle_duration_sec=0.5)
                 return
         self._refine_buffer.append(point_base)
-        _safe_ros_log(self.get_logger(), "info", f'Refinement sample {len(self._refine_buffer)}/{self.refine_samples} '
+        self.get_logger().info(f'Refinement sample {len(self._refine_buffer)}/{self.refine_samples} '
             f'[{source}]: x={point_base[0]:.3f} '
             f'y={point_base[1]:.3f} z={point_base[2]:.3f}')
         if len(self._refine_buffer) >= self.refine_samples:
@@ -4503,7 +4488,7 @@ class VisionGraspNode(Node):
             refined_target = np.mean(self._refine_buffer, axis=0)
 
             if not self.is_refined_target_acceptable(refined_target):
-                _safe_ros_log(self.get_logger(), "warning", 'Average refinement rejected. Using original locked target.')
+                self.get_logger().warning('Average refinement rejected. Using original locked target.')
                 self.preclose_before_grasp_then_send_grasp()
                 return
 
@@ -4517,7 +4502,7 @@ class VisionGraspNode(Node):
                 self.reset_sequence('Failed to compute final grasp geometry after pre-grasp refinement.')
                 return
 
-            _safe_ros_log(self.get_logger(), "info", f'Refined grasp target accepted: x={refined_target[0]:.3f} '
+            self.get_logger().info(f'Refined grasp target accepted: x={refined_target[0]:.3f} '
                 f'y={refined_target[1]:.3f} z={refined_target[2]:.3f}. '
                 'Final close will be one gripper command; no preclose will be used.')
             self.preclose_before_grasp_then_send_grasp()
@@ -4535,7 +4520,7 @@ class VisionGraspNode(Node):
         settle_sec = max(0.0, float(self.final_grasp_arm_settle_sec))
         if settle_sec > 0.0:
             self.sequence_stage = 'preclose_in_air'
-            _safe_ros_log(self.get_logger(), "info", f'Final grasp motion result received. Waiting {settle_sec:.2f}s for the arm to settle, '
+            self.get_logger().info(f'Final grasp motion result received. Waiting {settle_sec:.2f}s for the arm to settle, '
                 'then verifying the TCP is actually at the committed grasp pose before closing. '
                 'All perception refinement and arm replanning remain frozen.')
             self.call_later(settle_sec, self._begin_final_grasp_pose_check)
@@ -4545,14 +4530,14 @@ class VisionGraspNode(Node):
 
     def _begin_final_grasp_pose_check(self) -> None:
         if not self.final_grasp_pose_check_enabled:
-            _safe_ros_log(self.get_logger(), "warning", 'Final grasp pose check is disabled; closing gripper without TCP verification.')
+            self.get_logger().warning('Final grasp pose check is disabled; closing gripper without TCP verification.')
             self.final_close_gripper()
             return
 
         self.sequence_stage = 'verify_final_grasp_pose'
         self._final_grasp_pose_check_start_sec = self._now_sec()
         self._cancel_final_grasp_pose_check_timer()
-        _safe_ros_log(self.get_logger(), "info", f'Verifying final grasp TCP before close: '
+        self.get_logger().info(f'Verifying final grasp TCP before close: '
             f'pos_tol={self.final_grasp_pose_position_tolerance_m*1000:.1f}mm, '
             f'ori_tol={math.degrees(self.final_grasp_pose_orientation_tolerance_rad):.1f}deg, '
             f'timeout={self.final_grasp_pose_check_timeout_sec:.1f}s.')
@@ -4577,7 +4562,7 @@ class VisionGraspNode(Node):
                 and ori_err <= self.final_grasp_pose_orientation_tolerance_rad
             ):
                 self._cancel_final_grasp_pose_check_timer()
-                _safe_ros_log(self.get_logger(), "info", f'Final grasp pose check PASSED: '
+                self.get_logger().info(f'Final grasp pose check PASSED: '
                     f'pos={pos_err*1000:.1f}mm, ori={math.degrees(ori_err):.1f}deg. '
                     'Closing gripper in one go; arm replanning remains frozen.')
                 self.final_close_gripper()
@@ -4608,7 +4593,7 @@ class VisionGraspNode(Node):
         end_q = float(self.computed_gripper_close)
 
         if self.close_in_one_go_after_pregrasp_refine or self.fourbar_final_close_steps <= 1:
-            _safe_ros_log(self.get_logger(), "info", f'Starting one-go final gripper close to q={end_q:.5f}. '
+            self.get_logger().info(f'Starting one-go final gripper close to q={end_q:.5f}. '
                 'No arm motion, no refinement, no live replan is allowed during this command.')
             self.command_gripper_and_then(
                 end_q,
@@ -4625,7 +4610,7 @@ class VisionGraspNode(Node):
             float(v) for v in np.linspace(start_q, end_q, self.fourbar_final_close_steps + 1)[1:]
         ]
         self._close_step_index = 0
-        _safe_ros_log(self.get_logger(), "info", f'Starting fallback stepped close: {len(self._close_step_targets)} steps.')
+        self.get_logger().info(f'Starting fallback stepped close: {len(self._close_step_targets)} steps.')
         self._command_next_close_step()
 
     def _command_next_close_step(self) -> None:
@@ -4654,14 +4639,14 @@ class VisionGraspNode(Node):
     def after_gripper_closed(self) -> None:
         self.sequence_stage = 'verify_gripper'
 
-        _safe_ros_log(self.get_logger(), "info", 'Gripper close phase finished; holding briefly before lift-check.')
+        self.get_logger().info('Gripper close phase finished; holding briefly before lift-check.')
 
         if self.hold_after_close_no_motion:
             self.holding_object = True
             self.task_complete = True
             self.sequence_stage = 'done_holding'
             self.success_until_sec = self._now_sec() + self.success_lockout_sec
-            _safe_ros_log(self.get_logger(), "info", 'Hold-after-close enabled: no lift, retreat, or home motion will be sent. '
+            self.get_logger().info('Hold-after-close enabled: no lift, retreat, or home motion will be sent. '
                 'This verifies that the arm stays fixed during and after final close.')
             return
 
@@ -4675,7 +4660,7 @@ class VisionGraspNode(Node):
             return
 
         if self.post_grasp_lift_then_pick_home:
-            _safe_ros_log(self.get_logger(), "info", 'Post-grasp transport enabled without lift-check: gripper will stay closed; '
+            self.get_logger().info('Post-grasp transport enabled without lift-check: gripper will stay closed; '
                 'arm will move to pick_home through MoveGroup collision checking.')
             self.call_later(
                 self.close_gripper_extra_wait_sec,
@@ -4691,11 +4676,11 @@ class VisionGraspNode(Node):
     def _after_lift_verification_success(self, reason: str) -> None:
         self.holding_object = True
         if self.post_grasp_lift_then_pick_home:
-            _safe_ros_log(self.get_logger(), "info", f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
+            self.get_logger().info(f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
             self.send_post_grasp_vertical_lift()
             return
 
-        _safe_ros_log(self.get_logger(), "info", f'{reason} Retreating through collision-aware Cartesian/MoveGroup motions.')
+        self.get_logger().info(f'{reason} Retreating through collision-aware Cartesian/MoveGroup motions.')
         self.send_retreat()
 
     def _hold_closed_after_failed_grasp_check(self, reason: str) -> None:
@@ -4705,7 +4690,7 @@ class VisionGraspNode(Node):
         self.busy = True
         self.sequence_stage = 'grasp_check_failed_holding'
         self.success_until_sec = self._now_sec() + self.success_lockout_sec
-        _safe_ros_log(self.get_logger(), "error", f'{reason} Grasp check failed, so the gripper will remain closed and '
+        self.get_logger().error(f'{reason} Grasp check failed, so the gripper will remain closed and '
             'no pick_home/retreat/open command will be sent automatically.')
 
     # ------------------------------------------------------------------ #
@@ -4722,14 +4707,13 @@ class VisionGraspNode(Node):
         loop).  The OMPL planner is trusted to find a safe upward path using
         the real robot collision model.
         """
-        _safe_ros_log(self.get_logger(), "info", '[PostGrasp] Attaching probe mesh and planning to pick_home.')
+        self.get_logger().info('[PostGrasp] Attaching probe mesh and planning to pick_home.')
 
         # Attach STL mesh so MoveGroup knows the gripper is holding an object.
         self._attach_probe_object()
 
         # Wait 500 ms for the planning scene monitor to register the attached
         # object before sending the joint goal.
-        self._post_grasp_lift_retry_count = 0
         self.call_later(0.5, self._post_grasp_collision_scene_ready)
 
     def _post_grasp_collision_scene_ready(self) -> None:
@@ -4743,57 +4727,8 @@ class VisionGraspNode(Node):
         done_stages = ('idle', 'done_holding', 'move_pick_home')
         if self.sequence_stage in done_stages:
             return
-        _safe_ros_log(self.get_logger(), "info", '[PostGrasp] Collision scene ready. Sending pick_home joint goal via MoveGroup.')
+        self.get_logger().info('[PostGrasp] Collision scene ready. Sending pick_home joint goal via MoveGroup.')
         self.send_pick_home_closed()
-
-    def _send_next_post_grasp_lift_segment(self) -> None:
-        """Legacy segmented Cartesian lift — kept for reference but NOT called.
-
-        The new post-grasp transport goes directly to pick_home via MoveGroup
-        (see send_post_grasp_vertical_lift).  This method is preserved in case
-        a future developer needs to re-enable Cartesian lift; it will not be
-        called by any code path.
-        """
-        target_z = self._post_grasp_lift_target_z
-        if target_z is None:
-            self.reset_sequence('Post-grasp lift target is missing.')
-            return
-
-        current = self.get_current_link_pose_in_planning_frame()
-        if current is None:
-            self.reset_sequence('Post-grasp lift could not read current TF pose for next segment.')
-            return
-
-        remaining = float(target_z - float(current.position.z))
-        if remaining <= 0.003:
-            self.send_pick_home_closed()
-            return
-
-        segment_cap = float(self.post_grasp_lift_segment_m)
-        if self._post_grasp_lift_segment_cap_m is not None:
-            segment_cap = min(segment_cap, float(self._post_grasp_lift_segment_cap_m))
-
-        required_progress = min(self.post_grasp_lift_min_progress_m, remaining)
-        segment = min(segment_cap, remaining)
-        segment = min(remaining, max(required_progress, segment))
-
-        last_link_z = self._post_grasp_lift_last_link_z
-        if last_link_z is not None:
-            last_rise = max(0.0, float(current.position.z) - float(last_link_z))
-            if 0.0 < last_rise < segment - 1e-6:
-                adapted_segment = min(segment, max(required_progress, last_rise))
-                segment = adapted_segment
-
-        next_z = float(current.position.z + segment)
-        waypoints = self._build_post_grasp_lift_waypoints(current, next_z)
-        if not waypoints:
-            self.send_pick_home_closed()
-            return
-
-        self.sequence_stage = 'move_post_grasp_lift'
-        self._post_grasp_lift_last_link_z = float(current.position.z)
-        self._post_grasp_lift_requested_segment_m = float(segment)
-        self._send_cartesian_path(waypoints)
 
     def send_pick_home_closed(self) -> None:
         """Move arm joints to pick_home while leaving the gripper untouched/closed.
@@ -4815,7 +4750,7 @@ class VisionGraspNode(Node):
             )
             return
         self.sequence_stage = 'move_pick_home'
-        _safe_ros_log(self.get_logger(), "info", f'Moving to pick_home (gripper closed). '
+        self.get_logger().info(f'Moving to pick_home (gripper closed). '
             f'MoveGroup planning time={self.post_grasp_planning_time_sec:.1f} s, '
             f'live-joint seeded start state.')
         self.send_joint_goal(
@@ -4852,7 +4787,7 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'move_base_box_drop'
         if self.base_box_drop_use_pose:
             pose = self.get_base_box_drop_pose()
-            _safe_ros_log(self.get_logger(), "info", f'Moving held probe to base-box release pose: '
+            self.get_logger().info(f'Moving held probe to base-box release pose: '
                 f'frame={self.base_box_drop_frame}, xyz={self.base_box_drop_xyz}, '
                 f'rpy={self.base_box_drop_rpy}.')
             self.send_pose_goal(
@@ -4867,7 +4802,7 @@ class VisionGraspNode(Node):
                 num_attempts_override=max(self.num_planning_attempts, 15),
             )
         else:
-            _safe_ros_log(self.get_logger(), "info", f'Moving held probe from pick_home to the base-box joint posture. '
+            self.get_logger().info(f'Moving held probe from pick_home to the base-box joint posture. '
                 f'MoveGroup planning time={self.base_box_planning_time_sec:.1f} s.')
             self.send_joint_goal(
                 self.base_box_drop_joint_names,
@@ -4898,7 +4833,7 @@ class VisionGraspNode(Node):
 
     def release_probe_in_base_box(self) -> None:
         """Open only after MoveIt confirms that the drop posture was reached."""
-        _safe_ros_log(self.get_logger(), "info", 'Base-box drop posture reached; releasing the probe.')
+        self.get_logger().info('Base-box drop posture reached; releasing the probe.')
         self.command_gripper_and_then(
             self.gripper_open,
             self._after_probe_released_in_base_box,
@@ -4913,7 +4848,7 @@ class VisionGraspNode(Node):
         # Remove the attached planning-scene object before planning the empty-arm
         # return motion, otherwise MoveIt would continue carrying a ghost probe.
         self._remove_post_grasp_collision_objects()
-        _safe_ros_log(self.get_logger(), "info", 'Probe released in the rover base box.')
+        self.get_logger().info('Probe released in the rover base box.')
 
         if not self.return_pick_home_after_base_box_place:
             self.finish_placement_successfully(returned_home=False)
@@ -4941,7 +4876,7 @@ class VisionGraspNode(Node):
         self.busy = True
         self.sequence_stage = 'transport_failed_holding'
         self.success_until_sec = self._now_sec() + self.success_lockout_sec
-        _safe_ros_log(self.get_logger(), "error", f'{reason} The gripper remains closed; no release or automatic restart will occur.')
+        self.get_logger().error(f'{reason} The gripper remains closed; no release or automatic restart will occur.')
 
     def _stop_after_uncertain_base_box_release(self, reason: str) -> None:
         """Lock the task when gripper feedback cannot confirm box release."""
@@ -4949,7 +4884,7 @@ class VisionGraspNode(Node):
         self.busy = True
         self.sequence_stage = 'base_box_release_unconfirmed'
         self.success_until_sec = self._now_sec() + self.success_lockout_sec
-        _safe_ros_log(self.get_logger(), "error", f'{reason} The arm will remain at the box and automatic restart is disabled; '
+        self.get_logger().error(f'{reason} The arm will remain at the box and automatic restart is disabled; '
             'inspect whether the probe was released before sending another command.')
 
     # ------------------------------------------------------------------ #
@@ -5007,7 +4942,7 @@ class VisionGraspNode(Node):
             )
             z_lift = float(point_base[2] - self.locked_target_before_lift[2])
 
-            _safe_ros_log(self.get_logger(), "info", f'Lift verification fresh detection: '
+            self.get_logger().info(f'Lift verification fresh detection: '
                 f'dist_xy={dist_from_old_xy:.3f}m '
                 f'z_lift={z_lift:.3f}m conf={conf:.2f} '
                 f'contact={self.gripper_contact_detected}', throttle_duration_sec=0.5)
@@ -5035,7 +4970,7 @@ class VisionGraspNode(Node):
                         pass
                     self._lift_check_timer = None
 
-                _safe_ros_log(self.get_logger(), "info", f'Lift-check PASSED: probe moved/lifted '
+                self.get_logger().info(f'Lift-check PASSED: probe moved/lifted '
                     f'(dist_xy={dist_from_old_xy:.3f}m, z_lift={z_lift:.3f}m).')
 
                 self._after_lift_verification_success('Lift-check PASSED.')
@@ -5045,7 +4980,7 @@ class VisionGraspNode(Node):
                 self._lift_floor_fail_count += 1
                 self._lift_check_last_nonlifted_target = point_base.copy()
 
-                _safe_ros_log(self.get_logger(), "warning", f'Lift-check floor-like detection '
+                self.get_logger().warning(f'Lift-check floor-like detection '
                     f'{self._lift_floor_fail_count}/{self.lift_check_floor_fail_samples}: '
                     f'dist_xy={dist_from_old_xy:.3f}m z_lift={z_lift:.3f}m '
                     f'contact={self.gripper_contact_detected}. '
@@ -5076,7 +5011,7 @@ class VisionGraspNode(Node):
                                 'Lift-check was uncertain and contact is not trusted as success.'
                             )
                             return
-                        _safe_ros_log(self.get_logger(), "warning", 'Lift-check is uncertain but gripper contact was detected. '
+                        self.get_logger().warning('Lift-check is uncertain but gripper contact was detected. '
                             'Keeping gripper closed and continuing instead of opening/releasing.')
                         self._after_lift_verification_success('Lift-check uncertain but contact is present.')
                         return
@@ -5085,10 +5020,10 @@ class VisionGraspNode(Node):
                         not self.gripper_feedback_available
                         and self.keep_closed_on_lift_check_failure_without_feedback
                     ):
-                        _safe_ros_log(self.get_logger(), "warning", 'Lift-check visual verification failed repeatedly, but gripper feedback '
+                        self.get_logger().warning('Lift-check visual verification failed repeatedly, but gripper feedback '
                             'is unavailable; this is inconclusive, so the gripper will stay closed.')
                     else:
-                        _safe_ros_log(self.get_logger(), "warning", 'Lift-check FAILED with repeated fresh floor detections. '
+                        self.get_logger().warning('Lift-check FAILED with repeated fresh floor detections. '
                             'Retry is allowed because no reliable gripper contact was detected.')
                     self.handle_failed_grasp_after_lift()
                     return
@@ -5104,7 +5039,7 @@ class VisionGraspNode(Node):
             if self.lift_check_require_positive_z_success and self._lift_floor_fail_count > 0:
                 if self._lift_check_last_nonlifted_target is not None:
                     self.retry_target_from_lift_check = self._lift_check_last_nonlifted_target.copy()
-                _safe_ros_log(self.get_logger(), "warning", f'Lift-check FAILED by timeout: {self._lift_floor_fail_count} fresh detection(s) '
+                self.get_logger().warning(f'Lift-check FAILED by timeout: {self._lift_floor_fail_count} fresh detection(s) '
                     f'were seen, but none rose by the required '
                     f'{self.grasp_success_min_lift_m:.3f}m. Retrying instead of treating '
                     'sideways/no-lift detections as success.')
@@ -5112,10 +5047,10 @@ class VisionGraspNode(Node):
                 return
 
             if self.gripper_contact_detected and self.trust_gripper_contact_for_success:
-                _safe_ros_log(self.get_logger(), "info", 'Lift-check PASSED by timeout + gripper contact: '
+                self.get_logger().info('Lift-check PASSED by timeout + gripper contact: '
                     'probe is likely occluded/held between fingers.')
             else:
-                _safe_ros_log(self.get_logger(), "info", 'Lift-check PASSED by timeout: probe not detected at original floor pose.')
+                self.get_logger().info('Lift-check PASSED by timeout: probe not detected at original floor pose.')
 
             self._after_lift_verification_success('Lift-check PASSED by timeout.')
 
@@ -5136,7 +5071,7 @@ class VisionGraspNode(Node):
                 )
                 return
 
-            _safe_ros_log(self.get_logger(), "warning", 'Lift-check failed visually, but gripper feedback is disabled. '
+            self.get_logger().warning('Lift-check failed visually, but gripper feedback is disabled. '
                 'Keeping the gripper closed and continuing instead of opening/releasing.')
             self._after_lift_verification_success(
                 'Lift-check inconclusive with open-loop gripper control.'
@@ -5144,7 +5079,7 @@ class VisionGraspNode(Node):
             return
 
         if self.gripper_contact_detected and self.never_open_after_contact_during_retry:
-            _safe_ros_log(self.get_logger(), "warning", 'Retry blocked: gripper contact was detected. '
+            self.get_logger().warning('Retry blocked: gripper contact was detected. '
                 'Keeping gripper closed and retreating instead of releasing the probe.')
             self.holding_object = True
             self.send_retreat()
@@ -5158,7 +5093,7 @@ class VisionGraspNode(Node):
 
         next_attempt = self.grasp_attempt_count + 1
 
-        _safe_ros_log(self.get_logger(), "warning", f'Grasp attempt {self.grasp_attempt_count}/{self.max_grasp_attempts} failed; '
+        self.get_logger().warning(f'Grasp attempt {self.grasp_attempt_count}/{self.max_grasp_attempts} failed; '
             f'preparing in-place retry {next_attempt}/{self.max_grasp_attempts}.')
 
         if self.retry_target_from_lift_check is not None:
@@ -5174,7 +5109,7 @@ class VisionGraspNode(Node):
             )
             self.publish_markers()
 
-        _safe_ros_log(self.get_logger(), "warning", f'Retrying without full reset: new grasp_depth_below_surface_m='
+        self.get_logger().warning(f'Retrying without full reset: new grasp_depth_below_surface_m='
             f'{self.grasp_depth_below_surface_m:.3f}m')
 
         self.retry_target_from_lift_check = None
@@ -5190,7 +5125,7 @@ class VisionGraspNode(Node):
             return
 
         self.sequence_stage = 'move_retry_return'
-        _safe_ros_log(self.get_logger(), "warning", 'Returning to the retry grasp pose with the gripper still closed before opening. '
+        self.get_logger().warning('Returning to the retry grasp pose with the gripper still closed before opening. '
             'This keeps a possible false-negative grasp close to the ground; MoveIt collision '
             'checking remains enabled for the return path.')
         self._send_cartesian_path([self.contact_pose_to_link_pose(self.grasp_pose)])
@@ -5226,7 +5161,7 @@ class VisionGraspNode(Node):
         if self.sequence_stage != 'move_grasp' or self.grasp_pose is None:
             return False
 
-        _safe_ros_log(self.get_logger(), "warning", f'Cartesian grasp fraction={fraction:.2f}; using constrained MoveGroup '
+        self.get_logger().warning(f'Cartesian grasp fraction={fraction:.2f}; using constrained MoveGroup '
             f'fallback to final grasp pose instead of resetting. '
             f'pos_tol={self.final_grasp_movegroup_fallback_position_tol:.3f}m, '
             'orientation locked, four-bar floor guard already applied.')
@@ -5264,7 +5199,7 @@ class VisionGraspNode(Node):
         self.grasp_pose = self.make_pose(lifted_xyz, self.grasp_orientation)
         self.publish_markers()
 
-        _safe_ros_log(self.get_logger(), "warning", f'Cartesian grasp fraction={fraction:.2f}; retrying with grasp point lifted '
+        self.get_logger().warning(f'Cartesian grasp fraction={fraction:.2f}; retrying with grasp point lifted '
             f'{self.cartesian_retry_lift_m:.3f}m '
             f'(retry {self._cartesian_grasp_retries}/{self.cartesian_max_retries}).')
 
@@ -5286,22 +5221,11 @@ class VisionGraspNode(Node):
         req.link_name = self.planning_link
         req.waypoints = waypoints
 
-        # ── Per-stage Cartesian settings ──────────────────────────────────────
-        # Lift: dense IK step (2 mm) + strict jump guard (5 rad).
-        # jump_threshold is the key fix: it rejects any IK solution whose joint
-        # positions differ from the previous waypoint's solution by more than the
-        # threshold.  Without it (threshold=0 = disabled) the solver silently
-        # jumps between arm configurations on consecutive waypoints, making the
-        # arm swing in the wrong direction and collide with itself.
-        if expected_stage == 'move_post_grasp_lift':
-            req.max_step = self.post_grasp_lift_max_step_m
-            req.jump_threshold = self.post_grasp_lift_jump_threshold
-        else:
-            req.max_step = self.cartesian_max_step
-            req.jump_threshold = self.cartesian_jump_threshold
+        req.max_step = self.cartesian_max_step
+        req.jump_threshold = self.cartesian_jump_threshold
         req.avoid_collisions = bool(avoid_collisions)
 
-        seed_state = self._make_current_robot_state(arm_joints_only=(expected_stage == 'move_post_grasp_lift'))
+        seed_state = self._make_current_robot_state()
         if seed_state is not None:
             req.start_state = seed_state
         else:
@@ -5315,8 +5239,6 @@ class VisionGraspNode(Node):
             lock_orientation = self.cartesian_lock_orientation
 
         constraint_orientation = self.grasp_orientation
-        if expected_stage == 'move_post_grasp_lift':
-            constraint_orientation = None
 
         if constraint_orientation is not None and lock_orientation:
             cart_ori = OrientationConstraint()
@@ -5339,7 +5261,7 @@ class VisionGraspNode(Node):
         expected_stage = self.sequence_stage
         expected_seq = self.sequence_id
         if self._arm_motion_forbidden_now(expected_stage):
-            _safe_ros_log(self.get_logger(), "error", f'Blocked unsafe Cartesian arm command during gripper stage: requested_stage={expected_stage}')
+            self.get_logger().error(f'Blocked unsafe Cartesian arm command during gripper stage: requested_stage={expected_stage}')
             return
         if self._cartesian_plan_in_flight is not None or self._pending_arm_motion_confirmation is not None:
             self._cancel_active_moveit_goal()
@@ -5356,7 +5278,7 @@ class VisionGraspNode(Node):
                     'GetCartesianPath service unavailable during grasp; no safe fallback available.'
                 )
             else:
-                _safe_ros_log(self.get_logger(), "warning", 'GetCartesianPath service unavailable; going to joint home.')
+                self.get_logger().warning('GetCartesianPath service unavailable; going to joint home.')
                 self._do_joint_home()
             return
         req = self._build_cartesian_path_request(
@@ -5372,7 +5294,7 @@ class VisionGraspNode(Node):
                 dx = float(goal_pose.position.x - current_pose.position.x)
                 dy = float(goal_pose.position.y - current_pose.position.y)
                 dz = float(goal_pose.position.z - current_pose.position.z)
-                _safe_ros_log(self.get_logger(), "info", f'Final Cartesian request: '
+                self.get_logger().info(f'Final Cartesian request: '
                     f'current_link=({current_pose.position.x:.3f},{current_pose.position.y:.3f},{current_pose.position.z:.3f}) '
                     f'goal_link=({goal_pose.position.x:.3f},{goal_pose.position.y:.3f},{goal_pose.position.z:.3f}) '
                     f'delta=({dx*1000:.1f},{dy*1000:.1f},{dz*1000:.1f})mm '
@@ -5403,43 +5325,14 @@ class VisionGraspNode(Node):
         if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
             if self._cartesian_plan_in_flight == (expected_stage, expected_seq):
                 self._cartesian_plan_in_flight = None
-            _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale Cartesian response for stage={expected_stage}; '
+            self.get_logger().warning(f'Ignoring stale Cartesian response for stage={expected_stage}; '
                 f'current_stage={self.sequence_stage}.')
             return
         self._cartesian_plan_in_flight = None
 
         stage = expected_stage
         min_fraction = self.cartesian_fraction_min
-        if stage == 'move_post_grasp_lift':
-            min_fraction = self.post_grasp_lift_min_fraction
-
-            requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
-            required_progress = (
-                min(self.post_grasp_lift_min_progress_m, requested_segment)
-                if requested_segment > 0.0
-                else self.post_grasp_lift_min_progress_m
-            )
-            planned_progress = max(0.0, requested_segment * float(resp.fraction))
-            if resp.fraction <= 0.0 or planned_progress + 1e-6 < required_progress:
-                if self._retry_post_grasp_lift(
-                    f'Cartesian post-grasp lift planned only {planned_progress:.3f} m '
-                    f'from requested {requested_segment:.3f} m (fraction {resp.fraction:.2f}).',
-                    requested_segment,
-                ):
-                    return
-                self.reset_sequence(
-                    f'Cartesian post-grasp lift stalled during planning: requested {requested_segment:.3f} m, '
-                    f'planned {planned_progress:.3f} m (fraction {resp.fraction:.2f}).'
-                )
-                return
-
-            if resp.fraction < min_fraction:
-                _safe_ros_log(self.get_logger(), "warning", f'Cartesian path {resp.fraction:.2f} at {stage}; executing because planned vertical progress '
-                    f'{planned_progress:.3f} m exceeds the minimum useful rise of {required_progress:.3f} m.')
-            else:
-                _safe_ros_log(self.get_logger(), "info", f'Cartesian path {resp.fraction:.2f} at {stage}; executing planned vertical progress '
-                    f'{planned_progress:.3f} m.')
-        elif resp.fraction < min_fraction:
+        if resp.fraction < min_fraction:
             if stage == 'move_grasp':
                 if self.allow_movegroup_fallback_for_grasp and self._send_movegroup_grasp_fallback(resp.fraction):
                     return
@@ -5461,7 +5354,7 @@ class VisionGraspNode(Node):
                 )
                 return
 
-            _safe_ros_log(self.get_logger(), "warning", f'Cartesian path only {resp.fraction:.2f} complete at {stage}; going to joint home.')
+            self.get_logger().warning(f'Cartesian path only {resp.fraction:.2f} complete at {stage}; going to joint home.')
             self._do_joint_home()
             return
 
@@ -5486,18 +5379,14 @@ class VisionGraspNode(Node):
                             worst_name = jname
                 if worst_dev > 0.35:
                     # 0.35 rad ≈ 20°: clearly a wrong-configuration plan.
-                    _safe_ros_log(self.get_logger(), "error", f'[Safety Validator] Lift trajectory REJECTED – '
+                    self.get_logger().error(f'[Safety Validator] Trajectory REJECTED – '
                         f'start-state deviation {worst_dev:.3f} rad on joint {worst_name}. '
                         f'MoveIt planned from a wrong configuration; executing would drive '
-                        f'the arm in the wrong direction. Retrying with fresh state seed.')
+                        f'the arm in the wrong direction.')
                     reason = (
                         f'Cartesian trajectory for {stage} rejected: start-state deviation '
                         f'{worst_dev:.3f} rad on {worst_name}.'
                     )
-                    if stage == 'move_post_grasp_lift':
-                        req_seg = float(self._post_grasp_lift_requested_segment_m or 0.0)
-                        if self._retry_post_grasp_lift(reason, req_seg):
-                            return
                     if stage == 'move_grasp':
                         self._halt_after_final_approach_failure(reason)
                     elif self.holding_object:
@@ -5506,11 +5395,10 @@ class VisionGraspNode(Node):
                         self.reset_sequence(reason)
                     return
                 else:
-                    _safe_ros_log(self.get_logger(), "info", f'[Safety Validator] Cartesian trajectory start-state OK: '
+                    self.get_logger().info(f'[Safety Validator] Cartesian trajectory start-state OK: '
                         f'stage={stage}, max joint deviation={worst_dev:.3f} rad on {worst_name}.')
 
-        if stage != 'move_post_grasp_lift':
-            _safe_ros_log(self.get_logger(), "info", f'Cartesian path {resp.fraction:.2f} at {stage}; executing.')
+        self.get_logger().info(f'Cartesian path {resp.fraction:.2f} at {stage}; executing.')
         if not self.execute_client.wait_for_server(timeout_sec=2.0):
             self.reset_sequence('ExecuteTrajectory action server unavailable.')
             return
@@ -5521,22 +5409,6 @@ class VisionGraspNode(Node):
         target_pose.header.frame_id = self.planning_frame
         target_pose.header.stamp = self.get_clock().now().to_msg()
         target_pose.pose = final_waypoint
-        if stage == 'move_post_grasp_lift' and float(resp.fraction) < 1.0:
-            # Partial segmented lifts are intentionally allowed when they still
-            # provide useful upward progress. Confirm the endpoint that MoveIt
-            # actually planned, then let the existing lift supervisor request
-            # the next segment. Never pretend the unplanned full waypoint was
-            # reached.
-            current_pose = self.get_current_link_pose_in_planning_frame()
-            requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
-            if current_pose is not None:
-                target_pose.pose = Pose()
-                target_pose.pose.position = Point(
-                    x=float(current_pose.position.x),
-                    y=float(current_pose.position.y),
-                    z=float(current_pose.position.z + requested_segment * float(resp.fraction)),
-                )
-                target_pose.pose.orientation = final_waypoint.orientation
         if not self._register_pose_motion_confirmation(
             stage,
             expected_seq,
@@ -5552,11 +5424,6 @@ class VisionGraspNode(Node):
             )
             return
         goal = ExecuteTrajectory.Goal()
-        if stage == 'move_post_grasp_lift':
-            raw_duration_sec = robot_trajectory_duration_sec(resp.solution)
-            _safe_ros_log(self.get_logger(), "info", f'Post-grasp lift ExecuteTrajectory: '
-                f'points={len(resp.solution.joint_trajectory.points)}, '
-                f'duration={raw_duration_sec:.2f}s, fraction={resp.fraction:.2f}.')
         goal.trajectory = resp.solution
         f = self.execute_client.send_goal_async(goal)
         f.add_done_callback(
@@ -5578,7 +5445,7 @@ class VisionGraspNode(Node):
             avoid_collisions=False,
             lock_orientation=self.cartesian_lock_orientation,
         )
-        _safe_ros_log(self.get_logger(), "warning", 'Final descent failed with collision-aware Cartesian planning. '
+        self.get_logger().warning('Final descent failed with collision-aware Cartesian planning. '
             'Running diagnostic-only Cartesian request with collisions disabled; '
             'this trajectory will NOT execute.')
         future = self.cartesian_client.call_async(req)
@@ -5591,23 +5458,23 @@ class VisionGraspNode(Node):
         try:
             resp = future.result()
         except Exception as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Final Cartesian diagnostic call failed: {exc}')
+            self.get_logger().warning(f'Final Cartesian diagnostic call failed: {exc}')
             self._halt_after_final_approach_failure(reason)
             return
 
         if expected_seq != self.sequence_id or self.sequence_stage != 'move_grasp':
-            _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale final Cartesian diagnostic; current_stage={self.sequence_stage}.')
+            self.get_logger().warning(f'Ignoring stale final Cartesian diagnostic; current_stage={self.sequence_stage}.')
             return
 
         diag_fraction = float(resp.fraction)
         error_code = getattr(getattr(resp, 'error_code', None), 'val', 'unknown')
         if diag_fraction >= self.cartesian_fraction_min:
-            _safe_ros_log(self.get_logger(), "error", f'Final Cartesian diagnostic: fraction={diag_fraction:.2f} with collisions disabled '
+            self.get_logger().error(f'Final Cartesian diagnostic: fraction={diag_fraction:.2f} with collisions disabled '
                 f'(error_code={error_code}). The waypoint is IK-reachable, so MoveIt collision '
                 'checking is blocking the descent. Keep collision checking on; inspect RViz '
                 'Planning Scene contacts/body self-collisions near the final pose.')
         else:
-            _safe_ros_log(self.get_logger(), "error", f'Final Cartesian diagnostic: fraction={diag_fraction:.2f} even with collisions disabled '
+            self.get_logger().error(f'Final Cartesian diagnostic: fraction={diag_fraction:.2f} even with collisions disabled '
                 f'(error_code={error_code}). This points to IK, joint limits, start-state mismatch, '
                 'or the waypoint orientation itself, not body collision checking.')
 
@@ -5627,7 +5494,7 @@ class VisionGraspNode(Node):
         self.paused_after_failure = True
         self.blocked_until_sec = self._now_sec() + lockout
         self.sequence_stage = 'failed_final_approach'
-        _safe_ros_log(self.get_logger(), "error", f'Auto-grasp paused after final approach failure: {reason} '
+        self.get_logger().error(f'Auto-grasp paused after final approach failure: {reason} '
             f'Lockout={lockout:.1f}s. MoveIt collision-aware Cartesian planning refused '
             'the final descent, so the node will not reacquire and loop. '
             'Relaunch the node or lower final_approach_failure_lockout_sec to retry automatically.')
@@ -5642,14 +5509,35 @@ class VisionGraspNode(Node):
         self.paused_after_failure = True
         self.blocked_until_sec = self._now_sec() + lockout
         self.sequence_stage = 'failed_final_pose_check'
-        _safe_ros_log(self.get_logger(), "error", f'Auto-grasp paused before gripper close: {reason} '
+        self.get_logger().error(f'Auto-grasp paused before gripper close: {reason} '
             f'Lockout={lockout:.1f}s. The final Cartesian trajectory was planned with '
             'MoveIt collision checking, but the measured TCP did not reach the committed '
             'grasp pose, so the node will not close on empty space or reacquire in a loop. '
             'Relaunch the node or lower final_approach_failure_lockout_sec to retry automatically.')
 
     def reset_sequence(self, reason: str) -> None:
-        _safe_ros_log(self.get_logger(), "warning", f'Resetting grasp sequence: {reason}')
+        failed_stage = self.sequence_stage
+        if (
+            self.preserve_orientation_across_pregrasp_retries
+            and failed_stage in ('move_pre_grasp', 'pregrasp_finalizing')
+            and self.grasp_orientation is not None
+            and self.current_target_point_base is not None
+        ):
+            self._retry_grasp_orientation = Quaternion(
+                x=float(self.grasp_orientation.x),
+                y=float(self.grasp_orientation.y),
+                z=float(self.grasp_orientation.z),
+                w=float(self.grasp_orientation.w),
+            )
+            self._retry_grasp_target = self.current_target_point_base.copy()
+            self._retry_grasp_orientation_until_sec = (
+                self._now_sec() + self.pregrasp_retry_orientation_hold_sec
+            )
+            self.get_logger().warning(
+                'Preserving the initially locked grasp orientation for the next '
+                'nearby pre-grasp retry.'
+            )
+        self.get_logger().warning(f'Resetting grasp sequence: {reason}')
         self._cancel_active_moveit_goal()
         self._cancel_active_gripper_goal()
         self.sequence_id += 1
@@ -5694,14 +5582,8 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'idle'
         self.perception_frozen_for_sequence = False
         self.paused_after_failure = False
-        self._post_grasp_lift_target_z = None
-        self._post_grasp_lift_last_link_z = None
-        self._post_grasp_lift_start_z = None
-        self._post_grasp_lift_escape_z = None
-        self._post_grasp_lift_requested_segment_m = None
-        self._post_grasp_lift_segment_cap_m = None
-        self._post_grasp_lift_retry_count = 0
         self.current_target_point_base = None
+        self.grasp_orientation = None
         self.pre_grasp_pose = None
         self.grasp_pose = None
         self.retreat_pose = None
@@ -5733,12 +5615,6 @@ class VisionGraspNode(Node):
         self._pregrasp_force_finalize = False
         self._pregrasp_final_replan_count = 0
         self._pregrasp_motion_start_sec = 0.0
-        if getattr(self, '_pregrasp_watchdog_timer', None) is not None:
-            try:
-                self._pregrasp_watchdog_timer.cancel()
-            except Exception:
-                pass
-            self._pregrasp_watchdog_timer = None
         self._active_move_goal_handle = None
         self._refine_width_buffer = []
         self._refine_orientation_cam_last = None
@@ -5765,7 +5641,7 @@ class VisionGraspNode(Node):
         joint_positions,
     ) -> bool:
         if self._pending_arm_motion_confirmation is not None:
-            _safe_ros_log(self.get_logger(), "error", f'Blocked overlapping arm command at stage={stage}; '
+            self.get_logger().error(f'Blocked overlapping arm command at stage={stage}; '
                 f'previous_stage={self._pending_arm_motion_confirmation.get("stage")}.')
             return False
         self._pending_arm_motion_confirmation = {
@@ -5790,7 +5666,7 @@ class VisionGraspNode(Node):
         orientation_tolerance: float,
     ) -> bool:
         if self._pending_arm_motion_confirmation is not None:
-            _safe_ros_log(self.get_logger(), "error", f'Blocked overlapping arm command at stage={stage}; '
+            self.get_logger().error(f'Blocked overlapping arm command at stage={stage}; '
                 f'previous_stage={self._pending_arm_motion_confirmation.get("stage")}.')
             return False
         self._pending_arm_motion_confirmation = {
@@ -5845,7 +5721,7 @@ class VisionGraspNode(Node):
                 rclpy.time.Time(),
             )
         except TransformException as exc:
-            _safe_ros_log(self.get_logger(), "warning", f'Arm completion check cannot transform '
+            self.get_logger().warning(f'Arm completion check cannot transform '
                 f'{source_frame} -> {self.planning_frame}: {exc}', throttle_duration_sec=1.0)
             return None
 
@@ -5860,17 +5736,6 @@ class VisionGraspNode(Node):
         if orientation is not None:
             target_orientation = matrix_to_quat(R_tf @ quat_to_matrix(orientation))
         return target_xyz, target_orientation
-
-    @staticmethod
-    def _quaternion_distance_rad(a: Quaternion, b: Quaternion) -> float:
-        qa = np.array([float(a.x), float(a.y), float(a.z), float(a.w)], dtype=np.float64)
-        qb = np.array([float(b.x), float(b.y), float(b.z), float(b.w)], dtype=np.float64)
-        na = float(np.linalg.norm(qa))
-        nb = float(np.linalg.norm(qb))
-        if na < 1e-9 or nb < 1e-9:
-            return math.inf
-        dot = abs(float(np.dot(qa / na, qb / nb)))
-        return 2.0 * math.acos(float(np.clip(dot, -1.0, 1.0)))
 
     def _arm_motion_feedback_reached(self, pending: dict) -> Tuple[bool, str]:
         command_start_sec = float(pending['command_start_sec'])
@@ -5915,17 +5780,23 @@ class VisionGraspNode(Node):
         ], dtype=np.float64) + R_current @ offset
         position_error = float(np.linalg.norm(actual_xyz - target_xyz))
         orientation_error = 0.0
+        orientation_axis_error = 0.0
         orientation_ok = True
         if target_orientation is not None:
-            orientation_error = self._quaternion_distance_rad(current.orientation, target_orientation)
-            orientation_ok = orientation_error <= float(pending['orientation_tolerance'])
+            orientation_error = quaternion_distance_rad(current.orientation, target_orientation)
+            rotation_vector_error = quaternion_rotation_vector_error(
+                target_orientation, current.orientation
+            )
+            orientation_axis_error = float(np.max(np.abs(rotation_vector_error)))
+            orientation_ok = orientation_axis_error <= float(pending['orientation_tolerance'])
         reached = (
             position_error <= float(pending['position_tolerance'])
             and orientation_ok
         )
         return reached, (
             f'position_error={position_error:.4f}m/{float(pending["position_tolerance"]):.4f}m, '
-            f'orientation_error={orientation_error:.4f}rad/'
+            f'orientation_error={orientation_error:.4f}rad total, '
+            f'max_axis_error={orientation_axis_error:.4f}rad/'
             f'{float(pending["orientation_tolerance"]):.4f}rad'
         )
 
@@ -5968,7 +5839,7 @@ class VisionGraspNode(Node):
         pending['last_detail'] = detail
         pending['stable_samples'] = int(pending['stable_samples']) + 1 if reached else 0
         if int(pending['stable_samples']) >= self.arm_feedback_stable_samples:
-            _safe_ros_log(self.get_logger(), "info", f'Arm stage confirmed by action result + fresh measured state: '
+            self.get_logger().info(f'Arm stage confirmed by action result + fresh measured state: '
                 f'stage={stage}, {detail}, stable_samples={pending["stable_samples"]}.')
             self._clear_arm_motion_confirmation()
             self._handle_confirmed_arm_motion(stage)
@@ -6007,7 +5878,7 @@ class VisionGraspNode(Node):
         expected_stage = self.sequence_stage
         expected_seq = self.sequence_id
         if self._arm_motion_forbidden_now(expected_stage):
-            _safe_ros_log(self.get_logger(), "error", f'Blocked unsafe MoveGroup command during gripper stage: requested_stage={expected_stage}')
+            self.get_logger().error(f'Blocked unsafe MoveGroup command during gripper stage: requested_stage={expected_stage}')
             return
         if not self.move_group_client.wait_for_server(timeout_sec=2.0):
             self.reset_sequence('MoveIt action server not available.')
@@ -6068,6 +5939,7 @@ class VisionGraspNode(Node):
             ori.absolute_x_axis_tolerance = ori_tol
             ori.absolute_y_axis_tolerance = ori_tol
             ori.absolute_z_axis_tolerance = ori_tol
+            ori.parameterization = getattr(OrientationConstraint, 'ROTATION_VECTOR', 1)
             ori.weight = 1.0
             c.orientation_constraints.append(ori)
         goal.request.goal_constraints = [c]
@@ -6106,7 +5978,7 @@ class VisionGraspNode(Node):
         expected_stage = self.sequence_stage
         expected_seq = self.sequence_id
         if self._arm_motion_forbidden_now(expected_stage):
-            _safe_ros_log(self.get_logger(), "error", f'Blocked unsafe joint/home command during gripper stage: requested_stage={expected_stage}')
+            self.get_logger().error(f'Blocked unsafe joint/home command during gripper stage: requested_stage={expected_stage}')
             return
         if not self.move_group_client.wait_for_server(timeout_sec=2.0):
             self.reset_sequence('MoveIt action server not available.')
@@ -6171,7 +6043,7 @@ class VisionGraspNode(Node):
             goal_handle = future.result()
         except Exception as exc:
             if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
-                _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale failed motion goal response for stage={expected_stage}; '
+                self.get_logger().warning(f'Ignoring stale failed motion goal response for stage={expected_stage}; '
                     f'current_stage={self.sequence_stage}: {exc}')
                 return
             self._clear_arm_motion_confirmation()
@@ -6197,12 +6069,12 @@ class VisionGraspNode(Node):
             if goal_handle.accepted:
                 try:
                     goal_handle.cancel_goal_async()
-                    _safe_ros_log(self.get_logger(), "warning", f'Cancelled stale accepted arm goal for stage={expected_stage}; '
+                    self.get_logger().warning(f'Cancelled stale accepted arm goal for stage={expected_stage}; '
                         f'current_stage={self.sequence_stage}.')
                 except Exception as exc:
-                    _safe_ros_log(self.get_logger(), "error", f'Could not cancel stale accepted arm goal for stage={expected_stage}: {exc}')
+                    self.get_logger().error(f'Could not cancel stale accepted arm goal for stage={expected_stage}: {exc}')
             else:
-                _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale rejected arm goal for stage={expected_stage}; '
+                self.get_logger().warning(f'Ignoring stale rejected arm goal for stage={expected_stage}; '
                     f'current_stage={self.sequence_stage}.')
             return
         if not goal_handle.accepted:
@@ -6232,7 +6104,7 @@ class VisionGraspNode(Node):
 
     def on_goal_result(self, future, expected_stage: str, expected_seq: int) -> None:
         if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
-            _safe_ros_log(self.get_logger(), "warning", f'Ignoring stale motion result for stage={expected_stage}; '
+            self.get_logger().warning(f'Ignoring stale motion result for stage={expected_stage}; '
                 f'current_stage={self.sequence_stage}.')
             return
         try:
@@ -6276,24 +6148,12 @@ class VisionGraspNode(Node):
                     f'MoveIt held-probe motion to pick_home failed with status {result_wrap.status}.'
                 )
                 return
-            if expected_stage == 'move_post_grasp_lift':
-                requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
-                if self._retry_post_grasp_lift(
-                    f'MoveIt collision-aware vertical lift failed with status {result_wrap.status}.',
-                    requested_segment,
-                ):
-                    return
-                self.reset_sequence(
-                    f'MoveIt collision-aware vertical lift failed with status {result_wrap.status} '
-                    f'after {self._post_grasp_lift_retry_count} retries.'
-                )
-                return
             if (
                 expected_stage == 'move_pre_grasp'
                 and self.pregrasp_finalize_even_if_moveit_silent
                 and not self.arm_require_feedback_for_completion
             ):
-                _safe_ros_log(self.get_logger(), "warning", f'MoveIt pre-grasp returned status {result_wrap.status}; finalizing from current/locked target instead of restarting.')
+                self.get_logger().warning(f'MoveIt pre-grasp returned status {result_wrap.status}; finalizing from current/locked target instead of restarting.')
                 self.handle_pregrasp_arrival()
                 return
             self.reset_sequence(f'MoveIt motion failed with status {result_wrap.status} at {expected_stage}.')
@@ -6308,49 +6168,6 @@ class VisionGraspNode(Node):
 
         elif expected_stage == 'move_grasp':
             self.close_gripper_and_retreat()
-
-        elif expected_stage == 'move_post_grasp_lift':
-            current = self.get_current_link_pose_in_planning_frame()
-            previous_link_z = self._post_grasp_lift_last_link_z
-            requested_segment = float(self._post_grasp_lift_requested_segment_m or 0.0)
-            required_progress = (
-                min(self.post_grasp_lift_min_progress_m, requested_segment)
-                if requested_segment > 0.0
-                else self.post_grasp_lift_min_progress_m
-            )
-
-            if current is not None and previous_link_z is not None:
-                actual_rise = max(0.0, float(current.position.z) - float(previous_link_z))
-                if actual_rise + 1e-6 < required_progress:
-                    if self._retry_post_grasp_lift(
-                        f'Post-grasp lift only rose {actual_rise:.3f} m after executing '
-                        f'a requested {requested_segment:.3f} m segment.',
-                        requested_segment,
-                    ):
-                        return
-                    self.reset_sequence(
-                        f'Post-grasp lift stalled after execution: actual rise {actual_rise:.3f} m '
-                        f'for requested {requested_segment:.3f} m.'
-                    )
-                    return
-
-                self._post_grasp_lift_retry_count = 0
-                if 0.0 < actual_rise < requested_segment - 1e-6:
-                    adapted_segment = max(
-                        required_progress,
-                        min(
-                            self.post_grasp_lift_segment_m,
-                            max(actual_rise, self.post_grasp_lift_waypoint_step_m),
-                        ),
-                    )
-                    if adapted_segment < requested_segment - 1e-6:
-                        self._post_grasp_lift_segment_cap_m = float(adapted_segment)
-                    else:
-                        self._post_grasp_lift_segment_cap_m = None
-                else:
-                    self._post_grasp_lift_segment_cap_m = None
-
-            self._send_next_post_grasp_lift_segment()
 
         elif expected_stage == 'move_lift_check':
             # Arm has risen; now run fresh YOLO+depth checks to confirm whether
@@ -6399,8 +6216,8 @@ class VisionGraspNode(Node):
         """Mark the pick-and-place task complete after the probe was released."""
         self._remove_post_grasp_collision_objects()
         if warning:
-            _safe_ros_log(self.get_logger(), "warning", warning)
-        _safe_ros_log(self.get_logger(), "info", 'Probe placement finished successfully. '
+            self.get_logger().warning(warning)
+        self.get_logger().info('Probe placement finished successfully. '
             f'Probe is in the rover base box; returned_home={returned_home}.')
 
         self.task_complete = True
@@ -6434,7 +6251,7 @@ class VisionGraspNode(Node):
         # so they don't pollute the planning scene for the next cycle.
         self._remove_post_grasp_collision_objects()
 
-        _safe_ros_log(self.get_logger(), "info", 'Grasp sequence finished successfully. '
+        self.get_logger().info('Grasp sequence finished successfully. '
             'Object is held with gripper closed; automatic restart is locked.')
 
         self.task_complete = True
@@ -6504,7 +6321,7 @@ class VisionGraspNode(Node):
         q_g = float(self.current_joint_positions.get(
             self.gripper_joint_name, float(self.gripper_open)))
         contact_off = self._fourbar_actual_contact_offset(q_g)
-        gap_m = self._fourbar_actual_gap_from_q(q_g)
+        gap_m = fourbar.gap_from_q(q_g)
         t_g = float(np.clip(
             (q_g - float(self.gripper_open)) /
             max(float(self.gripper_close) - float(self.gripper_open), 1e-9),
@@ -6716,7 +6533,7 @@ class VisionGraspNode(Node):
                 world_pts = [R @ p + t for p in local_pts]
                 frame_id = self.marker_frame
             except TransformException as exc:
-                _safe_ros_log(self.get_logger(), "warning", f'Could not transform camera frustum {frame} -> {self.marker_frame}: {exc}', throttle_duration_sec=2.0)
+                self.get_logger().warning(f'Could not transform camera frustum {frame} -> {self.marker_frame}: {exc}', throttle_duration_sec=2.0)
                 return None
         else:
             world_pts = local_pts
@@ -6741,9 +6558,11 @@ def main(args=None) -> None:
     node = VisionGraspNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        if node._yolo_worker is not None:
+            node._yolo_worker.stop()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

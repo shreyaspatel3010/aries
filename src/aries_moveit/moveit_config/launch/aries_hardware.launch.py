@@ -214,7 +214,10 @@ def launch_setup(context, *args, **kwargs):
         )
         sensor_config = load_yaml(Path(sensors_3d_file.perform(context)))
     else:
-        sensor_config = {"sensors": []}
+        # Do not pass an empty array through a launch parameter dictionary.
+        # launch_ros normalizes [] to (), whose element type cannot be inferred.
+        # Omitting the sensor plugin parameter disables 3D sensor integration.
+        sensor_config = {}
 
     if "move_group" in ompl_config:
         ompl_config.update(ompl_config.pop("move_group"))

@@ -94,21 +94,27 @@ vision_grasp_node:
     gripper_joint_upper_limit: 0.12
     gripper_joint_limit_margin: 0.05
 
-    # Gripper command completion requires BOTH conditions:
-    #   1. the full command/minimum settle time has elapsed; and
-    #   2. fresh /joint_states feedback is within gripper_goal_tolerance.
-    # Timeout never counts as successful completion.
+    # Normal gripper completion requires the full command time plus fresh
+    # feedback at the target. Final close additionally accepts the strictly
+    # bounded, stalled-contact check below. Timeout alone never succeeds.
     gripper_settle_sec: 0.90
     gripper_command_duration_sec: 4.00
     gripper_feedback_available: true
     gripper_require_feedback_for_completion: true
     gripper_feedback_max_age_sec: 0.50
     gripper_goal_tolerance: 0.012
+    # A rigid probe intentionally stops the final close short of its target.
+    # Accept that as contact only after the measured joint has stopped, moved a
+    # substantial distance from open, and the calibrated gap matches the probe.
+    gripper_contact_stall_sec: 0.35
+    gripper_contact_position_epsilon_rad: 0.003
+    gripper_contact_min_closing_travel_rad: 0.20
+    gripper_contact_gap_tolerance_m: 0.015
     # Must exceed the 4 s trajectory plus the controller's 5 s goal-time
     # allowance, especially when Gazebo is running below real-time speed.
     gripper_confirm_timeout_sec: 12.0
-    # Require FollowJointTrajectory acceptance/result success in addition to
-    # elapsed time and measured joint feedback.
+    # Require action success for ordinary commands. The final close contact
+    # path is the only exception and uses the geometric checks above.
     gripper_require_action_success_for_completion: true
 
     # Legacy time-only fallback is disabled.
@@ -127,6 +133,28 @@ vision_grasp_node:
     arm_joint_confirmation_tolerance_rad: 0.04
     arm_pose_confirmation_position_tolerance_m: 0.020
     arm_pose_confirmation_orientation_tolerance_rad: 0.15
+
+    # Camera-to-grasp calibration offset. It is added to every detected 3D
+    # point before that point is transformed from the depth camera frame into
+    # base_link. Units are metres. In a standard ROS optical frame, +X is
+    # image-right, +Y is image-down, and +Z is forward/away from the camera.
+    # Example: [0.010, -0.005, 0.0] means 10 mm right and 5 mm up.
+    grasp_target_offset_camera_xyz_m: [0.0, 0.0, 0.0]
+
+    # Optional multi-view self-calibration. The probe must remain stationary
+    # while the wrist camera moves toward pre-grasp. The estimator solves for a
+    # camera-axis offset that makes all transformed 3D observations agree,
+    # rejects poorly observable/noisy solutions, and applies at most 15 mm in
+    # one sequence. The accepted value is logged for manual YAML persistence.
+    auto_calibrate_camera_offset_enabled: true
+    auto_calibrate_camera_offset_min_samples: 10
+    auto_calibrate_camera_offset_min_rotation_deg: 12.0
+    auto_calibrate_camera_offset_max_condition: 250.0
+    auto_calibrate_camera_offset_max_m: 0.060
+    auto_calibrate_camera_offset_max_rms_m: 0.012
+    auto_calibrate_camera_offset_min_improvement_m: 0.003
+    auto_calibrate_camera_offset_max_step_m: 0.015
+    auto_calibrate_camera_offset_max_samples: 80
 
     # Robust probe acquisition. A grasp starts only after a consecutive cluster
     # of high-confidence 3D detections agrees within these limits. The committed

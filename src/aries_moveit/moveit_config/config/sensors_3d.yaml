@@ -12,7 +12,9 @@ sensors:
 gripper_camera_depth:
   sensor_plugin: occupancy_map_monitor/DepthImageOctomapUpdater
   image_topic: /gripper_camera/depth/image_rect_raw
-  queue_size: 5
+  # Slow Gazebo rendering can publish depth slightly before the matching TF.
+  # Keep enough messages for that transform to arrive.
+  queue_size: 30
   near_clipping_plane_distance: 0.10
   far_clipping_plane_distance: 2.50
   shadow_threshold: 0.20

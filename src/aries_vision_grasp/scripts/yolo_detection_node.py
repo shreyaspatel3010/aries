@@ -12,38 +12,36 @@ Parameters
   confidence_threshold minimum confidence   (default: 0.50)
   input_topic          colour image topic   (default: /gripper_camera/color/image_raw)
   output_topic         annotated image      (default: /gripper_camera/yolo/image_raw)
-  device               torch device string  (default: cuda:0)
+  detections_topic     JSON detections      (default: derived from output_topic)
+  device               torch device string  (default: cuda:0, CPU fallback)
   imgsz                inference image size (default: 640)
 """
 
 import json
 import threading
 import time
-import traceback
 import cv2
 import numpy as np
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-
-def _find_model() -> str:
-    """Return the model installed with the vision package."""
-    return get_package_share_directory("aries_vision_grasp") + "/models/grasp.pt"
+from aries_vision_grasp.inference import default_model_path, load_yolo_model
 
 
 class YoloDetectionNode(Node):
     def __init__(self):
         super().__init__("yolo_detection_node")
 
-        self.declare_parameter("model_path",           _find_model())
+        self.declare_parameter("model_path",           default_model_path())
         self.declare_parameter("confidence_threshold", 0.50)
         self.declare_parameter("input_topic",  "/gripper_camera/color/image_raw")
         self.declare_parameter("output_topic", "/gripper_camera/yolo/image_raw")
+        self.declare_parameter("detections_topic", "")
         self.declare_parameter("device",       "cuda:0")
         self.declare_parameter("imgsz",        640)
 
@@ -51,51 +49,26 @@ class YoloDetectionNode(Node):
         self.conf  = self.get_parameter("confidence_threshold").value
         in_topic   = self.get_parameter("input_topic").value
         out_topic  = self.get_parameter("output_topic").value
+        det_topic  = self.get_parameter("detections_topic").value
         self.dev   = self.get_parameter("device").value
         self.imgsz = self.get_parameter("imgsz").value
-        det_topic  = out_topic.replace("image_raw", "detections")
+
+        if not det_topic:
+            det_topic = out_topic.replace("image_raw", "detections")
+            if det_topic == out_topic:
+                # output_topic without an "image_raw" suffix would otherwise
+                # silently publish two message types on one topic name.
+                det_topic = out_topic.rstrip("/") + "/detections"
 
         self.get_logger().info(
             f"YOLO node starting | model={model_path} | device={self.dev} | imgsz={self.imgsz}"
         )
 
-        # Load model and run a CUDA warm-up so the first real frame isn't slow
-        try:
-            from ultralytics import YOLO
-            self.model = YOLO(model_path)
-            self.model(
-                np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8),
-                verbose=False, device=self.dev, imgsz=self.imgsz,
-            )
-            self.get_logger().info(
-                f"Model ready | task={self.model.task} | device={self.dev} | names={list(self.model.names.values())}"
-            )
-        except Exception:
-            if self.dev != "cpu":
-                self.get_logger().warn(
-                    f"Failed on device={self.dev}, retrying on CPU:\n{traceback.format_exc()}"
-                )
-                self.dev = "cpu"
-                try:
-                    from ultralytics import YOLO
-                    self.model = YOLO(model_path)
-                    self.model(
-                        np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8),
-                        verbose=False, device=self.dev, imgsz=self.imgsz,
-                    )
-                    self.get_logger().info(
-                        f"Model ready (CPU fallback) | task={self.model.task} | names={list(self.model.names.values())}"
-                    )
-                except Exception:
-                    self.get_logger().error(
-                        f"Failed to load YOLO model on CPU too:\n{traceback.format_exc()}"
-                    )
-                    return
-            else:
-                self.get_logger().error(
-                    f"Failed to load YOLO model:\n{traceback.format_exc()}"
-                )
-                return
+        # Fails loudly (raises) when the model cannot be loaded at all, so a
+        # misconfigured node dies visibly instead of idling forever.
+        self.model, self.dev = load_yolo_model(
+            model_path, device=self.dev, imgsz=self.imgsz, logger=self.get_logger()
+        )
 
         self.bridge   = CvBridge()
         self.img_pub  = self.create_publisher(Image,  out_topic,  1)
@@ -111,6 +84,7 @@ class YoloDetectionNode(Node):
 
         self._lock       = threading.Lock()
         self._latest_msg = None
+        self._shutdown   = False
         self._worker     = threading.Thread(target=self._infer_loop, daemon=True)
         self._worker.start()
 
@@ -121,13 +95,16 @@ class YoloDetectionNode(Node):
             f"  detections  : {det_topic}"
         )
 
+    def stop(self):
+        self._shutdown = True
+
     def _image_cb(self, msg: Image):
         # Just store the latest frame; inference thread picks it up
         with self._lock:
             self._latest_msg = msg
 
     def _infer_loop(self):
-        while rclpy.ok():
+        while rclpy.ok() and not self._shutdown:
             with self._lock:
                 msg = self._latest_msg
                 self._latest_msg = None
@@ -202,15 +179,16 @@ class YoloDetectionNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    node = YoloDetectionNode()
     try:
-        node = YoloDetectionNode()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    except Exception:
-        print(traceback.format_exc())
     finally:
-        rclpy.shutdown()
+        node.stop()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

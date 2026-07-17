@@ -162,18 +162,25 @@
     <gazebo reference="gripper_camera_link">
         <self_collide>0</self_collide>
 
-        <!-- Color camera - D435i 69 deg H-FOV, 1280x720, 30 Hz.
+        <!-- Color camera - 640x480 @ 15 Hz.
              gz_frame_id matches depth_optical_frame: in Gazebo both sensors render from
              gripper_camera_link (same physical position). Using color_optical_frame would
              apply a 15 mm TF offset that doesn't exist in simulation, misaligning the
              DepthCloud color overlay. Using depth_optical_frame keeps both images in the
-             same frame so DepthCloud color-to-depth mapping is pixel-perfect. -->
+             same frame so DepthCloud color-to-depth mapping is pixel-perfect.
+
+             Resolution/FOV/rate are deliberately IDENTICAL to the depth sensor below:
+             the bridge re-publishes depth under the aligned_depth_to_color alias, and
+             vision_grasp_node indexes the depth image with color-image pixel
+             coordinates. That is only geometrically valid when both cameras share the
+             same intrinsics. 15 Hz keeps the render-sensor load low; the vision node
+             only detects at 4 Hz and MoveIt's octomap updater is capped at 5 Hz. -->
         <sensor name="gripper_camera_color" type="camera">
             <camera name="gripper_camera">
                 <horizontal_fov>1.204</horizontal_fov>
                 <image>
-                    <width>1280</width>
-                    <height>720</height>
+                    <width>640</width>
+                    <height>480</height>
                     <format>RGB_INT8</format>
                 </image>
                 <clip>
@@ -187,75 +194,29 @@
                 </noise>
             </camera>
             <always_on>1</always_on>
-            <update_rate>30</update_rate>
+            <update_rate>15</update_rate>
             <visualize>false</visualize>
             <topic>gripper_camera/color/image_raw</topic>
             <gz_frame_id>gripper_camera_depth_optical_frame</gz_frame_id>
         </sensor>
 
-        <!-- Infra1 - D435i 85 deg H-FOV, 640x480, 30 Hz -->
-        <sensor name="gripper_camera_ired1" type="camera">
-            <camera name="gripper_camera">
-                <horizontal_fov>1.487</horizontal_fov>
-                <image>
-                    <width>640</width>
-                    <height>480</height>
-                    <format>L_INT8</format>
-                </image>
-                <clip>
-                    <near>0.02</near>
-                    <far>100</far>
-                </clip>
-                <noise>
-                    <type>gaussian</type>
-                    <mean>0.0</mean>
-                    <stddev>0.05</stddev>
-                </noise>
-            </camera>
-            <always_on>1</always_on>
-            <update_rate>30</update_rate>
-            <visualize>false</visualize>
-            <topic>gripper_camera/infra1/image_rect_raw</topic>
-            <gz_frame_id>gripper_camera_left_ir_optical_frame</gz_frame_id>
-        </sensor>
+        <!-- The infra1/infra2 render sensors were removed from simulation: nothing
+             subscribes to them and each extra render sensor costs significant GPU
+             time (they were a large part of the sim running below real time). The
+             IR frames/links above are kept so TF matches the hardware driver. -->
 
-        <!-- Infra2 - D435i 85 deg H-FOV, 640x480, 30 Hz -->
-        <sensor name="gripper_camera_ired2" type="camera">
-            <camera name="gripper_camera">
-                <horizontal_fov>1.487</horizontal_fov>
-                <image>
-                    <width>640</width>
-                    <height>480</height>
-                    <format>L_INT8</format>
-                </image>
-                <clip>
-                    <near>0.02</near>
-                    <far>100</far>
-                </clip>
-                <noise>
-                    <type>gaussian</type>
-                    <mean>0.0</mean>
-                    <stddev>0.05</stddev>
-                </noise>
-            </camera>
-            <always_on>1</always_on>
-            <update_rate>30</update_rate>
-            <visualize>false</visualize>
-            <topic>gripper_camera/infra2/image_rect_raw</topic>
-            <gz_frame_id>gripper_camera_right_ir_optical_frame</gz_frame_id>
-        </sensor>
-
-        <!-- Depth camera - D435i 85 deg H-FOV, 1280x720, 30 Hz.
+        <!-- Depth camera - 640x480 @ 15 Hz, same intrinsics as the color sensor
+             (see the color-sensor comment for why they must match).
              gz_frame_id must be depth_optical_frame: Gazebo renders all sensors from the
              parent link (gripper_camera_link), which physically coincides with the depth
              frame (xyz offset = 0 0 0). The color_optical_frame is 15 mm offset in Y, so
              using it here would displace 3D points by 15 mm from their true positions. -->
         <sensor name="gripper_camera_depth" type="depth_camera">
             <camera name="gripper_camera">
-                <horizontal_fov>1.487</horizontal_fov>
+                <horizontal_fov>1.204</horizontal_fov>
                 <image>
-                    <width>1280</width>
-                    <height>720</height>
+                    <width>640</width>
+                    <height>480</height>
                     <format>R_FLOAT32</format>
                 </image>
                 <clip>
@@ -269,7 +230,7 @@
                 </noise>
             </camera>
             <always_on>1</always_on>
-            <update_rate>30</update_rate>
+            <update_rate>15</update_rate>
             <visualize>false</visualize>
             <topic>gripper_camera/depth/image_rect_raw</topic>
             <gz_frame_id>gripper_camera_depth_optical_frame</gz_frame_id>

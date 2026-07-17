@@ -381,8 +381,8 @@ Visualization Manager:
       Value: true
       Visual Enabled: true
     - Class: moveit_rviz_plugin/PlanningScene
-      Enabled: true
-      Move Group Namespace: ""
+      Enabled: false
+      Move Group Namespace: /
       Name: PlanningScene
       Planning Scene Topic: /monitored_planning_scene
       Robot Description: robot_description
@@ -707,11 +707,11 @@ Visualization Manager:
         Robot Alpha: 1
         Show Robot Collision: false
         Show Robot Visual: true
-      Value: true
+      Value: false
     - Acceleration_Scaling_Factor: 0.1
       Class: moveit_rviz_plugin/MotionPlanning
       Enabled: true
-      Move Group Namespace: ""
+      Move Group Namespace: /
       MoveIt_Allow_Approximate_IK: false
       MoveIt_Allow_External_Program: false
       MoveIt_Allow_Replanning: false

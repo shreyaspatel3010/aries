@@ -47,7 +47,12 @@
             <sensor name="gpu_lidar_points" type="gpu_lidar">
                 <pose>0 0 0 0 0 0</pose>
                 <topic>/lidar</topic>
-                <update_rate>60</update_rate>
+                <!-- 10 Hz with 64 vertical channels. The previous configuration
+                     (1024x1025 rays at 60 Hz = ~63M rays/s) was the single
+                     largest GPU sensor load in the sim and a major cause of the
+                     real-time factor collapsing. Real 3D lidars scan at
+                     10-20 Hz with 16-128 channels. -->
+                <update_rate>10</update_rate>
                 <ray>
                     <scan>
                     <horizontal>
@@ -57,7 +62,7 @@
                         <max_angle> 3.14159</max_angle>
                     </horizontal>
                     <vertical>
-                        <samples>1025</samples>
+                        <samples>64</samples>
                         <resolution>1</resolution>
                         <min_angle>-3.14159</min_angle>
                         <max_angle> 3.14159</max_angle>
@@ -80,7 +85,8 @@
                 <sensor name="gpu_lidar_scan" type="gpu_lidar">
                 <pose>0 0 0 0 0 0</pose>
                 <topic>/lidar_scan</topic>
-                <update_rate>60</update_rate>
+                <!-- 10 Hz matches typical real planar lidars; SLAM does not need more. -->
+                <update_rate>10</update_rate>
                 <ray>
                     <scan>
                     <horizontal>

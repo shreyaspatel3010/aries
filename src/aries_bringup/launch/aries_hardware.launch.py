@@ -57,17 +57,25 @@ def launch_setup(context, *args, **kwargs):
             )
         )
 
-        actions.append(
-            Node(
-                package="aries_vision_grasp",
-                executable="yolo_detection_node.py",
-                name="yolo_detection_node",
-                output="screen",
-                parameters=[{
-                    "confidence_threshold": 0.50,
-                }],
-            )
+        # Debug-only annotated detection stream. Off by default: vision_grasp_node
+        # runs the same YOLO model on the same camera feed (and publishes its own
+        # /vision_grasp/detection_image), so running this node too doubles the
+        # GPU/CPU inference cost and model memory on the rover.
+        enable_yolo_debug = (
+            LaunchConfiguration("enable_yolo_debug").perform(context).lower() == "true"
         )
+        if enable_yolo_debug:
+            actions.append(
+                Node(
+                    package="aries_vision_grasp",
+                    executable="yolo_detection_node.py",
+                    name="yolo_detection_node",
+                    output="screen",
+                    parameters=[{
+                        "confidence_threshold": 0.50,
+                    }],
+                )
+            )
 
     actions.append(
         IncludeLaunchDescription(
@@ -147,6 +155,13 @@ def generate_launch_description():
             default_value="auto",
             choices=["auto", "true", "false"],
             description="Auto-detect, force-enable, or disable the gripper RealSense and MoveIt Octomap input",
+        ),
+        DeclareLaunchArgument(
+            "enable_yolo_debug",
+            default_value="false",
+            choices=["true", "false"],
+            description="Run the standalone annotated-detection node; duplicates the "
+                        "inference vision_grasp_node already performs, debug only",
         ),
 
         DeclareLaunchArgument("use_rover_drive", default_value="false"),
