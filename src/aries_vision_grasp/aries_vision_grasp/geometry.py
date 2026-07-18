@@ -88,6 +88,27 @@ def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+def wrist_extension_shortfall_m(
+    link_xyz: np.ndarray,
+    link_orientation: Quaternion,
+    shoulder_xyz: np.ndarray,
+    max_wrist_extension_m: float,
+    wrist_backoff_in_link_m: float,
+    margin_m: float,
+) -> float:
+    """How far (m) a tool-link pose lies beyond the arm's reach envelope.
+
+    Shoulder-sphere model: the wrist centre sits wrist_backoff_in_link_m
+    behind the tool link along its +Z axis and can extend at most
+    max_wrist_extension_m from shoulder_xyz. Positive result = out of reach
+    by that much (including margin_m); <= 0 = reachable.
+    """
+    backoff = np.array([0.0, 0.0, wrist_backoff_in_link_m], dtype=np.float64)
+    wrist_xyz = np.asarray(link_xyz, dtype=np.float64) - quat_to_matrix(link_orientation) @ backoff
+    d = float(np.linalg.norm(wrist_xyz - np.asarray(shoulder_xyz, dtype=np.float64)))
+    return d + margin_m - max_wrist_extension_m
+
+
 def duration_to_sec(duration: Duration) -> float:
     return float(duration.sec) + float(duration.nanosec) * 1e-9
 

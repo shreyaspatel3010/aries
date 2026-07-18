@@ -19,8 +19,11 @@ gripper_camera_depth:
   far_clipping_plane_distance: 2.50
   shadow_threshold: 0.20
   # Generous padding: the mask must still cover the gripper while the arm is
-  # moving, when TF lags the rendered depth frame slightly.
+  # moving, when TF lags the rendered depth frame slightly. 60 mm also keeps
+  # the fast-swinging four-bar finger/bucket links masked during the close,
+  # which otherwise leak into the octomap and leave the closed gripper
+  # "in collision" for the post-grasp lift.
   padding_scale: 1.2
-  padding_offset: 0.04
+  padding_offset: 0.06
   max_update_rate: 5.0
   filtered_cloud_topic: /move_group/gripper_camera_filtered_cloud

@@ -130,6 +130,27 @@ vision_grasp_node:
     hold_after_close_no_motion: false
     post_grasp_lift_then_pick_home: true
 
+    # Clear the MoveIt octomap once the gripper has closed (and again right
+    # before the pick_home transport plan). The wrist depth camera paints the
+    # probe — and, when TF lags the rendered depth image, the moving gripper
+    # itself — into the octomap during the final approach; those voxels sit
+    # inside the closed gripper links and abort every post-grasp plan with
+    # START_STATE_IN_COLLISION. The attached probe mesh and the node's own
+    # collision objects keep post-grasp planning safe after the clear.
+    clear_octomap_after_grasp: true
+    clear_octomap_service_name: /clear_octomap
+
+    # Attached-probe pose sync. Place the probe collision mesh from reality
+    # instead of assumptions: link orientation from the measured TF at close
+    # time (not the commanded grasp orientation), and the probe's centre from
+    # the mask pose frozen at final grasp commit, projected along the probe's
+    # long axis (recovers an off-centre grasp). Laterally/vertically the
+    # probe snaps to the bucket contact, which the four-bar close enforces
+    # physically. The along-axis offset is clamped below half the probe
+    # length. The synced centre also becomes the base-box drop target point.
+    attach_probe_pose_sync_enabled: true
+    attach_probe_max_centre_offset_m: 0.140
+
     # Object yaw only; keep floor probe grasp top-down.
     publish_object_pose: true
     object_pose_topic: /vision_grasp/object_pose
@@ -157,6 +178,21 @@ vision_grasp_node:
     diagnose_final_cartesian_failure: true
     stop_after_final_approach_failure: true
     final_approach_failure_lockout_sec: 999999.0
+
+    # Pre-flight reachability guard. Rejects grasp targets whose final-descent
+    # wrist point (joint5, reach_guard_wrist_backoff_in_link_m behind
+    # arm_gripper_base_link along tool +Z) would sit further than
+    # reach_guard_max_wrist_extension_m from the shoulder point, minus the
+    # margin. Checked once at target lock (sequence never starts; acquisition
+    # retries after failure_cooldown_sec) and again on the refined geometry
+    # just before the final descent (halts with the lockout above).
+    # Defaults are derived from igus_rebel2.urdf + gripper_new.xacro; update
+    # them if the arm mount, arm model, or gripper geometry changes.
+    reach_guard_enabled: true
+    reach_guard_shoulder_xyz_in_base: [0.05121, 0.0, 0.4864]
+    reach_guard_max_wrist_extension_m: 0.5410
+    reach_guard_wrist_backoff_in_link_m: 0.12903
+    reach_guard_margin_m: 0.010
 
     # Rover-motion interlock: pause/cancel arm auto-grasp whenever the
     # rover is commanded to move. This keeps the wrist camera target and

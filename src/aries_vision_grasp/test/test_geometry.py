@@ -16,6 +16,7 @@ from aries_vision_grasp.geometry import (
     sec_to_duration,
     duration_to_sec,
     wrap_to_pi,
+    wrist_extension_shortfall_m,
 )
 
 
@@ -104,3 +105,71 @@ def test_stationary_target_camera_offset_rejects_unobservable_views():
     points = np.array([[0.3, -0.1, -0.15]] * 6)
     rotations = np.repeat(np.eye(3)[None, :, :], 6, axis=0)
     assert estimate_stationary_target_camera_offset(points, rotations) is None
+
+
+# igus ReBeL defaults used by the vision_grasp_node reach guard.
+REACH_SHOULDER = np.array([0.05121, 0.0, 0.4864])
+REACH_MAX_EXTENSION = 0.5410
+REACH_WRIST_BACKOFF = 0.12903
+REACH_MARGIN = 0.010
+
+
+def down_facing_quat(tool_z):
+    z = normalize(np.asarray(tool_z, dtype=np.float64))
+    x = normalize(np.cross([0.0, 1.0, 0.0], z))
+    y = np.cross(z, x)
+    return matrix_to_quat(np.column_stack([x, y, z]))
+
+
+def reach_shortfall(link_xyz, tool_z=(0.0, 0.0, -1.0)):
+    return wrist_extension_shortfall_m(
+        np.asarray(link_xyz, dtype=np.float64),
+        down_facing_quat(tool_z),
+        REACH_SHOULDER,
+        REACH_MAX_EXTENSION,
+        REACH_WRIST_BACKOFF,
+        REACH_MARGIN,
+    )
+
+
+def test_reach_shortfall_rejects_logged_final_descent_failure():
+    # Real failure: goal_link=(0.580,-0.102,0.097) with a near-vertical tool
+    # produced Cartesian fraction 0.08-0.10 because the wrist point sits ~53mm
+    # past full extension. The guard must flag it, and also the +30mm lifted
+    # retry that failed identically.
+    tilt = (0.013, 0.022, -0.218)
+    assert reach_shortfall((0.580, -0.102, 0.097), tilt) > 0.050
+    assert reach_shortfall((0.580, -0.102, 0.127), tilt) > 0.035
+
+
+def test_reach_shortfall_accepts_close_target():
+    assert reach_shortfall((0.480, -0.102, 0.097)) < 0.0
+
+
+def test_reach_shortfall_wrist_backoff_shortens_reach_when_tool_points_down():
+    # With the tool pointing straight down the wrist sits above the link, so a
+    # deep target is easier to reach than the raw link distance suggests.
+    link = (0.470, 0.0, 0.020)
+    with_backoff = reach_shortfall(link)
+    no_backoff = wrist_extension_shortfall_m(
+        np.asarray(link, dtype=np.float64),
+        down_facing_quat((0.0, 0.0, -1.0)),
+        REACH_SHOULDER,
+        REACH_MAX_EXTENSION,
+        0.0,
+        REACH_MARGIN,
+    )
+    assert with_backoff < no_backoff
+
+
+def test_reach_shortfall_margin_shifts_boundary():
+    link = (0.510, -0.102, 0.097)
+    tight = wrist_extension_shortfall_m(
+        np.asarray(link, dtype=np.float64),
+        down_facing_quat((0.0, 0.0, -1.0)),
+        REACH_SHOULDER,
+        REACH_MAX_EXTENSION,
+        REACH_WRIST_BACKOFF,
+        0.0,
+    )
+    assert reach_shortfall(link) == pytest.approx(tight + REACH_MARGIN)

@@ -19,20 +19,69 @@ vision_grasp_node:
       - 1.55334
       - 1.50098
 
+    # Held-probe transport goal validation. At pick_home the probe hangs
+    # ~0.25 m under the tool, directly over the chassis front, so a long
+    # attached probe puts the goal state itself in collision and MoveGroup
+    # aborts instantly (status 6). Before commanding the transport move, the
+    # node asks /check_state_validity (which sees the attached probe mesh)
+    # whether pick_home is collision-free; if not, it walks the flattened
+    # 6-joint alternatives below and commands the first valid posture.
+    # Defaults: arm extended forward (tool ~(0.56, -0.05, 0.43) in base_link,
+    # probe ahead of the chassis), then the same posture yawed right by 0.9
+    # and 1.5 rad over open ground.
+    transport_goal_validity_check_enabled: true
+    state_validity_service_name: /check_state_validity
+    pick_home_alternative_joint_positions_flat:
+      - 0.0
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+      - -0.9
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+      - -1.5
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+
     # Enable the pick_home -> box drop -> release -> pick_home sequence.
     place_in_base_box_after_grasp: true
 
     # Physical release point in base_box_drop_frame.
-    # XYZ is metres. RPY is radians and describes arm_gripper_base_link.
-    # These initial values were calculated from the calibrated SRDF pick_drop
-    # posture, so pose mode starts at the same physical release location.
+    # XYZ is metres and is the point the held probe's centre must reach —
+    # (0.15, 0.2, 0.30) is inside the base-mounted box on the front deck.
+    # RPY is radians and describes arm_gripper_base_link; it is used only
+    # when base_box_drop_align_attached_probe is false or nothing is
+    # attached. The values below come from the calibrated SRDF pick_drop
+    # posture (identity RPY would point the gripper Z-axis UP for this link
+    # and makes the goal unreachable).
     base_box_drop_use_pose: true
     base_box_drop_frame: base_link
     base_box_drop_xyz: [0.15, 0.2, 0.30]
-    base_box_drop_rpy: [0.0, 0.0, 0.0]
+    base_box_drop_rpy: [2.05331746, 0.12332939, 1.83238021]
+
+    # Probe-aware drop orientation. A probe grasped at an arbitrary yaw and
+    # off-centre makes every fixed-orientation IK sample collide with the box
+    # walls (MoveGroup burns the full planning time, then status 6). When a
+    # probe is attached, the drop orientation is derived instead from the
+    # grasp-time tool-down orientation, yawed about world Z so the probe's
+    # long axis lies along the box's long axis (+Y on this rover), and the
+    # target point becomes the attached probe centre. The configured RPY
+    # above is bypassed in that case.
+    base_box_drop_align_attached_probe: true
+    base_box_drop_probe_axis_world_yaw_rad: 1.5708
 
     # Point on arm_gripper_base_link that must reach XYZ above. This is the
     # closed-gripper probe/contact centre, not an additional world offset.
+    # With base_box_drop_align_attached_probe enabled this is replaced by the
+    # attach-time probe centre (effectively the same point, computed live).
     base_box_drop_target_point_offset_in_link: [0.0, 0.0259, 0.2180]
     base_box_drop_position_tolerance_m: 0.015
     base_box_drop_orientation_tolerance_rad: 0.10
@@ -110,6 +159,14 @@ vision_grasp_node:
     gripper_contact_position_epsilon_rad: 0.003
     gripper_contact_min_closing_travel_rad: 0.20
     gripper_contact_gap_tolerance_m: 0.015
+    # Final close deliberately over-closes to gripper_close_width instead of
+    # stopping at the computed contact angle for the ESTIMATED probe width —
+    # a few mm of width error there left the probe loose. The rigid probe
+    # stops the jaws at its true width and the stalled-contact check above
+    # completes the close; with no probe the jaws reach full close and the
+    # lift verification catches the miss. The closing-arc ground guard covers
+    # the full commanded sweep.
+    final_close_full_close: true
     # Must exceed the 4 s trajectory plus the controller's 5 s goal-time
     # allowance, especially when Gazebo is running below real-time speed.
     gripper_confirm_timeout_sec: 12.0
