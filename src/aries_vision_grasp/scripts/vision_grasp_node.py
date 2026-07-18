@@ -56,7 +56,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from aries_vision_grasp import fourbar, stages
+from aries_vision_grasp import box_drop, fourbar, stages
 from aries_vision_grasp.geometry import (
     CameraOffsetEstimate,
     estimate_stationary_target_camera_offset,
@@ -330,21 +330,22 @@ class VisionGraspNode(Node):
         # and returns to pick_home.  Only arm joints are commanded for the two
         # transport poses so the gripper cannot open before the release stage.
         self.declare_parameter('place_in_base_box_after_grasp', False)
+        # Automatic box-derived placement. The box pose describes its centre;
+        # dimensions are its outside local XYZ size. A continuous release
+        # volume is calculated above the top rim; MoveIt may choose any point
+        # and any tool orientation inside it.
+        self.declare_parameter('base_box_auto_drop_enabled', True)
+        self.declare_parameter('base_box_center_xyz', [0.15, 0.20, 0.18])
+        self.declare_parameter('base_box_dimensions_xyz', [0.18, 0.36, 0.12])
+        self.declare_parameter('base_box_rpy', [0.0, 0.0, 0.0])
         self.declare_parameter('base_box_drop_use_pose', False)
         self.declare_parameter('base_box_drop_frame', 'base_link')
         self.declare_parameter('base_box_drop_xyz', [0.45078823, 0.07073892, 0.64813140])
         self.declare_parameter('base_box_drop_rpy', [2.05331746, 0.12332939, 1.83238021])
         self.declare_parameter('base_box_drop_target_point_offset_in_link', [0.0, 0.0259, 0.2180])
-        # Probe-aware drop orientation. The configured RPY describes the bare
-        # gripper; a held probe grasped at an arbitrary yaw and off-centre can
-        # make every IK sample collide with the box walls, so MoveGroup burns
-        # the full planning time and aborts (status 6). When enabled and a
-        # probe is attached, the drop orientation is instead derived from the
-        # grasp-time link orientation (proven tool-down template) yawed about
-        # world Z so the probe's long axis aligns with
-        # base_box_drop_probe_axis_world_yaw_rad (the box's long axis, +Y for
-        # the rover base box), and the target point becomes the attached probe
-        # centre rather than the bare-gripper contact offset.
+        # Legacy fixed-pose probe alignment. Automatic placement intentionally
+        # does not use this constraint: arbitrary probe/tool orientation is
+        # allowed over the box so IK is not blocked by a requested wrist yaw.
         self.declare_parameter('base_box_drop_align_attached_probe', True)
         self.declare_parameter('base_box_drop_probe_axis_world_yaw_rad', 1.5708)
         self.declare_parameter('base_box_drop_position_tolerance_m', 0.015)
@@ -470,7 +471,11 @@ class VisionGraspNode(Node):
         self.declare_parameter('gripper_contact_stall_sec', 0.35)
         self.declare_parameter('gripper_contact_position_epsilon_rad', 0.003)
         self.declare_parameter('gripper_contact_min_closing_travel_rad', 0.20)
-        self.declare_parameter('gripper_contact_gap_tolerance_m', 0.015)
+        # Gazebo's bucket/probe collision mesh repeatedly settles near
+        # q=-0.105 (calibrated gap ~=29.4 mm).  An 18 mm geometry allowance
+        # keeps that known rigid-probe stop inside the bounded contact window
+        # while still rejecting a nearly/full-closed miss.
+        self.declare_parameter('gripper_contact_gap_tolerance_m', 0.018)
         # Final close target. The computed four-bar contact angle positions the
         # jaws exactly at the ESTIMATED probe width — a few mm of width error
         # leaves the probe loose. With full close enabled the final command
@@ -785,6 +790,10 @@ class VisionGraspNode(Node):
         self.pick_home_joint_names = list(p('pick_home_joint_names').value)
         self.pick_home_joint_positions = [float(v) for v in p('pick_home_joint_positions').value]
         self.place_in_base_box_after_grasp = bool(p('place_in_base_box_after_grasp').value)
+        self.base_box_auto_drop_enabled = bool(p('base_box_auto_drop_enabled').value)
+        self.base_box_center_xyz = [float(v) for v in p('base_box_center_xyz').value]
+        self.base_box_dimensions_xyz = [float(v) for v in p('base_box_dimensions_xyz').value]
+        self.base_box_rpy = [float(v) for v in p('base_box_rpy').value]
         self.base_box_drop_use_pose = bool(p('base_box_drop_use_pose').value)
         self.base_box_drop_frame = str(p('base_box_drop_frame').value)
         self.base_box_drop_xyz = [float(v) for v in p('base_box_drop_xyz').value]
@@ -811,9 +820,9 @@ class VisionGraspNode(Node):
             0.02, float(p('base_box_drop_marker_axes_length_m').value)
         )
         if not self._base_box_drop_pose_config_valid():
-            self.get_logger().error('Invalid base-box pose configuration: base_box_drop_frame must be non-empty, '
-                'and base_box_drop_xyz/base_box_drop_rpy must each contain exactly three values. '
-                'The drop marker and pose-based placement will remain disabled.')
+            self.get_logger().error('Invalid base-box configuration. Automatic mode requires a non-empty frame, '
+                'three-value centre/RPY/dimensions, positive dimensions, and at least one non-negative release '
+                'height. Legacy pose mode requires three-value drop XYZ/RPY. Placement and its marker are disabled.')
         self.floor_safe_grasp_enabled = bool(p('floor_safe_grasp_enabled').value)
         self.max_grasp_descent_below_target_m = float(p('max_grasp_descent_below_target_m').value)
         self.min_grasp_height_above_floor_m = float(p('min_grasp_height_above_floor_m').value)
@@ -1041,6 +1050,11 @@ class VisionGraspNode(Node):
         self._attached_probe_world_yaw: Optional[float] = None
         self._attached_probe_grasp_orientation: Optional[Quaternion] = None
         self._attached_probe_centre_in_link: Optional[np.ndarray] = None
+        self._attached_probe_axis_in_link: Optional[np.ndarray] = None
+        self._base_box_drop_candidates: List[dict] = []
+        self._base_box_drop_candidate_index: int = -1
+        self._active_base_box_drop_pose: Optional[PoseStamped] = None
+        self._computed_base_box_probe_axis_yaw_rad: Optional[float] = None
         # Mask pose frozen at final grasp commit: the camera is buried during
         # the descent and close, so the live detection goes stale before the
         # probe mesh is attached.
@@ -1225,6 +1239,15 @@ class VisionGraspNode(Node):
 
         self.get_logger().info(f'vision_grasp_node ready | target_class={self.target_class} | planning_group={self.planning_group} | '
             f'planning_link={self.planning_link} | planning_frame={self.planning_frame} | gripper_mode={self.gripper_command_mode}')
+        if self.base_box_auto_drop_enabled and self._base_box_drop_pose_config_valid():
+            layout = self._compute_base_box_layout()
+            self.get_logger().info(
+                f'Automatic base box ready: centre={self.base_box_center_xyz}, '
+                f'dimensions={self.base_box_dimensions_xyz}m, release-volume-centre='
+                f'({layout.release_volume_center[0]:.3f},{layout.release_volume_center[1]:.3f},'
+                f'{layout.release_volume_center[2]:.3f}), release-volume-size='
+                f'({layout.release_volume_dimensions[0]:.3f},{layout.release_volume_dimensions[1]:.3f},'
+                f'{layout.release_volume_dimensions[2]:.3f})m, wrist orientation is searched automatically.')
 
     def _joint_states_cb(self, msg: JointState) -> None:
         update_sec = self._now_sec()
@@ -1306,6 +1329,10 @@ class VisionGraspNode(Node):
         self.sequence_id += 1
         self._cancel_pending_timers()
         self._cancel_final_grasp_pose_check_timer()
+        self._base_box_drop_candidates = []
+        self._base_box_drop_candidate_index = -1
+        self._active_base_box_drop_pose = None
+        self._computed_base_box_probe_axis_yaw_rad = None
         self._close_step_targets = []
         self._close_step_index = 0
         self.sequence_locked_target_point_base = None
@@ -1506,6 +1533,17 @@ class VisionGraspNode(Node):
         points.append(end_pt)
         traj.points = points
         goal.trajectory = traj
+        # Do not let the controller's short default goal_time abort an
+        # intentionally over-closed grasp before our stalled-contact/feedback
+        # logic classifies it. The node's bounded confirmation watchdog remains
+        # authoritative and explicitly cancels the action on completion or
+        # timeout, so this does not create an unbounded command.
+        controller_grace_sec = max(30.0, self.gripper_confirm_timeout_sec + 5.0)
+        controller_grace_ns = int(controller_grace_sec * 1e9)
+        goal.goal_time_tolerance = Duration(
+            sec=controller_grace_ns // 1_000_000_000,
+            nanosec=controller_grace_ns % 1_000_000_000,
+        )
         future = self.gripper_action_client.send_goal_async(goal)
         future.add_done_callback(
             lambda fut, seq=expected_seq, stage=expected_stage, target=expected_target:
@@ -1580,14 +1618,40 @@ class VisionGraspNode(Node):
                 f'stage={expected_stage}, target={expected_target:.5f}.')
             return
 
+        goal_tolerance_code = int(getattr(
+            FollowJointTrajectory.Result,
+            'GOAL_TOLERANCE_VIOLATED',
+            -5,
+        ))
+        if expected_stage == 'close_gripper' and error_code == goal_tolerance_code:
+            # Compatibility with a controller that was already running with
+            # the old 5 s deadline when this node was restarted. A deliberately
+            # over-closed grasp is expected to stop short, so controller timing
+            # is not a failure signal here. Keep evaluating measured stall/gap
+            # evidence until the node-owned watchdog completes or cancels it.
+            self._gripper_action_failed_reason = None
+            self.get_logger().warning(
+                'Ignoring the gripper controller goal deadline during final close; '
+                'continuing with measured stalled-contact validation.')
+            return
+
         error_string = str(getattr(result, 'error_string', '')).strip()
         self._gripper_action_failed_reason = (
             f'action finished with status={result_wrap.status}, '
             f'error_code={error_code}, error="{error_string}"'
         )
-        self.get_logger().error(f'Gripper controller action failed: '
-            f'stage={expected_stage}, target={expected_target:.5f}, '
-            f'{self._gripper_action_failed_reason}.')
+        if expected_stage == 'close_gripper':
+            # A goal-tolerance abort is an expected result when the rigid probe
+            # blocks the deliberately over-closed command.  The gripper wait
+            # tick classifies it using fresh position/travel/gap evidence and
+            # emits an error only if that bounded contact check also fails.
+            self.get_logger().warning(
+                f'Final-close action stopped short; validating rigid-probe contact: '
+                f'target={expected_target:.5f}, {self._gripper_action_failed_reason}.')
+        else:
+            self.get_logger().error(f'Gripper controller action failed: '
+                f'stage={expected_stage}, target={expected_target:.5f}, '
+                f'{self._gripper_action_failed_reason}.')
 
     def _complete_final_close_contact(
         self, target: float, current: float, elapsed: float, evidence: str
@@ -1848,6 +1912,10 @@ class VisionGraspNode(Node):
         if elapsed < effective_timeout_sec:
             return
 
+        # The per-goal controller deadline deliberately exceeds this watchdog.
+        # Cancel here so a stopped gripper is handled by our measured-feedback
+        # safety decision and never later reports GOAL_TOLERANCE_VIOLATED.
+        self._cancel_active_gripper_goal()
         if self._gripper_wait_timer is not None:
             self._gripper_wait_timer.cancel()
             self._gripper_wait_timer = None
@@ -3131,6 +3199,7 @@ class VisionGraspNode(Node):
             if link_orientation is not None else None
         )
         self._attached_probe_centre_in_link = probe_centre_in_link.copy()
+        self._attached_probe_axis_in_link = normalize(R_world_in_link @ axis_world)
         self.get_logger().info(f'[CollisionWorld] Attached probe: {shape_info}')
 
     def _remove_post_grasp_collision_objects(self) -> None:
@@ -3170,6 +3239,7 @@ class VisionGraspNode(Node):
             self._attached_probe_world_yaw = None
             self._attached_probe_grasp_orientation = None
             self._attached_probe_centre_in_link = None
+            self._attached_probe_axis_in_link = None
             removed.append('probe')
 
         if removed:
@@ -5184,11 +5254,12 @@ class VisionGraspNode(Node):
         self._check_transport_goal_candidate(candidates, index + 1, expected_seq)
 
     def send_base_box_drop_closed(self) -> None:
-        """Move to the configured base-box release pose with the gripper closed."""
-        if self.base_box_drop_use_pose:
+        """Calculate and execute a base-box release plan with the gripper closed."""
+        use_pose = self.base_box_auto_drop_enabled or self.base_box_drop_use_pose
+        if use_pose:
             if not self._base_box_drop_pose_config_valid():
                 self._hold_closed_after_transport_failure(
-                    'Invalid base-box pose: frame must be non-empty and XYZ/RPY must each contain three values.'
+                    'Invalid automatic base-box geometry or legacy drop pose.'
                 )
                 return
             if len(self.base_box_drop_target_point_offset_in_link) != 3:
@@ -5208,52 +5279,14 @@ class VisionGraspNode(Node):
             return
 
         self.sequence_stage = 'move_base_box_drop'
-        if self.base_box_drop_use_pose:
-            pose = self.get_base_box_drop_pose()
-            target_offset = self.base_box_drop_target_point_offset_in_link
-            if (
-                self.base_box_drop_align_attached_probe
-                and self._attached_probe_grasp_orientation is not None
-                and self._attached_probe_world_yaw is not None
-            ):
-                # Yaw the proven grasp-time tool-down orientation about world Z
-                # so the held probe's long axis lies along the box's long axis.
-                # The probe is end-symmetric, so the smaller of the two
-                # equivalent rotations is enough.
-                dyaw = wrap_to_pi(
-                    self.base_box_drop_probe_axis_world_yaw_rad - self._attached_probe_world_yaw
-                )
-                if dyaw > math.pi / 2.0:
-                    dyaw -= math.pi
-                elif dyaw < -math.pi / 2.0:
-                    dyaw += math.pi
-                cz, sz = math.cos(dyaw), math.sin(dyaw)
-                world_z_spin = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
-                pose.pose.orientation = matrix_to_quat(
-                    world_z_spin @ quat_to_matrix(self._attached_probe_grasp_orientation)
-                )
-                if self._attached_probe_centre_in_link is not None:
-                    target_offset = [float(v) for v in self._attached_probe_centre_in_link]
-                self.get_logger().info(
-                    f'Base-box drop aligned to the held probe: probe_yaw_at_grasp='
-                    f'{math.degrees(self._attached_probe_world_yaw):.1f}deg, box_axis_yaw='
-                    f'{math.degrees(self.base_box_drop_probe_axis_world_yaw_rad):.1f}deg, '
-                    f'applied_world_yaw={math.degrees(dyaw):.1f}deg; configured rpy is bypassed '
-                    f'and the probe centre is the target point.')
-            self.get_logger().info(f'Moving held probe to base-box release pose: '
-                f'frame={self.base_box_drop_frame}, xyz={self.base_box_drop_xyz}, '
-                f'rpy={self.base_box_drop_rpy}.')
-            self.send_pose_goal(
-                pose,
-                pos_tol=self.base_box_drop_position_tolerance_m,
-                with_orientation=True,
-                orientation_override=pose.pose.orientation,
-                orientation_tol=self.base_box_drop_orientation_tolerance_rad,
-                target_point_offset=target_offset,
-                arm_joints_only_start_state=True,
-                planning_time_override=self.base_box_planning_time_sec,
-                num_attempts_override=max(self.num_planning_attempts, 15),
-            )
+        if use_pose:
+            try:
+                self._base_box_drop_candidates = self._build_base_box_drop_candidates()
+            except ValueError as exc:
+                self._hold_closed_after_transport_failure(f'Cannot calculate base-box drop: {exc}')
+                return
+            self._base_box_drop_candidate_index = -1
+            self._send_base_box_drop_candidate(0)
         else:
             self.get_logger().info(f'Moving held probe from pick_home to the base-box joint posture. '
                 f'MoveGroup planning time={self.base_box_planning_time_sec:.1f} s.')
@@ -5264,25 +5297,238 @@ class VisionGraspNode(Node):
                 num_attempts_override=max(self.num_planning_attempts, 15),
             )
 
-    def _base_box_drop_pose_config_valid(self) -> bool:
-        return bool(self.base_box_drop_frame) and len(self.base_box_drop_xyz) == 3 and len(self.base_box_drop_rpy) == 3
+    def _compute_base_box_layout(self) -> box_drop.BoxDropLayout:
+        if len(self.base_box_rpy) != 3:
+            raise ValueError('base_box_rpy must contain exactly three values')
+        rotation = quat_to_matrix(rpy_to_quat(*self.base_box_rpy))
+        settings = box_drop.derive_automatic_box_settings(self.base_box_dimensions_xyz)
+        return box_drop.compute_box_drop_layout(
+            self.base_box_center_xyz,
+            self.base_box_dimensions_xyz,
+            rotation,
+            settings,
+        )
 
-    def get_base_box_drop_pose(self) -> PoseStamped:
-        """Return the configured physical release-point pose for planning/markers."""
+    def _make_base_box_drop_pose(self, point: np.ndarray) -> PoseStamped:
         pose = PoseStamped()
         pose.header.frame_id = self.base_box_drop_frame
         pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose.position = Point(
-            x=float(self.base_box_drop_xyz[0]),
-            y=float(self.base_box_drop_xyz[1]),
-            z=float(self.base_box_drop_xyz[2]),
-        )
-        pose.pose.orientation = rpy_to_quat(
-            float(self.base_box_drop_rpy[0]),
-            float(self.base_box_drop_rpy[1]),
-            float(self.base_box_drop_rpy[2]),
-        )
+        pose.pose.position = Point(x=float(point[0]), y=float(point[1]), z=float(point[2]))
+        pose.pose.orientation = rpy_to_quat(*self.base_box_drop_rpy)
         return pose
+
+    def _align_drop_pose_to_attached_probe(
+        self, pose: PoseStamped, probe_axis_yaw_rad: float
+    ) -> Tuple[List[float], float]:
+        target_offset = list(self.base_box_drop_target_point_offset_in_link)
+        applied_yaw = 0.0
+        if (
+            self.base_box_drop_align_attached_probe
+            and self._attached_probe_grasp_orientation is not None
+            and self._attached_probe_world_yaw is not None
+        ):
+            # Yaw the proven grasp-time tool-down orientation so the probe lies
+            # along the longest usable box axis. Probe ends are symmetric.
+            applied_yaw = wrap_to_pi(probe_axis_yaw_rad - self._attached_probe_world_yaw)
+            if applied_yaw > math.pi / 2.0:
+                applied_yaw -= math.pi
+            elif applied_yaw < -math.pi / 2.0:
+                applied_yaw += math.pi
+            cz, sz = math.cos(applied_yaw), math.sin(applied_yaw)
+            world_z_spin = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+            pose.pose.orientation = matrix_to_quat(
+                world_z_spin @ quat_to_matrix(self._attached_probe_grasp_orientation)
+            )
+            if self._attached_probe_centre_in_link is not None:
+                target_offset = [float(v) for v in self._attached_probe_centre_in_link]
+        return target_offset, applied_yaw
+
+    def _automatic_base_box_orientation_options(
+        self, layout: box_drop.BoxDropLayout
+    ) -> List[Tuple[str, Quaternion, float]]:
+        """Search wrist rolls while keeping the probe lengthwise over the box."""
+        if (
+            self._attached_probe_axis_in_link is None
+            or self._attached_probe_grasp_orientation is None
+        ):
+            raise ValueError('attached probe axis/orientation is unavailable')
+
+        axis_index = 0 if layout.probe_axis_name == 'X' else 1
+        desired_axis = normalize(layout.rotation[:, axis_index])
+        grasp_R = quat_to_matrix(self._attached_probe_grasp_orientation)
+        initial_axis = normalize(grasp_R @ self._attached_probe_axis_in_link)
+        # The probe is end-symmetric, so +axis and -axis are equivalent but
+        # produce different wrist IK families.
+        options: List[Tuple[str, Quaternion, float]] = []
+        orientation_tol = max(self.base_box_drop_orientation_tolerance_rad, 0.12)
+        for axis_sign in (1.0, -1.0):
+            signed_axis = axis_sign * desired_axis
+            aligned_R = box_drop.rotation_aligning_vectors(initial_axis, signed_axis) @ grasp_R
+            for roll_deg in (0.0, 90.0, -90.0, 180.0):
+                roll = math.radians(roll_deg)
+                x, y, z = signed_axis
+                c, s = math.cos(roll), math.sin(roll)
+                one_minus_c = 1.0 - c
+                roll_about_probe = np.array([
+                    [c + x*x*one_minus_c, x*y*one_minus_c - z*s, x*z*one_minus_c + y*s],
+                    [y*x*one_minus_c + z*s, c + y*y*one_minus_c, y*z*one_minus_c - x*s],
+                    [z*x*one_minus_c - y*s, z*y*one_minus_c + x*s, c + z*z*one_minus_c],
+                ], dtype=np.float64)
+                orientation = matrix_to_quat(roll_about_probe @ aligned_R)
+                options.append((
+                    f'box-{layout.probe_axis_name} axis {axis_sign:+.0f}, '
+                    f'wrist roll {roll_deg:+.0f}deg',
+                    orientation,
+                    orientation_tol,
+                ))
+        return options
+
+    def _build_base_box_drop_candidates(self) -> List[dict]:
+        if self.base_box_auto_drop_enabled:
+            layout = self._compute_base_box_layout()
+            if not layout.probe_length_fits:
+                self.get_logger().warning(
+                    f'Probe length {layout.settings.probe_length_m*1000:.0f} mm exceeds the '
+                    f'{max(layout.usable_xy)*1000:.0f} mm usable box axis. This is allowed: the robot '
+                    'will centre it lengthwise over that axis with symmetric overhang.')
+            if not layout.probe_width_fits:
+                self.get_logger().warning(
+                    f'Probe width {layout.settings.probe_width_m*1000:.0f} mm exceeds the narrow usable '
+                    'opening. This is allowed for the overhead drop; no insertion pose is required.')
+            orientation_options = self._automatic_base_box_orientation_options(layout)
+            if not orientation_options:
+                raise ValueError('no automatic wrist orientations could be generated')
+            self._computed_base_box_probe_axis_yaw_rad = layout.probe_axis_yaw_rad
+            self.get_logger().info(
+                f'Automatic base-box plan: frame={self.base_box_drop_frame}, '
+                f'centre=({layout.center[0]:.3f},{layout.center[1]:.3f},{layout.center[2]:.3f}), '
+                f'size=({layout.dimensions[0]:.3f},{layout.dimensions[1]:.3f},{layout.dimensions[2]:.3f})m, '
+                f'top_z={layout.top_center[2]:.3f}, release_volume='
+                f'({layout.release_volume_dimensions[0]:.3f}x{layout.release_volume_dimensions[1]:.3f}x'
+                f'{layout.release_volume_dimensions[2]:.3f})m, inferred_wall='
+                f'{layout.settings.wall_thickness_m*1000:.0f}mm, automatic_wrist_options='
+                f'{len(orientation_options)}, required_probe_axis=box-{layout.probe_axis_name} '
+                f'({math.degrees(layout.probe_axis_yaw_rad):.1f}deg).')
+            target_offset = list(self.base_box_drop_target_point_offset_in_link)
+            if self._attached_probe_centre_in_link is not None:
+                target_offset = [float(v) for v in self._attached_probe_centre_in_link]
+            candidates = []
+            for index, (orientation_name, orientation, orientation_tol) in enumerate(orientation_options):
+                pose = self._make_base_box_drop_pose(layout.release_volume_center)
+                pose.pose.orientation = orientation
+                candidates.append({
+                    'pose': pose,
+                    'target_offset': target_offset,
+                    'applied_yaw': 0.0,
+                    'with_orientation': True,
+                    'orientation_tol': orientation_tol,
+                    # Use the standard spherical point constraint proven by
+                    # grasp planning. The box-shaped, position-only endpoint
+                    # was rejected by MoveIt as INVALID_MOTION_PLAN (-2).
+                    'position_region_dimensions': None,
+                    'position_region_orientation': None,
+                    'display_volume_dimensions': [float(v) for v in layout.release_volume_dimensions],
+                    'label': (
+                        f'central release solution {index + 1}/{len(orientation_options)} '
+                        f'({orientation_name})'
+                    ),
+                })
+            return candidates
+        else:
+            points = (np.asarray(self.base_box_drop_xyz, dtype=np.float64),)
+            axis_yaw = self.base_box_drop_probe_axis_world_yaw_rad
+            self._computed_base_box_probe_axis_yaw_rad = axis_yaw
+
+        candidates: List[dict] = []
+        for index, point in enumerate(points):
+            pose = self._make_base_box_drop_pose(point)
+            target_offset, applied_yaw = self._align_drop_pose_to_attached_probe(pose, axis_yaw)
+            candidates.append({
+                'pose': pose,
+                'target_offset': target_offset,
+                'applied_yaw': applied_yaw,
+                'with_orientation': True,
+                'orientation_tol': self.base_box_drop_orientation_tolerance_rad,
+                'position_region_dimensions': None,
+                'position_region_orientation': None,
+                'display_volume_dimensions': None,
+                'label': f'candidate {index + 1}/{len(points)}',
+            })
+        return candidates
+
+    def _send_base_box_drop_candidate(self, index: int) -> None:
+        if index < 0 or index >= len(self._base_box_drop_candidates):
+            self._hold_closed_after_transport_failure('No valid base-box release solution remains.')
+            return
+        self._base_box_drop_candidate_index = index
+        candidate = self._base_box_drop_candidates[index]
+        pose = candidate['pose']
+        pose.header.stamp = self.get_clock().now().to_msg()
+        self._active_base_box_drop_pose = pose
+        self.publish_markers()
+        if candidate.get('display_volume_dimensions') is not None:
+            size = candidate['display_volume_dimensions']
+            detail = (
+                f'central-target=({pose.pose.position.x:.3f},{pose.pose.position.y:.3f},'
+                f'{pose.pose.position.z:.3f}), marker-zone=({size[0]:.3f},{size[1]:.3f},'
+                f'{size[2]:.3f})m, target-radius={self.base_box_drop_position_tolerance_m:.3f}m, '
+                f'probe-axis={math.degrees(self._computed_base_box_probe_axis_yaw_rad or 0.0):.1f}deg, '
+                f'automatic wrist tolerance='
+                f'{math.degrees(candidate["orientation_tol"]):.1f}deg'
+            )
+        elif candidate['with_orientation']:
+            detail = (
+                f'point=({pose.pose.position.x:.3f},{pose.pose.position.y:.3f},{pose.pose.position.z:.3f}), '
+                f'probe_axis_yaw={math.degrees(self._computed_base_box_probe_axis_yaw_rad or 0.0):.1f}deg, '
+                f'applied_tool_yaw={math.degrees(candidate["applied_yaw"]):.1f}deg'
+            )
+        else:
+            detail = 'orientation unconstrained'
+        self.get_logger().info(
+            f'Moving held probe to base-box {candidate["label"]}: {detail}.')
+        self.send_pose_goal(
+            pose,
+            pos_tol=self.base_box_drop_position_tolerance_m,
+            with_orientation=candidate['with_orientation'],
+            orientation_override=pose.pose.orientation if candidate['with_orientation'] else None,
+            orientation_tol=candidate['orientation_tol'],
+            target_point_offset=candidate['target_offset'],
+            position_region_dimensions=candidate['position_region_dimensions'],
+            position_region_orientation=candidate['position_region_orientation'],
+            arm_joints_only_start_state=True,
+            planning_time_override=self.base_box_planning_time_sec,
+            num_attempts_override=max(self.num_planning_attempts, 15),
+        )
+
+    def _try_next_base_box_drop_candidate(self, reason: str) -> bool:
+        next_index = self._base_box_drop_candidate_index + 1
+        if not self.base_box_auto_drop_enabled or next_index >= len(self._base_box_drop_candidates):
+            return False
+        self.get_logger().warning(
+            f'{reason} Automatically trying the next base-box release solution '
+            f'({next_index + 1}/{len(self._base_box_drop_candidates)}).')
+        self._send_base_box_drop_candidate(next_index)
+        return True
+
+    def _base_box_drop_pose_config_valid(self) -> bool:
+        if not self.base_box_drop_frame:
+            return False
+        if self.base_box_auto_drop_enabled:
+            try:
+                self._compute_base_box_layout()
+                return True
+            except ValueError:
+                return False
+        return len(self.base_box_drop_xyz) == 3 and len(self.base_box_drop_rpy) == 3
+
+    def get_base_box_drop_pose(self) -> PoseStamped:
+        """Return the active or nominal calculated release pose for markers."""
+        if self._active_base_box_drop_pose is not None:
+            return self._active_base_box_drop_pose
+        if self.base_box_auto_drop_enabled:
+            layout = self._compute_base_box_layout()
+            return self._make_base_box_drop_pose(layout.release_volume_center)
+        return self._make_base_box_drop_pose(np.asarray(self.base_box_drop_xyz, dtype=np.float64))
 
     def release_probe_in_base_box(self) -> None:
         """Open only after MoveIt confirms that the drop posture was reached."""
@@ -5293,6 +5539,48 @@ class VisionGraspNode(Node):
             stage_name='release_in_base_box',
             description='release probe in rover base box',
         )
+
+    def _verify_base_box_release_geometry(self) -> Tuple[bool, str]:
+        """Verify the held probe centre and rigid long axis before opening."""
+        if not self.base_box_auto_drop_enabled:
+            return True, 'legacy placement mode'
+        if self.base_box_drop_frame != self.planning_frame:
+            return False, (
+                f'automatic release verification requires base_box_drop_frame '
+                f'({self.base_box_drop_frame}) to equal planning_frame ({self.planning_frame})'
+            )
+        if self._attached_probe_centre_in_link is None or self._attached_probe_axis_in_link is None:
+            return False, 'attached probe centre/axis geometry is unavailable'
+        current = self.get_current_link_pose_in_planning_frame()
+        if current is None:
+            return False, 'current planning-link TF is unavailable'
+
+        layout = self._compute_base_box_layout()
+        link_R = quat_to_matrix(current.orientation)
+        link_xyz = np.array([
+            float(current.position.x),
+            float(current.position.y),
+            float(current.position.z),
+        ])
+        probe_center = link_xyz + link_R @ self._attached_probe_centre_in_link
+        probe_axis = normalize(link_R @ self._attached_probe_axis_in_link)
+        axis_index = 0 if layout.probe_axis_name == 'X' else 1
+        desired_axis = normalize(layout.rotation[:, axis_index])
+        axis_error = math.acos(float(np.clip(abs(np.dot(probe_axis, desired_axis)), 0.0, 1.0)))
+
+        local_delta = layout.rotation.T @ (probe_center - layout.release_volume_center)
+        half_xy = 0.5 * layout.release_volume_dimensions[:2]
+        xy_margin = 0.005
+        centered = bool(np.all(np.abs(local_delta[:2]) <= half_xy + xy_margin))
+        aligned = axis_error <= math.radians(12.0)
+        detail = (
+            f'probe_center=({probe_center[0]:.3f},{probe_center[1]:.3f},{probe_center[2]:.3f}), '
+            f'local_xy_error=({local_delta[0]*1000:.1f},{local_delta[1]*1000:.1f})mm, '
+            f'allowed_xy=({(half_xy[0]+xy_margin)*1000:.1f},'
+            f'{(half_xy[1]+xy_margin)*1000:.1f})mm, probe_axis_error='
+            f'{math.degrees(axis_error):.1f}deg/12.0deg'
+        )
+        return centered and aligned, detail
 
     def _after_probe_released_in_base_box(self) -> None:
         self.holding_object = False
@@ -6119,6 +6407,8 @@ class VisionGraspNode(Node):
         position_tolerance: float,
         orientation: Optional[Quaternion],
         orientation_tolerance: float,
+        position_region_dimensions: Optional[List[float]] = None,
+        position_region_orientation: Optional[Quaternion] = None,
     ) -> bool:
         if self._pending_arm_motion_confirmation is not None:
             self.get_logger().error(f'Blocked overlapping arm command at stage={stage}; '
@@ -6140,6 +6430,11 @@ class VisionGraspNode(Node):
                 float(orientation_tolerance),
                 self.arm_pose_confirmation_orientation_tolerance_rad,
             ),
+            'position_region_dimensions': (
+                [float(v) for v in position_region_dimensions]
+                if position_region_dimensions is not None else None
+            ),
+            'position_region_orientation': position_region_orientation,
             'stable_samples': 0,
         }
         return True
@@ -6233,7 +6528,35 @@ class VisionGraspNode(Node):
             float(current.position.y),
             float(current.position.z),
         ], dtype=np.float64) + R_current @ offset
-        position_error = float(np.linalg.norm(actual_xyz - target_xyz))
+        region_dimensions = pending.get('position_region_dimensions')
+        position_ok = False
+        if region_dimensions is not None:
+            transformed_region = self._pose_target_in_planning_frame(
+                pending['target_pose'],
+                pending.get('position_region_orientation'),
+            )
+            if transformed_region is None or transformed_region[1] is None:
+                return False, 'position-region transform is unavailable'
+            region_xyz, region_orientation = transformed_region
+            delta_local = quat_to_matrix(region_orientation).T @ (actual_xyz - region_xyz)
+            half_extents = 0.5 * np.asarray(region_dimensions, dtype=np.float64)
+            overflow = np.maximum(np.abs(delta_local) - half_extents, 0.0)
+            position_error = float(np.linalg.norm(overflow))
+            position_ok = bool(
+                np.all(np.abs(delta_local) <= half_extents + float(pending['position_tolerance']))
+            )
+            position_detail = (
+                f'region_local=({delta_local[0]:.4f},{delta_local[1]:.4f},{delta_local[2]:.4f})m, '
+                f'region_half=({half_extents[0]:.4f},{half_extents[1]:.4f},{half_extents[2]:.4f})m, '
+                f'outside_error={position_error:.4f}m/{float(pending["position_tolerance"]):.4f}m'
+            )
+        else:
+            position_error = float(np.linalg.norm(actual_xyz - target_xyz))
+            position_ok = position_error <= float(pending['position_tolerance'])
+            position_detail = (
+                f'position_error={position_error:.4f}m/'
+                f'{float(pending["position_tolerance"]):.4f}m'
+            )
         orientation_error = 0.0
         orientation_axis_error = 0.0
         orientation_ok = True
@@ -6245,11 +6568,11 @@ class VisionGraspNode(Node):
             orientation_axis_error = float(np.max(np.abs(rotation_vector_error)))
             orientation_ok = orientation_axis_error <= float(pending['orientation_tolerance'])
         reached = (
-            position_error <= float(pending['position_tolerance'])
+            position_ok
             and orientation_ok
         )
         return reached, (
-            f'position_error={position_error:.4f}m/{float(pending["position_tolerance"]):.4f}m, '
+            f'{position_detail}, '
             f'orientation_error={orientation_error:.4f}rad total, '
             f'max_axis_error={orientation_axis_error:.4f}rad/'
             f'{float(pending["orientation_tolerance"]):.4f}rad'
@@ -6324,6 +6647,8 @@ class VisionGraspNode(Node):
                         orientation_override: Optional[Quaternion] = None,
                         orientation_tol: Optional[float] = None,
                         target_point_offset: Optional[List[float]] = None,
+                        position_region_dimensions: Optional[List[float]] = None,
+                        position_region_orientation: Optional[Quaternion] = None,
                         path_constraints: Optional[Constraints] = None,
                         velocity_scale: Optional[float] = None,
                         acceleration_scale: Optional[float] = None,
@@ -6375,11 +6700,33 @@ class VisionGraspNode(Node):
             y=float(offset[1]),
             z=float(offset[2]))
         region = BoundingVolume()
-        sphere = SolidPrimitive()
-        sphere.type = SolidPrimitive.SPHERE
-        sphere.dimensions = [tol]
-        region.primitives.append(sphere)
-        region.primitive_poses.append(pose.pose)
+        if position_region_dimensions is not None:
+            if (
+                len(position_region_dimensions) != 3
+                or any(float(v) <= 0.0 for v in position_region_dimensions)
+            ):
+                self._arm_motion_confirmation_failed(
+                    expected_stage,
+                    'Pose position region must contain three positive dimensions.',
+                )
+                return
+            box_region = SolidPrimitive()
+            box_region.type = SolidPrimitive.BOX
+            box_region.dimensions = [float(v) for v in position_region_dimensions]
+            region_pose = Pose()
+            region_pose.position = pose.pose.position
+            region_pose.orientation = (
+                position_region_orientation
+                if position_region_orientation is not None else pose.pose.orientation
+            )
+            region.primitives.append(box_region)
+            region.primitive_poses.append(region_pose)
+        else:
+            sphere = SolidPrimitive()
+            sphere.type = SolidPrimitive.SPHERE
+            sphere.dimensions = [tol]
+            region.primitives.append(sphere)
+            region.primitive_poses.append(pose.pose)
         pos.constraint_region = region
         pos.weight = 1.0
         c.position_constraints.append(pos)
@@ -6412,6 +6759,8 @@ class VisionGraspNode(Node):
             float(tol),
             confirmation_orientation,
             float(self.orientation_tol if orientation_tol is None else orientation_tol),
+            position_region_dimensions=position_region_dimensions,
+            position_region_orientation=position_region_orientation,
         ):
             self._arm_motion_confirmation_failed(
                 expected_stage,
@@ -6508,9 +6857,13 @@ class VisionGraspNode(Node):
                     warning=f'Probe was placed, but the return-home goal could not be sent: {exc}',
                 )
                 return
-            if expected_stage == 'move_base_box_drop' or (
-                expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp
-            ):
+            if expected_stage == 'move_base_box_drop':
+                reason = f'MoveIt base-box goal could not be sent: {exc}'
+                if self._try_next_base_box_drop_candidate(reason):
+                    return
+                self._hold_closed_after_transport_failure(reason)
+                return
+            if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
                 self._hold_closed_after_transport_failure(
                     f'MoveIt held-probe transport goal could not be sent: {exc}'
                 )
@@ -6541,8 +6894,11 @@ class VisionGraspNode(Node):
                 )
                 return
             if expected_stage == 'move_base_box_drop':
+                reason = 'MoveIt rejected the motion into the base-box release volume.'
+                if self._try_next_base_box_drop_candidate(reason):
+                    return
                 self._hold_closed_after_transport_failure(
-                    'MoveIt rejected the motion to the base-box drop posture.'
+                    reason
                 )
                 return
             if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
@@ -6572,9 +6928,13 @@ class VisionGraspNode(Node):
                     warning=f'Probe was placed, but the return-home result was unavailable: {exc}',
                 )
                 return
-            if expected_stage == 'move_base_box_drop' or (
-                expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp
-            ):
+            if expected_stage == 'move_base_box_drop':
+                reason = f'MoveIt base-box result was unavailable: {exc}'
+                if self._try_next_base_box_drop_candidate(reason):
+                    return
+                self._hold_closed_after_transport_failure(reason)
+                return
+            if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
                 self._hold_closed_after_transport_failure(
                     f'MoveIt held-probe transport result was unavailable: {exc}'
                 )
@@ -6594,8 +6954,19 @@ class VisionGraspNode(Node):
                 )
                 return
             if expected_stage == 'move_base_box_drop':
+                moveit_code = getattr(
+                    getattr(getattr(result_wrap, 'result', None), 'error_code', None),
+                    'val',
+                    'unknown',
+                )
+                reason = (
+                    'MoveIt motion into the base-box release volume failed with '
+                    f'action_status={result_wrap.status}, moveit_error_code={moveit_code}.'
+                )
+                if self._try_next_base_box_drop_candidate(reason):
+                    return
                 self._hold_closed_after_transport_failure(
-                    f'MoveIt motion to the base-box drop posture failed with status {result_wrap.status}.'
+                    reason
                 )
                 return
             if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
@@ -6655,7 +7026,16 @@ class VisionGraspNode(Node):
                 self.finish_successfully()
 
         elif expected_stage == 'move_base_box_drop':
-            self.release_probe_in_base_box()
+            geometry_ok, geometry_detail = self._verify_base_box_release_geometry()
+            if geometry_ok:
+                self.get_logger().info(
+                    f'Base-box release geometry PASSED: {geometry_detail}.')
+                self.release_probe_in_base_box()
+            else:
+                reason = f'Base-box release geometry rejected after measured arm confirmation: {geometry_detail}.'
+                if self._try_next_base_box_drop_candidate(reason):
+                    return
+                self._hold_closed_after_transport_failure(reason)
 
         elif expected_stage == 'move_pick_home_after_place':
             self.finish_placement_successfully(returned_home=True)
@@ -6914,13 +7294,90 @@ class VisionGraspNode(Node):
         return markers
 
     def make_base_box_drop_markers(self, marker_id: int, stamp) -> List[Marker]:
-        """Show the configured release point and its gripper-link XYZ axes."""
+        """Show the box, central release zone, and required probe long axis."""
         pose = self.get_base_box_drop_pose()
+        markers: List[Marker] = []
+        next_id = marker_id
+
+        layout = None
+        if self.base_box_auto_drop_enabled:
+            try:
+                layout = self._compute_base_box_layout()
+            except ValueError:
+                layout = None
+
+        if layout is not None:
+            box = Marker()
+            box.header.frame_id = self.base_box_drop_frame
+            box.header.stamp = stamp
+            box.ns = 'base_box_volume'
+            box.id = next_id
+            next_id += 1
+            box.type = Marker.CUBE
+            box.action = Marker.ADD
+            box.pose.position = Point(
+                x=float(layout.center[0]), y=float(layout.center[1]), z=float(layout.center[2])
+            )
+            box.pose.orientation = rpy_to_quat(*self.base_box_rpy)
+            box.scale.x = float(layout.dimensions[0])
+            box.scale.y = float(layout.dimensions[1])
+            box.scale.z = float(layout.dimensions[2])
+            box.color = ColorRGBA(r=0.10, g=0.75, b=1.0, a=0.20)
+            box.lifetime = Duration(sec=0, nanosec=0)
+            markers.append(box)
+
+            release_volume = Marker()
+            release_volume.header.frame_id = self.base_box_drop_frame
+            release_volume.header.stamp = stamp
+            release_volume.ns = 'base_box_drop_release_volume'
+            release_volume.id = next_id
+            next_id += 1
+            release_volume.type = Marker.CUBE
+            release_volume.action = Marker.ADD
+            release_volume.pose.position = Point(
+                x=float(layout.release_volume_center[0]),
+                y=float(layout.release_volume_center[1]),
+                z=float(layout.release_volume_center[2]),
+            )
+            release_volume.pose.orientation = rpy_to_quat(*self.base_box_rpy)
+            release_volume.scale.x = float(layout.release_volume_dimensions[0])
+            release_volume.scale.y = float(layout.release_volume_dimensions[1])
+            release_volume.scale.z = float(layout.release_volume_dimensions[2])
+            release_volume.color = ColorRGBA(r=0.95, g=0.25, b=0.95, a=0.28)
+            release_volume.lifetime = Duration(sec=0, nanosec=0)
+            markers.append(release_volume)
+
+            axis_index = 0 if layout.probe_axis_name == 'X' else 1
+            probe_axis = normalize(layout.rotation[:, axis_index])
+            half_probe = 0.5 * box_drop.PROBE_LENGTH_M
+            axis_start = layout.release_volume_center - half_probe * probe_axis
+            axis_end = layout.release_volume_center + half_probe * probe_axis
+            probe_axis_marker = Marker()
+            probe_axis_marker.header.frame_id = self.base_box_drop_frame
+            probe_axis_marker.header.stamp = stamp
+            probe_axis_marker.ns = 'base_box_drop_probe_axis'
+            probe_axis_marker.id = next_id
+            next_id += 1
+            probe_axis_marker.type = Marker.ARROW
+            probe_axis_marker.action = Marker.ADD
+            probe_axis_marker.pose.orientation.w = 1.0
+            probe_axis_marker.points = [
+                Point(x=float(axis_start[0]), y=float(axis_start[1]), z=float(axis_start[2])),
+                Point(x=float(axis_end[0]), y=float(axis_end[1]), z=float(axis_end[2])),
+            ]
+            probe_axis_marker.scale.x = 0.010
+            probe_axis_marker.scale.y = 0.022
+            probe_axis_marker.scale.z = 0.030
+            probe_axis_marker.color = ColorRGBA(r=1.0, g=0.55, b=0.05, a=0.95)
+            probe_axis_marker.lifetime = Duration(sec=0, nanosec=0)
+            markers.append(probe_axis_marker)
+
         point = Marker()
         point.header.frame_id = pose.header.frame_id
         point.header.stamp = stamp
         point.ns = 'base_box_drop_point'
-        point.id = marker_id
+        point.id = next_id
+        next_id += 1
         point.type = Marker.SPHERE
         point.action = Marker.ADD
         point.pose = pose.pose
@@ -6929,21 +7386,25 @@ class VisionGraspNode(Node):
         point.scale.z = self.base_box_drop_marker_scale_m
         point.color = ColorRGBA(r=0.95, g=0.25, b=0.95, a=0.85)
         point.lifetime = Duration(sec=0, nanosec=0)
+        markers.append(point)
 
-        axes = self.make_pose_axes_markers(
-            marker_id + 1,
-            pose.header.frame_id,
-            stamp,
-            pose,
-            namespace_prefix='base_box_drop',
-            axis_length=self.base_box_drop_marker_axes_length_m,
-        )
+        if not self.base_box_auto_drop_enabled:
+            axes = self.make_pose_axes_markers(
+                next_id,
+                pose.header.frame_id,
+                stamp,
+                pose,
+                namespace_prefix='base_box_drop',
+                axis_length=self.base_box_drop_marker_axes_length_m,
+            )
+            markers.extend(axes)
+            next_id += len(axes)
 
         label = Marker()
         label.header.frame_id = pose.header.frame_id
         label.header.stamp = stamp
         label.ns = 'base_box_drop_label'
-        label.id = marker_id + 4
+        label.id = next_id
         label.type = Marker.TEXT_VIEW_FACING
         label.action = Marker.ADD
         label.pose.position = Point(
@@ -6954,9 +7415,16 @@ class VisionGraspNode(Node):
         label.pose.orientation.w = 1.0
         label.scale.z = max(0.025, self.base_box_drop_marker_scale_m * 0.65)
         label.color = ColorRGBA(r=1.0, g=0.75, b=1.0, a=0.95)
-        label.text = 'BASE BOX DROP'
+        if layout is not None:
+            label.text = (
+                f'CENTRAL AXIS-ALIGNED DROP  {layout.dimensions[0]:.2f} x '
+                f'{layout.dimensions[1]:.2f} x {layout.dimensions[2]:.2f} m'
+            )
+        else:
+            label.text = 'BASE BOX DROP'
         label.lifetime = Duration(sec=0, nanosec=0)
-        return [point, *axes, label]
+        markers.append(label)
+        return markers
 
     def make_camera_frustum_marker(self, marker_id: int, frame: str, stamp) -> Optional[Marker]:
         fx = float(self.camera_info.k[0])

@@ -70,6 +70,17 @@ def test_plausible_probe_contact_accepts_rigid_probe_stop():
     )
 
 
+def test_plausible_probe_contact_accepts_observed_gazebo_stop():
+    """Regression: the rigid probe repeatedly settles here in Gazebo."""
+    assert fourbar.plausible_probe_contact(
+        start_q=-1.565,
+        actual_q=-0.10510,
+        target_q=0.070,
+        minimum_probe_width_m=0.045,
+        maximum_probe_width_m=0.060,
+    )
+
+
 def test_plausible_probe_contact_rejects_wrong_direction_or_gap():
     common = dict(
         minimum_probe_width_m=0.045,

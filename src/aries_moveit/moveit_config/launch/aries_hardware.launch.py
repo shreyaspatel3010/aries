@@ -103,14 +103,12 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
                 # to overshoot, reverse, and overshoot again — the visible
                 # close → open → close symptom.
                 "open_loop_control": True,
-                # Allow up to 5 s for the physical servo to complete a full stroke.
-                # Without an explicit goal_time the JTC uses 0 s (check at exactly
-                # end-of-trajectory), which can report SUCCEEDED before the servo
-                # has physically finished, causing MoveIt to advance to the next
-                # stage mid-stroke.
+                # The vision grasp node owns a bounded feedback/contact watchdog
+                # and cancels explicitly. Keep the JTC deadline outside that
+                # window so rigid contact cannot abort first.
                 "constraints": {
                     "stopped_velocity_tolerance": 0.01,
-                    "goal_time": 5.0,
+                    "goal_time": 30.0,
                     "gripper_gear_left_joint": {
                         "trajectory": 0.05,
                         "goal": 0.01,

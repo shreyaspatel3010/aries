@@ -28,4 +28,4 @@ rebel_gripper_controller:
     
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 0.0
+      goal_time: 30.0

@@ -27,6 +27,8 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   ament_add_pytest_test(test_geometry test/test_geometry.py
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_box_drop test/test_box_drop.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 ament_package()

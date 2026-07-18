@@ -93,14 +93,27 @@ being skewed by camera motion between capture and processing.
 ## Grasp / placement flow
 
 After a verified grasp, the hardware launch carries the probe through
-`pick_home`, moves to the calibrated `pick_drop` posture above the rover's
-base-mounted box, releases it, and returns the empty arm to `pick_home`. The
-behavior is controlled by `place_in_base_box_after_grasp`; tune
-`base_box_drop_joint_positions` if the physical box position changes.
+`pick_home`, moves above the rover's base-mounted box, releases it, and returns
+the empty arm to `pick_home`. The behavior is controlled by
+`place_in_base_box_after_grasp`.
 
-RViz shows a persistent magenta `BASE BOX DROP` marker and red/green/blue XYZ
-axes on `/vision_grasp/markers`. Set `base_box_drop_use_pose: true` to plan to
-the configured XYZ/RPY pose, or `false` to use the joint fallback.
+Configure only `base_box_center_xyz`, `base_box_dimensions_xyz`, and
+`base_box_rpy` in `pick_place.yaml`. The node derives the known probe size,
+wall allowance, edge clearance, top rim, and a continuous overhead release
+volume automatically. The volume is restricted to the inner centre of the box
+and kept close to the top rim so the probe cannot be released at an edge or
+bounce out after a long fall. MoveIt targets the centre of that zone with a
+small spherical tolerance. The probe's measured rigid long axis is aligned
+lengthwise with the box's longest opening. The node searches rotations around
+that probe axis until one produces a valid collision-checked wrist trajectory;
+this changes robot IK without changing the probe's required drop alignment.
+Probe length/width do not reject an overhead drop. Automatic placement
+overrides the legacy manual XYZ/RPY and joint drop modes.
+
+RViz `/vision_grasp/markers` shows a translucent cyan box at the configured
+pose, a translucent magenta central release zone, and an orange 300 mm arrow
+showing the required probe long axis. This makes position, dimensions, and
+orientation visible immediately after relaunching the node.
 
 With `gripper_require_feedback_for_completion: true`, opening and closing
 advance only after the configured command time has elapsed, the trajectory

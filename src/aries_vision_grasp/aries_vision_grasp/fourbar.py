@@ -68,7 +68,7 @@ def plausible_probe_contact(
     *,
     target_tolerance_rad: float = 0.012,
     minimum_closing_travel_rad: float = 0.20,
-    gap_tolerance_m: float = 0.015,
+    gap_tolerance_m: float = 0.018,
 ) -> bool:
     """Return whether stopped-short feedback is consistent with a probe.
 

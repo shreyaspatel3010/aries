@@ -66,12 +66,13 @@ rebel_gripper_controller:
     # open_loop_control prevents the JTC from immediately declaring
     # "goal reached" before the physical servo has moved.
     open_loop_control: true
-    # Allow up to 5 s for the physical servo to complete a stroke.
-    # Without this the JTC can abort a goal prematurely.
-    goal_time_tolerance: 5.0
+    # The grasp node owns a bounded feedback/contact watchdog and cancels its
+    # action explicitly. Keep the JTC deadline outside that window so rigid
+    # probe contact never becomes a GOAL_TOLERANCE_VIOLATED abort first.
+    goal_time_tolerance: 30.0
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 5.0
+      goal_time: 30.0
       gripper_gear_left_joint:
         trajectory: 0.0
         goal: 0.1
