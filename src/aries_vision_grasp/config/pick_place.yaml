@@ -69,6 +69,21 @@ vision_grasp_node:
     base_box_release_wait_sec: 4.0
     return_pick_home_after_base_box_place: true
 
+    # Escalating release ladder. When every automatic wrist candidate fails
+    # (previously a hard lock with the gripper closed), the drop retries in
+    # rounds: round 2 rebuilds all candidates from the CURRENT attached-probe
+    # geometry — the held-probe mesh re-alignment may have corrected a wrong
+    # mesh while round 1 was failing — with the relaxed orientation tolerance
+    # below; the final round plans the probe centre into the release volume
+    # with the wrist unconstrained. Release verification keeps the normal
+    # axis tolerance for oriented rounds and applies the final tolerance only
+    # to the position-only round (a centred overhead drop with symmetric
+    # overhang still lands in the box).
+    base_box_drop_relaxed_orientation_tolerance_rad: 0.35
+    base_box_drop_final_round_position_only: true
+    base_box_release_axis_tolerance_deg: 12.0
+    base_box_release_axis_tolerance_final_deg: 60.0
+
     # General retreat home used by non-placement fallback/recovery paths.
     use_joint_retreat_home: true
     retreat_home_joint_names:
@@ -114,10 +129,21 @@ vision_grasp_node:
     gripper_contact_position_epsilon_rad: 0.003
     gripper_contact_min_closing_travel_rad: 0.20
     # Gazebo's rigid probe contact repeatedly settles around q=-0.105
-    # (29.4 mm in the calibrated midpoint-gap model).  Keep that stop inside
-    # the bounded contact window so it cancels the over-close action before
-    # the trajectory controller reaches its goal-time abort.
-    gripper_contact_gap_tolerance_m: 0.018
+    # (29.4 mm in the calibrated midpoint-gap model) and has been observed as
+    # tight as q=-0.089 (26.75 mm) — physics penetration and off-square
+    # contact read tighter than the true probe width. Keep those stops inside
+    # the bounded contact window so they cancel the over-close action before
+    # the trajectory controller reaches its goal-time abort. (26.75 mm missed
+    # the previous 18 mm window by 0.25 mm and hard-locked a held probe.)
+    gripper_contact_gap_tolerance_m: 0.024
+    # Safety net for stalls OUTSIDE even that window: jaws that stopped with
+    # fresh stationary feedback, big closing travel, well short of the
+    # over-closed target, and a gap clearly above empty-closed (full close
+    # reads 0 mm) are holding SOMETHING. Complete the close without contact
+    # trust instead of hard-locking; the vision lift check must then confirm
+    # a positive lift, and the retry machinery stays armed on a miss.
+    gripper_contact_uncertain_stall_enabled: true
+    gripper_contact_uncertain_min_gap_m: 0.010
     # Final close deliberately over-closes to gripper_close_width instead of
     # stopping at the computed contact angle for the ESTIMATED probe width —
     # a few mm of width error there left the probe loose. The rigid probe

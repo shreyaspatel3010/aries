@@ -151,6 +151,46 @@ vision_grasp_node:
     attach_probe_pose_sync_enabled: true
     attach_probe_max_centre_offset_m: 0.140
 
+    # Held-probe mesh re-alignment: while the probe mesh is attached, every
+    # detection tick back-projects the YOLO26-seg mask through depth into the
+    # gripper link frame, gates the points against the currently attached box
+    # model (so a second probe on the floor is ignored), refines the pose
+    # with a trimmed point-to-box ICP, and republishes the attached collision
+    # object the moment the fit disagrees with the published mesh. An
+    # off-centre/rotated grasp is therefore corrected right after close, and
+    # a probe shifting inside the gripper updates the collision world (and
+    # the base-box drop geometry) immediately. Small corrections need
+    # confirm_samples agreeing frames; deviations beyond the fast thresholds
+    # skip the republish rate limit. After a commit the octomap is cleared so
+    # voxels painted by the probe at its old pose cannot poison planning.
+    attached_probe_realign_enabled: true
+    attached_probe_realign_confidence_threshold: 0.30
+    attached_probe_realign_gate_m: 0.10
+    attached_probe_realign_min_gate_fraction: 0.35
+    attached_probe_realign_min_points: 80
+    attached_probe_realign_icp_iterations: 50
+    attached_probe_realign_max_rms_m: 0.020
+    attached_probe_realign_position_deadband_m: 0.008
+    attached_probe_realign_angle_deadband_deg: 4.0
+    attached_probe_realign_confirm_samples: 2
+    attached_probe_realign_agreement_position_m: 0.015
+    attached_probe_realign_agreement_angle_deg: 6.0
+    attached_probe_realign_fast_position_m: 0.030
+    attached_probe_realign_fast_angle_deg: 12.0
+    attached_probe_realign_min_republish_sec: 0.2
+    attached_probe_realign_clear_octomap: true
+    attached_probe_realign_octomap_min_interval_sec: 2.0
+    attached_probe_realign_stale_warn_sec: 4.0
+    # Re-acquisition: tracking gates points against the attached pose, so a
+    # grossly wrong attach (e.g. flipped mesh) rejects every observation and
+    # cannot self-correct. After this long without a gated measurement, a
+    # confident probe mask near the gripper link is fitted from scratch
+    # (PCA-initialised box ICP) and, once consecutive fits agree, replaces
+    # the attached pose outright.
+    attached_probe_realign_reacquire_after_sec: 2.0
+    attached_probe_realign_reacquire_max_dist_m: 0.40
+    attached_probe_realign_reacquire_confirm_samples: 2
+
     # Object yaw only; keep floor probe grasp top-down.
     publish_object_pose: true
     object_pose_topic: /vision_grasp/object_pose

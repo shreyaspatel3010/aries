@@ -81,6 +81,22 @@ def test_plausible_probe_contact_accepts_observed_gazebo_stop():
     )
 
 
+def test_plausible_probe_contact_accepts_tight_hardware_stop():
+    """Regression: a run stalled at q=-0.08945 (26.75 mm gap) and missed the
+    old 18 mm window by 0.25 mm, hard-locking a physically held probe. The
+    deployed 24 mm tolerance must accept it and still reject a near-closed
+    miss (q=-0.02 reads 14.9 mm)."""
+    common = dict(
+        minimum_probe_width_m=0.045,
+        maximum_probe_width_m=0.060,
+        target_tolerance_rad=0.012,
+        minimum_closing_travel_rad=0.20,
+        gap_tolerance_m=0.024,
+    )
+    assert fourbar.plausible_probe_contact(-1.57, -0.08945499534309975, 0.07, **common)
+    assert not fourbar.plausible_probe_contact(-1.57, -0.02, 0.07, **common)
+
+
 def test_plausible_probe_contact_rejects_wrong_direction_or_gap():
     common = dict(
         minimum_probe_width_m=0.045,

@@ -128,6 +128,52 @@ gripper stage can start. Executed Cartesian paths always request collision
 checking, attached-probe geometry remains active during transport, and
 overlapping arm/gripper commands are rejected.
 
+## Held-probe mesh re-alignment
+
+The attached probe collision mesh is not frozen at grasp time. While the probe
+is held (`attached_probe_realign_enabled`), every detection tick back-projects
+the YOLO26-seg mask through the depth image into the gripper link frame —
+where a rigidly held probe is stationary even while the arm moves — gates the
+points against the currently attached box model (so a second probe on the
+floor is ignored), and refines the pose with a trimmed point-to-box ICP
+(`aries_vision_grasp/probe_alignment.py`; the probe is a 45×45×300 mm box, so
+closest-surface correspondences are analytic). When the fit disagrees with
+the published mesh, the `AttachedCollisionObject` is republished in place:
+small drifts commit after `attached_probe_realign_confirm_samples` agreeing
+frames, and deviations beyond the `attached_probe_realign_fast_*` thresholds
+bypass the republish rate limit so a slip inside the gripper updates the
+collision world immediately. Each commit also refreshes the base-box drop
+facts (probe world yaw, centre and long axis in the link frame) used for drop
+alignment and release verification, and clears the octomap so voxels painted
+by the probe at its previous pose cannot poison the next plan. This corrects
+an off-centre or rotated grasp within about half a second of closing and keeps
+tracking through transport and the terminal holding states.
+
+Tracking gates observations against the current attached pose, so a grossly
+wrong attach (a flipped or far-off mesh) would reject every frame and could
+never self-correct. After `attached_probe_realign_reacquire_after_sec` without
+a gated measurement, a probe mask (or, when YOLO cannot detect the point-blank
+probe at all, a raw-depth cloud anchored at the four-bar grasp contact) is
+fitted from scratch (PCA-initialised box ICP) and, once consecutive fits
+agree, replaces the attached pose outright.
+
+The probe's 180° end-for-end orientation is invisible to a symmetric box fit,
+so it is resolved separately from shape: probe.stl has a fat body at low STL-Z
+and a tapered tip at high STL-Z, and the measured cloud's per-half radial
+width profile (`axis_half_widths`) is matched against that. When the cloud
+covers both ends decisively, the mesh is flipped to point the tip the right
+way — this correction bypasses the deadband (an end flip reads as 0° in the
+symmetric axis metric) and takes the fast commit path.
+
+The base-box release no longer hard-locks when every automatic wrist candidate
+fails: round 2 rebuilds the candidates from the current attached-probe
+geometry (the re-alignment may have corrected the mesh in the meantime) with
+`base_box_drop_relaxed_orientation_tolerance_rad`, and the final round plans
+the probe centre into the release volume with the wrist unconstrained.
+Release verification applies `base_box_release_axis_tolerance_deg` to
+oriented rounds and `base_box_release_axis_tolerance_final_deg` to the
+position-only round.
+
 ## Tests
 
 ```bash
@@ -137,4 +183,6 @@ python3 -m pytest src/aries_vision_grasp/test/
 ```
 
 The tests pin the four-bar calibration table (gap↔q roundtrips, the 45 mm
-probe anchor point, contact offsets) and the quaternion/rotation helpers.
+probe anchor point, contact offsets), the quaternion/rotation helpers, and the
+point-to-box probe fit (pose recovery from a perturbed prior, outlier
+trimming, closest-surface projection).
