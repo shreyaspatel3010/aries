@@ -1,9 +1,15 @@
 <?xml version="1.0"?>
 <launch>
+  <arg name="gripper_type" default="new"/>
+  <arg name="finger_type" default="bucket"/>
   <let name="urdf_path" value="$(find-pkg-share aries)/urdf/my_robot.urdf.xacro"/>
   <let name="rviz_config_path" value="$(find-pkg-share aries)/rviz/display_config.rviz"/>
   <node pkg="robot_state_publisher" exec="robot_state_publisher">
-    <param name="robot_description" value="$(command 'xacro $(var urdf_path)')"/>
+    <!-- type="str" is required: without it launch runs yaml.safe_load() on the
+         URDF to infer the type, and a ": " inside any xacro comment makes YAML
+         parse it as a mapping and fail. -->
+    <param name="robot_description" type="str"
+           value="$(command 'xacro $(var urdf_path) gripper_type:=$(var gripper_type) finger_type:=$(var finger_type)')"/>
   </node>
   <node pkg="joint_state_publisher_gui" exec="joint_state_publisher_gui"/>
   <node pkg="rviz2" exec="rviz2" output="screen" args="-d $(var rviz_config_path)"/>

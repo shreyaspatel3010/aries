@@ -165,6 +165,7 @@ def launch_setup(context, *args, **kwargs):
     arm_hardware_protocol = LaunchConfiguration("arm_hardware_protocol").perform(context)
     gripper_hardware_protocol = LaunchConfiguration("gripper_hardware_protocol").perform(context)
     gripper_type = LaunchConfiguration("gripper_type").perform(context)
+    finger_type = LaunchConfiguration("finger_type").perform(context)
     serial_port = LaunchConfiguration("serial_port").perform(context)
     use_gui = LaunchConfiguration("use_gui").perform(context)
     suppress_rebel_logs = LaunchConfiguration("suppress_rebel_logs").perform(context).lower() in ("1", "true", "yes", "on")
@@ -190,6 +191,7 @@ def launch_setup(context, *args, **kwargs):
             " arm_hardware_protocol:=", arm_hardware_protocol,
             " gripper_hardware_protocol:=", gripper_hardware_protocol,
             " gripper_type:=", gripper_type,
+            " finger_type:=", finger_type,
             " serial_port:=", serial_port,
         ]
     ).perform(context)
@@ -554,6 +556,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
             DeclareLaunchArgument("gripper_type", default_value="new", choices=["old", "new"], description="Which gripper URDF to load"),
+            DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new gripper)"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
             DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend"),

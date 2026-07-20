@@ -28,6 +28,13 @@ def generate_launch_description():
         default_value='new',
         description='Which gripper URDF to load'
     )
+
+    finger_type_arg = DeclareLaunchArgument(
+        'finger_type',
+        default_value='bucket',
+        choices=['bucket', 'maintenance', 'probe'],
+        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
+    )
     
     use_gui_arg = DeclareLaunchArgument(
         'use_gui', 
@@ -51,6 +58,7 @@ def generate_launch_description():
     aries_pkg = get_package_share_directory("aries")
     arm_hardware_protocol = LaunchConfiguration('arm_hardware_protocol')
     gripper_type = LaunchConfiguration('gripper_type')
+    finger_type = LaunchConfiguration('finger_type')
     micro_ros_device = LaunchConfiguration('micro_ros_device')
 
     robot_description_content = ParameterValue(
@@ -67,6 +75,8 @@ def generate_launch_description():
             'gripper_hardware_protocol:=rebel',
             ' ',
             'gripper_type:=', gripper_type,
+            ' ',
+            'finger_type:=', finger_type,
         ]),
         value_type=str
     )
@@ -260,6 +270,7 @@ def generate_launch_description():
     return LaunchDescription([
         arm_hardware_protocol_arg,
         gripper_type_arg,
+        finger_type_arg,
         use_gui_arg,
         micro_ros_device_arg,
         micro_ros_agent_node,

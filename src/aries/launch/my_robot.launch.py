@@ -50,6 +50,13 @@ def generate_launch_description():
         description='Gripper type: "new" or "old"'
     )
 
+    finger_type_arg = DeclareLaunchArgument(
+        'finger_type',
+        default_value='bucket',
+        choices=['bucket', 'maintenance', 'probe'],
+        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
+    )
+
     hardware_protocol_arg = DeclareLaunchArgument(
         'hardware_protocol',
         default_value='gazebo',
@@ -118,6 +125,7 @@ def generate_launch_description():
 
     # Launch configurations
     gripper_type = LaunchConfiguration('gripper_type')
+    finger_type = LaunchConfiguration('finger_type')
     hardware_protocol = LaunchConfiguration('hardware_protocol')
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_joystick = LaunchConfiguration('use_joystick')
@@ -158,6 +166,7 @@ def generate_launch_description():
         Command([
             'xacro ', urdf_path,
             ' gripper_type:=', gripper_type,
+            ' finger_type:=', finger_type,
             ' hardware_protocol:=', hardware_protocol
         ]),
         value_type=str
@@ -258,6 +267,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         gripper_type_arg,
+        finger_type_arg,
         hardware_protocol_arg,
         use_sim_time_arg,
         use_joystick_arg,

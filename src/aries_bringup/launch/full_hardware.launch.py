@@ -18,6 +18,7 @@ def generate_launch_description():
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
 
         DeclareLaunchArgument("gripper_type", default_value="new", choices=["old", "new"]),
+        DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
@@ -65,6 +66,7 @@ def generate_launch_description():
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
                 "gripper_type": LaunchConfiguration("gripper_type"),
+                "finger_type": LaunchConfiguration("finger_type"),
                 "hardware_protocol": LaunchConfiguration("hardware_protocol"),
                 "arm_hardware_protocol": LaunchConfiguration("arm_hardware_protocol"),
                 "gripper_hardware_protocol": LaunchConfiguration("gripper_hardware_protocol"),
