@@ -1276,6 +1276,9 @@ class VisionGraspNode(Node):
         self._last_detected_orientation_cam: Optional[np.ndarray] = None  # 3x3 rot matrix in camera frame
         self.detected_object_pose: Optional[PoseStamped] = None           # full pose in planning_frame
         self._last_detected_object_rotation_base: Optional[np.ndarray] = None
+        # True when the latest PCA long axis was pointed at the probe tip from
+        # the cloud's own taper rather than left on eigh's arbitrary sign.
+        self._object_axis_tip_resolved: bool = False
         self.detected_object_yaw_rad: Optional[float] = None              # yaw in planning_frame
         self._lift_check_timer = None
         self._lift_check_start_sec = 0.0
@@ -2505,13 +2508,27 @@ class VisionGraspNode(Node):
         if np.linalg.det(R) < 0:
             R[:, 2] = -R[:, 2]
 
+        # Point the long axis from the probe's fat body toward its tapered tip,
+        # matching the STL's own +Z. eigh's eigenvector signs are arbitrary, so
+        # without this the long axis is a coin flip that the attach step bakes
+        # into the collision mesh as a 180° end-for-end flip.
+        self._object_axis_tip_resolved = False
+        fat_sign = probe_alignment.long_axis_fat_end_sign(pts, centroid, R[:, 0])
+        if fat_sign != 0:
+            self._object_axis_tip_resolved = True
+            if fat_sign != self._probe_stl_end_sign_or_default():
+                R[:, 0] = -R[:, 0]
+                R[:, 1] = -R[:, 1]   # keep the frame right-handed
+
         self.get_logger().info(f'Object 3D orientation: eigenratio={ratio:.1f}  '
-            f'long_axis_cam=[{R[0,0]:.2f},{R[1,0]:.2f},{R[2,0]:.2f}]', throttle_duration_sec=1.0)
+            f'long_axis_cam=[{R[0,0]:.2f},{R[1,0]:.2f},{R[2,0]:.2f}]  '
+            f'tip_resolved={self._object_axis_tip_resolved}', throttle_duration_sec=1.0)
         return centroid, R
 
     def _clear_detected_object_pose(self) -> None:
         self.detected_object_pose = None
         self._last_detected_object_rotation_base = None
+        self._object_axis_tip_resolved = False
 
     def _compute_object_pose_in_planning_frame(
         self,
@@ -2556,7 +2573,14 @@ class VisionGraspNode(Node):
 
         prev_R = self._last_detected_object_rotation_base
         if prev_R is not None:
-            if float(np.dot(long_axis, prev_R[:, 0])) < 0.0:
+            # Only inherit the previous frame's long-axis direction when this
+            # frame could not resolve the tip itself; a decisive taper reading
+            # must win, otherwise the first frame's arbitrary PCA sign is
+            # latched for the whole run and never self-corrects.
+            if (
+                not self._object_axis_tip_resolved
+                and float(np.dot(long_axis, prev_R[:, 0])) < 0.0
+            ):
                 long_axis = -long_axis
             if float(np.dot(normal_axis, prev_R[:, 2])) < 0.0:
                 normal_axis = -normal_axis
@@ -3432,6 +3456,20 @@ class VisionGraspNode(Node):
                     sign = 1
         self._probe_stl_fat_end_sign = sign
         return sign
+
+    def _probe_stl_end_sign_or_default(self) -> int:
+        """``_probe_stl_end_sign`` with the mesh loaded on demand.
+
+        Detection runs long before the attach step loads probe.stl, so the
+        cached sign is not yet available there. Load the mesh once when first
+        asked; if it cannot be found, fall back to probe.stl's shipped profile
+        (wide body at low Z, tapered tip at high Z).
+        """
+        if self._probe_mesh_msg is None:
+            stl_path = self._find_probe_stl()
+            self._probe_mesh_msg = self._load_stl_mesh(stl_path) if stl_path else None
+        sign = self._probe_stl_end_sign()
+        return sign if sign != 0 else -1
 
     def _orient_probe_fit_end(
         self,

@@ -11,6 +11,7 @@ from aries_vision_grasp.probe_alignment import (
     box_surface_distances,
     closest_points_on_box,
     fit_box_to_points,
+    long_axis_fat_end_sign,
 )
 
 # Probe half extents (metres): X width, Y height, Z long axis.
@@ -144,6 +145,45 @@ def test_axis_half_widths_detects_tapered_end():
     pts = sample_tapered_probe(R, c, tip_sign=-1)
     w_neg, w_pos, _, _ = axis_half_widths(pts, R, c)
     assert w_pos > 1.3 * w_neg
+
+
+def test_long_axis_fat_end_sign_is_direction_aware():
+    """The PCA long axis is sign-arbitrary; the taper must resolve which end
+    is the fat body regardless of which way the caller's axis points."""
+    R = rodrigues([0.2, 0.8, 0.5], 0.6)
+    c = np.array([0.01, -0.02, 0.19])
+    axis = R[:, 2]
+    # Tip toward +axis → fat body sits on the -axis side.
+    pts = sample_tapered_probe(R, c, tip_sign=+1)
+    assert long_axis_fat_end_sign(pts, c, axis) == -1
+    # Same cloud, reversed axis → the answer must flip with it.
+    assert long_axis_fat_end_sign(pts, c, -axis) == 1
+    # Physically flipped probe.
+    pts = sample_tapered_probe(R, c, tip_sign=-1)
+    assert long_axis_fat_end_sign(pts, c, axis) == 1
+
+
+def test_long_axis_fat_end_sign_abstains_when_not_decisive():
+    """Better to keep the previous convention than to guess from a cloud that
+    cannot see the taper."""
+    R = rodrigues([0.1, 0.3, 0.9], 0.4)
+    c = np.array([0.0, 0.0, 0.2])
+    axis = R[:, 2]
+
+    # Untapered cloud: both halves are equally wide.
+    rng = np.random.default_rng(7)
+    z = rng.uniform(-HALF[2], HALF[2], 1200)
+    ang = rng.uniform(0.0, 2.0 * math.pi, 1200)
+    q = np.column_stack([HALF[0] * np.cos(ang), HALF[0] * np.sin(ang), z])
+    assert long_axis_fat_end_sign(q @ R.T + c, c, axis) == 0
+
+    # Only the body half visible — the tip is occluded, so nothing to compare.
+    pts = sample_tapered_probe(R, c, tip_sign=+1)
+    along = (pts - c) @ axis
+    assert long_axis_fat_end_sign(pts[along < 0.0], c, axis) == 0
+
+    # Too few points to trust either half.
+    assert long_axis_fat_end_sign(pts[:20], c, axis) == 0
 
 
 def sample_visible_box_surface(rotation, centre, cam_pos, n_per_face=220,

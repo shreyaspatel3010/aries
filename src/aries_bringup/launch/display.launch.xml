@@ -1,3 +1,8 @@
 <launch>
-  <include file="$(find-pkg-share aries)/launch/display.launch.xml" />
+  <arg name="gripper_type" default="new"/>
+  <arg name="finger_type" default="bucket"/>
+  <include file="$(find-pkg-share aries)/launch/display.launch.xml">
+    <arg name="gripper_type" value="$(var gripper_type)"/>
+    <arg name="finger_type" value="$(var finger_type)"/>
+  </include>
 </launch>

@@ -89,6 +89,62 @@ def axis_half_widths(
     return width_neg, width_pos, n_neg, n_pos
 
 
+def long_axis_fat_end_sign(
+    points: np.ndarray,
+    centre: np.ndarray,
+    long_axis: np.ndarray,
+    min_points_per_half: int = 40,
+    min_reach_m: float = 0.06,
+    width_ratio: float = 1.15,
+) -> int:
+    """Which end of ``long_axis`` carries the probe's fat body.
+
+    Returns ``+1`` when the wide end lies on the ``+long_axis`` side, ``-1``
+    when it lies on the ``-`` side, and ``0`` when the cloud cannot decide.
+
+    PCA returns an axis, not a direction: the sign of the long-axis
+    eigenvector is a LAPACK artefact with no physical meaning, so a raw PCA
+    pose is 180° end-for-end ambiguous. The probe's taper breaks that tie —
+    the half whose points sit further from the centre line is the fat body,
+    the other is the tip. The caller compares this against the STL's own
+    profile to fix the direction.
+
+    Decisiveness needs all three of: enough points per half, a cloud that
+    actually reaches ``min_reach_m`` into both halves (a cloud covering only
+    the body says nothing about the tip), and widths that differ by more than
+    ``width_ratio``. Anything less returns 0 rather than guessing.
+    """
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    c = np.asarray(centre, dtype=np.float64).reshape(3,)
+    axis = np.asarray(long_axis, dtype=np.float64).reshape(3,)
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-12 or len(pts) < 2 * min_points_per_half:
+        return 0
+    axis = axis / norm
+
+    rel = pts - c
+    along = rel @ axis
+    radial = np.linalg.norm(rel - np.outer(along, axis), axis=1)
+
+    neg = along < 0.0
+    n_neg = int(neg.sum())
+    n_pos = int(len(pts) - n_neg)
+    if n_neg < min_points_per_half or n_pos < min_points_per_half:
+        return 0
+    if float(np.percentile(along, 95)) < min_reach_m:
+        return 0
+    if float(np.percentile(along, 5)) > -min_reach_m:
+        return 0
+
+    width_neg = float(radial[neg].mean())
+    width_pos = float(radial[~neg].mean())
+    if width_neg > width_ratio * width_pos:
+        return -1
+    if width_pos > width_ratio * width_neg:
+        return 1
+    return 0
+
+
 def axis_angle_deg(axis_a: np.ndarray, axis_b: np.ndarray) -> float:
     """Angle between two undirected axes (probe ends are symmetric)."""
     a = np.asarray(axis_a, dtype=np.float64).reshape(3,)
