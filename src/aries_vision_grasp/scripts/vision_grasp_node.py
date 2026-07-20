@@ -7,7 +7,7 @@ The jaw gap varies with joint angle. This node estimates the 3D object width
 from the YOLO segmentation mask + depth image and computes the optimal close
 angle per object using the calibrated four-bar gap table in
 ``aries_vision_grasp.fourbar`` (measured from gripper_new.xacro +
-gripper_bucket.stl; e.g. a 45 mm probe needs q ≈ -0.20 rad).
+gripper_bucket.stl; e.g. the 30 mm probe needs q ≈ -0.085 rad).
 
 YOLO inference runs in a background thread (``aries_vision_grasp.inference``)
 so the rclpy executor — gripper ticks, action results, TF — is never blocked
@@ -36,7 +36,7 @@ from builtin_interfaces.msg import Duration
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Twist, Vector3
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
-from moveit_msgs.srv import GetCartesianPath, GetStateValidity
+from moveit_msgs.srv import GetCartesianPath, GetPositionIK, GetStateValidity
 from moveit_msgs.msg import (
     AttachedCollisionObject,
     BoundingVolume,
@@ -97,12 +97,24 @@ class FrameSnapshot:
 
 # Probe STL extents in metres (X width, Y height, Z long axis). Shared by the
 # initial attach and the held-probe re-alignment fit.
-PROBE_STL_DIMS = np.array([0.045, 0.045, 0.300], dtype=np.float64)
+# Fallback probe extents (X width, Y height, Z long axis) used only until
+# probe.stl has been read. The real values are measured from the mesh itself by
+# _probe_dims(): hard-coding them here and in box_drop let the constants drift
+# from the model when the STL was swapped, which sizes the attached collision
+# body wrongly with no warning.
+PROBE_STL_DIMS_FALLBACK = np.array([0.030, 0.030, 0.200], dtype=np.float64)
 
 
 class VisionGraspNode(Node):
     def __init__(self) -> None:
         super().__init__('vision_grasp_node')
+        # Probe mesh state first: parameter validation below reaches
+        # _probe_dims() (via the base-box layout) before the main state block
+        # runs, so these must already exist.
+        self._probe_mesh_msg: Optional[Mesh] = None
+        self._probe_mesh_load_attempted: bool = False
+        self._probe_stl_dims_measured: Optional[np.ndarray] = None
+        self._probe_stl_fat_end_sign: Optional[int] = None
         self.bridge = CvBridge()
 
         # Vision/model. The default weights are installed with this package.
@@ -142,6 +154,9 @@ class VisionGraspNode(Node):
         self.declare_parameter('use_segmentation_mask', True)
         self.declare_parameter('mask_score_threshold', 0.50)
         self.declare_parameter('mask_min_pixels', 80)
+        # Fraction of the smaller box that must overlap a larger same-class box
+        # before it is treated as a duplicate detection of the same object.
+        self.declare_parameter('detection_nested_overlap_threshold', 0.70)
         self.declare_parameter('mask_erode_px', 2)
         self.declare_parameter('mask_depth_percentile', 35.0)
 
@@ -224,10 +239,11 @@ class VisionGraspNode(Node):
         # travel outside these values so the four-bar does not wedge at a hard
         # physics stop; the commanded open/close positions remain unchanged.
         self.declare_parameter('gripper_open_width', -1.57)
-        # Probe mesh is about 45 mm wide.
-        # Fully closing to 0.085 can push the probe out.
-        # Finger gap approx = 0.1786 - 2*q.
-        # q=0.070 gives about 38.6 mm gap, enough to grip a 45 mm probe.
+        # Hard close limit only; the grasp itself uses the q_close computed from
+        # the measured probe width via the calibrated fourbar table. Per that
+        # table q=0.070 is gap≈0 (fully closed), so this is a travel limit, not
+        # a grasp width. Do not size it from the old linear gap model
+        # (0.1786 - 2q), which is wrong — see the fourbar note below.
         self.declare_parameter('gripper_close_width', 0.07)
         self.declare_parameter('gripper_preclose_width', -0.75)
         self.declare_parameter('gripper_joint_lower_limit', -1.62)
@@ -260,12 +276,17 @@ class VisionGraspNode(Node):
         # Final gap is intentionally only slightly larger than the object.
         # Pre-close gap is also close to final gap so the last ground-level
         # four-bar sweep is very small.
-        self.declare_parameter('minimum_probe_width_m', 0.045)
+        # Sized for the 30 mm probe in models/probe.stl. This is a FLOOR on the
+        # measured width, so it must never exceed the real probe: a 45 mm floor
+        # on a 30 mm probe computes q_close for a 41 mm jaw gap and the fingers
+        # stop 11 mm short of ever touching it. _warn_on_probe_width_mismatch
+        # checks these against the mesh at startup.
+        self.declare_parameter('minimum_probe_width_m', 0.030)
         # Width estimator guard for a known probe. Segmentation sometimes returns
         # the probe length/visible mask diagonal as the width (e.g. 100+ mm),
         # which leaves the gripper too open. Clamp to a physical probe range.
-        self.declare_parameter('nominal_probe_width_m', 0.045)
-        self.declare_parameter('maximum_probe_width_m', 0.060)
+        self.declare_parameter('nominal_probe_width_m', 0.030)
+        self.declare_parameter('maximum_probe_width_m', 0.040)
         self.declare_parameter('clamp_probe_width_for_grasp', True)
         self.declare_parameter('object_width_final_clearance_m', -0.004)
         self.declare_parameter('object_width_preclose_clearance_m', 0.012)
@@ -409,6 +430,30 @@ class VisionGraspNode(Node):
         self.declare_parameter('base_box_release_axis_tolerance_final_deg', 60.0)
         self.declare_parameter('base_box_drop_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
         self.declare_parameter('base_box_drop_joint_positions', [0.15708, -0.837758, 1.93732, 0.15708, 0.959931, 1.27409])
+        # Tilted insertion release. The probe is longer than the box's usable
+        # opening, so a horizontal centred pose above the rim can only drop it
+        # across the mouth. Instead lean it in: the leading end goes
+        # base_box_insert_depth_m below the rim at base_box_insert_tilt_deg
+        # above the top plane, displaced along the long axis so the probe leaves
+        # through the mouth rather than clipping a wall. Shallow tilts come
+        # first — they need the least vertical drop, so for a probe short enough
+        # to fit the interior diagonal the release ends up fully inside the box
+        # rather than leaning out. Each tilt is checked for opening clearance
+        # before it costs any planning time.
+        self.declare_parameter('base_box_insert_enabled', True)
+        self.declare_parameter('base_box_insert_tilt_options_deg', [30.0, 45.0, 60.0])
+        self.declare_parameter('base_box_insert_depth_m', 0.050)
+        self.declare_parameter('base_box_insert_entry_offset_m', 0.035)
+        # Reject unreachable release candidates with a cheap IK query instead of
+        # a full planning timeout. Without this every unreachable wrist option
+        # costs base_box_planning_time_sec (measured: 10.2 s each, 8 candidates
+        # deep) before the ladder moves on.
+        self.declare_parameter('base_box_ik_prescreen_enabled', True)
+        self.declare_parameter('base_box_ik_prescreen_timeout_sec', 0.5)
+        # Upper bound on candidates actually handed to the planner when the IK
+        # screen rejects everything and the ladder falls back to planning. The
+        # full candidate set is cheap to screen but expensive to plan.
+        self.declare_parameter('base_box_max_planned_candidates', 6)
         self.declare_parameter('base_box_planning_time_sec', 10.0)
         self.declare_parameter('base_box_release_wait_sec', 0.0)
         self.declare_parameter('return_pick_home_after_base_box_place', True)
@@ -424,9 +469,17 @@ class VisionGraspNode(Node):
 
         # Exact four-bar geometry model from gripper_new.xacro + gripper_bucket.stl
         # (tables live in aries_vision_grasp.fourbar).  This replaced the old
-        # linear gap model, which incorrectly made q≈+0.068 rad for a 45 mm
+        # linear gap model, which incorrectly made q≈+0.068 rad for a wide
         # probe; the real STL geometry gives almost zero jaw gap at that angle.
-        # The correct q for a ~45 mm gap is ≈ -0.20 rad.
+        # These contact offsets are gripper geometry indexed by q, so they hold
+        # across probe sizes: contact z moves under 1 mm between the q for a
+        # 30 mm probe (-0.085) and a 45 mm one (-0.20).
+        # Which physically swappable fingertip is mounted. The bucket,
+        # maintenance and probe fingers share the four-bar pivots but have
+        # very different jaw geometry, so this selects the matching gap and
+        # contact tables in fourbar. It MUST match the finger_type the URDF
+        # was launched with, or the attached probe mesh lands ~30 mm off.
+        self.declare_parameter('finger_type', 'bucket')
         self.declare_parameter('fourbar_contact_y_offset_m', 0.0259)
         self.declare_parameter('fourbar_contact_z_open_m', 0.1342)
         self.declare_parameter('fourbar_contact_z_closed_m', 0.2180)
@@ -686,6 +739,9 @@ class VisionGraspNode(Node):
         self.use_segmentation_mask = bool(p('use_segmentation_mask').value)
         self.mask_score_threshold = float(p('mask_score_threshold').value)
         self.mask_min_pixels = int(p('mask_min_pixels').value)
+        self.detection_nested_overlap_threshold = float(
+            np.clip(float(p('detection_nested_overlap_threshold').value), 0.05, 1.0)
+        )
         self.mask_erode_px = int(p('mask_erode_px').value)
         self.mask_depth_percentile = float(p('mask_depth_percentile').value)
 
@@ -935,6 +991,19 @@ class VisionGraspNode(Node):
         )
         self.base_box_drop_joint_names = list(p('base_box_drop_joint_names').value)
         self.base_box_drop_joint_positions = [float(v) for v in p('base_box_drop_joint_positions').value]
+        self.base_box_insert_enabled = bool(p('base_box_insert_enabled').value)
+        self.base_box_insert_tilt_options_deg = [
+            float(v) for v in p('base_box_insert_tilt_options_deg').value
+        ] or [45.0]
+        self.base_box_insert_depth_m = max(0.0, float(p('base_box_insert_depth_m').value))
+        self.base_box_insert_entry_offset_m = float(p('base_box_insert_entry_offset_m').value)
+        self.base_box_ik_prescreen_enabled = bool(p('base_box_ik_prescreen_enabled').value)
+        self.base_box_ik_prescreen_timeout_sec = max(
+            0.05, float(p('base_box_ik_prescreen_timeout_sec').value)
+        )
+        self.base_box_max_planned_candidates = max(
+            1, int(p('base_box_max_planned_candidates').value)
+        )
         self.base_box_planning_time_sec = max(1.0, float(p('base_box_planning_time_sec').value))
         self.base_box_release_wait_sec = max(0.0, float(p('base_box_release_wait_sec').value))
         self.return_pick_home_after_base_box_place = bool(p('return_pick_home_after_base_box_place').value)
@@ -951,9 +1020,33 @@ class VisionGraspNode(Node):
         self.max_grasp_descent_below_target_m = float(p('max_grasp_descent_below_target_m').value)
         self.min_grasp_height_above_floor_m = float(p('min_grasp_height_above_floor_m').value)
 
+        requested_finger = str(p('finger_type').value)
+        self.finger_type = fourbar.set_finger(requested_finger)
+        if self.finger_type != requested_finger.strip().lower():
+            self.get_logger().error(
+                f'finger_type="{requested_finger}" is not one of '
+                f'{list(fourbar.FINGER_TYPES)}; falling back to '
+                f'"{self.finger_type}" geometry. A wrong finger here places the '
+                f'attached probe mesh about 30 mm off the real probe.')
+
         self.fourbar_contact_y_offset_m = float(p('fourbar_contact_y_offset_m').value)
         self.fourbar_contact_z_open_m = float(p('fourbar_contact_z_open_m').value)
         self.fourbar_contact_z_closed_m = float(p('fourbar_contact_z_closed_m').value)
+        # The configured contact heights are the bucket's calibrated values.
+        # For any other finger they describe the wrong jaw, so take the
+        # mounted finger's own contact geometry from its table. For the bucket
+        # the table reproduces the configured values exactly, so this only
+        # changes behaviour when a different finger is actually selected.
+        if self.finger_type != fourbar.DEFAULT_FINGER:
+            derived_open = fourbar.contact_offset_z(fourbar.Q_MIN)
+            derived_closed = fourbar.contact_offset_z(-0.200)
+            self.get_logger().info(
+                f'[FourBar] {self.finger_type} finger mounted: contact z '
+                f'{self.fourbar_contact_z_open_m*1000:.0f}->{derived_open*1000:.0f} mm open, '
+                f'{self.fourbar_contact_z_closed_m*1000:.0f}->{derived_closed*1000:.0f} mm closed '
+                f'(configured values describe the bucket).')
+            self.fourbar_contact_z_open_m = derived_open
+            self.fourbar_contact_z_closed_m = derived_closed
         self.fourbar_q_min_for_floor_grasp = float(p('fourbar_q_min_for_floor_grasp').value)
         self.fourbar_q_max_for_floor_grasp = float(p('fourbar_q_max_for_floor_grasp').value)
         self.fourbar_max_contact_lift_m = float(p('fourbar_max_contact_lift_m').value)
@@ -1185,9 +1278,9 @@ class VisionGraspNode(Node):
         # (loaded once, republished on every correction), and the recent
         # link-frame measurements awaiting confirmation.
         self._attached_probe_R_stl_in_link: Optional[np.ndarray] = None
-        self._probe_mesh_msg: Optional[Mesh] = None
-        # +1 = STL fat end toward +Z, -1 = toward -Z, 0 = symmetric/unknown.
-        self._probe_stl_fat_end_sign: Optional[int] = None
+        # Probe mesh state (_probe_mesh_msg, _probe_mesh_load_attempted,
+        # _probe_stl_dims_measured, _probe_stl_fat_end_sign) is initialised at
+        # the top of __init__ because parameter validation needs it earlier.
         self._probe_realign_measurements: deque = deque(maxlen=6)
         self._probe_reacquire_measurements: deque = deque(maxlen=4)
         self._probe_realign_last_commit_sec = 0.0
@@ -1198,6 +1291,11 @@ class VisionGraspNode(Node):
         self._base_box_drop_round: int = 0
         self._base_box_drop_position_only_active: bool = False
         self._base_box_drop_start_collision_retry_index: int = -1
+        self._base_box_drop_ik_skipped: int = 0
+        # Set once the screen has rejected a whole round: from then on the
+        # candidates are planned directly instead of screened away.
+        self._base_box_ik_screen_exhausted: bool = False
+        self._base_box_ik_reject_codes: dict = {}
         self._active_base_box_drop_pose: Optional[PoseStamped] = None
         self._computed_base_box_probe_axis_yaw_rad: Optional[float] = None
         # Mask pose frozen at final grasp commit: the camera is buried during
@@ -1327,6 +1425,7 @@ class VisionGraspNode(Node):
         self.cartesian_client = self.create_client(GetCartesianPath, p('cartesian_service_name').value)
         self.clear_octomap_client = self.create_client(EmptySrv, self.clear_octomap_service_name)
         self.state_validity_client = self.create_client(GetStateValidity, self.state_validity_service_name)
+        self.compute_ik_client = self.create_client(GetPositionIK, 'compute_ik')
         self.execute_client = ActionClient(self, ExecuteTrajectory, p('execute_action_name').value)
         self.gripper_action_client = ActionClient(self, FollowJointTrajectory, self.gripper_action_name)
 
@@ -1385,6 +1484,7 @@ class VisionGraspNode(Node):
             self.model = None
             self.get_logger().error('ultralytics is not installed in this environment.')
 
+        self._warn_on_probe_width_mismatch()
         self.get_logger().info(f'vision_grasp_node ready | target_class={self.target_class} | planning_group={self.planning_group} | '
             f'planning_link={self.planning_link} | planning_frame={self.planning_frame} | gripper_mode={self.gripper_command_mode}')
         if self.base_box_auto_drop_enabled and self._base_box_drop_pose_config_valid():
@@ -1482,6 +1582,9 @@ class VisionGraspNode(Node):
         self._base_box_drop_round = 0
         self._base_box_drop_position_only_active = False
         self._base_box_drop_start_collision_retry_index = -1
+        self._base_box_drop_ik_skipped = 0
+        self._base_box_ik_screen_exhausted = False
+        self._base_box_ik_reject_codes = {}
         self._active_base_box_drop_pose = None
         self._computed_base_box_probe_axis_yaw_rad = None
         self._close_step_targets = []
@@ -2383,7 +2486,7 @@ class VisionGraspNode(Node):
 
         Uses the true URDF/STL four-bar gap curve (aries_vision_grasp.fourbar).
         This is essential: for the real gripper, q≈+0.07 rad is almost fully
-        closed, not a 45 mm gap.  A 45 mm probe needs q≈-0.20 rad.
+        closed, not a wide gap.  The 30 mm probe needs q≈-0.085 rad.
         """
         object_width_eff = self._sanitize_probe_width_for_grasp(float(object_width_m))
         final_gap = max(object_width_eff + self.object_width_final_clearance_m, 0.006)
@@ -2513,7 +2616,10 @@ class VisionGraspNode(Node):
         # without this the long axis is a coin flip that the attach step bakes
         # into the collision mesh as a 180° end-for-end flip.
         self._object_axis_tip_resolved = False
-        fat_sign = probe_alignment.long_axis_fat_end_sign(pts, centroid, R[:, 0])
+        fat_sign = probe_alignment.long_axis_fat_end_sign(
+            pts, centroid, R[:, 0],
+            min_reach_m=0.40 * (0.5 * float(self._probe_dims()[2])),
+        )
         if fat_sign != 0:
             self._object_axis_tip_resolved = True
             if fat_sign != self._probe_stl_end_sign_or_default():
@@ -3146,27 +3252,63 @@ class VisionGraspNode(Node):
         return None
 
     def _load_stl_mesh(self, path: str) -> Optional[Mesh]:
-        """Read a binary STL file and return a shape_msgs/Mesh (vertices deduplicated)."""
+        """Read an STL file and return a shape_msgs/Mesh (vertices deduplicated).
+
+        Handles both binary and ASCII STL. Detecting the format matters:
+        parsing an ASCII file with the binary reader takes the character data
+        as a triangle count (892 million for probe.stl) and fails, which
+        silently demotes the attached probe to the fallback cylinder at
+        whatever hard-coded size the node assumed.
+        """
         import struct
         try:
             with open(path, 'rb') as f:
-                f.read(80)                          # 80-byte header
-                n_tris = struct.unpack('<I', f.read(4))[0]
-                verts: List[Tuple[float, float, float]] = []
-                tris: List[Tuple[int, int, int]] = []
-                vi: dict = {}
-                for _ in range(n_tris):
-                    f.read(12)                      # face normal (ignored)
-                    t_idx = []
-                    for _ in range(3):
-                        xyz = struct.unpack('<fff', f.read(12))
-                        key = (round(xyz[0], 7), round(xyz[1], 7), round(xyz[2], 7))
-                        if key not in vi:
-                            vi[key] = len(verts)
-                            verts.append(key)
-                        t_idx.append(vi[key])
-                    tris.append((t_idx[0], t_idx[1], t_idx[2]))
-                    f.read(2)                       # attribute byte count
+                raw = f.read()
+
+            verts: List[Tuple[float, float, float]] = []
+            tris: List[Tuple[int, int, int]] = []
+            vi: dict = {}
+
+            def add_triangle(points: List[Tuple[float, float, float]]) -> None:
+                t_idx = []
+                for xyz in points:
+                    key = (round(xyz[0], 7), round(xyz[1], 7), round(xyz[2], 7))
+                    if key not in vi:
+                        vi[key] = len(verts)
+                        verts.append(key)
+                    t_idx.append(vi[key])
+                tris.append((t_idx[0], t_idx[1], t_idx[2]))
+
+            # A binary STL may also begin with "solid", so confirm the body
+            # really is ASCII facet text before choosing the parser.
+            head = raw[:512].lstrip().lower()
+            is_ascii = head.startswith(b'solid') and b'facet' in raw[:2048].lower()
+
+            if is_ascii:
+                pending: List[Tuple[float, float, float]] = []
+                for line in raw.decode('ascii', 'ignore').splitlines():
+                    parts = line.split()
+                    if not parts or parts[0] != 'vertex' or len(parts) < 4:
+                        continue
+                    pending.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                    if len(pending) == 3:
+                        add_triangle(pending)
+                        pending = []
+            else:
+                n_tris = struct.unpack('<I', raw[80:84])[0]
+                expected = 84 + n_tris * 50
+                if len(raw) < expected:
+                    raise ValueError(
+                        f'binary STL claims {n_tris} triangles but the file holds '
+                        f'{len(raw)} bytes (needs {expected})'
+                    )
+                for i in range(n_tris):
+                    offset = 84 + i * 50
+                    values = struct.unpack('<12f', raw[offset:offset + 48])
+                    add_triangle([values[3:6], values[6:9], values[9:12]])
+
+            if not tris:
+                raise ValueError('no triangles found')
             mesh = Mesh()
             for v in verts:
                 pt = Point()
@@ -3192,15 +3334,19 @@ class VisionGraspNode(Node):
         (current_target_point_base) transformed into the link frame via live
         TF — more accurate than using the theoretical fourbar offsets.
 
-        STL dimensions (metres):
-          X: 0 → 0.045  (cross-section width)
-          Y: 0 → 0.045  (cross-section height)
-          Z: 0 → 0.300  (long axis / probe length)
+        STL axes, with extents measured from the mesh by _probe_dims() rather
+        than hard-coded — probe.stl has been re-modelled before (45x45x300 mm,
+        now 30x30x200 mm) and any constant quoted here goes stale silently:
+          X: cross-section width
+          Y: cross-section height
+          Z: long axis / probe length
+        The mesh origin sits at the min corner, not the centroid, which is why
+        _publish_probe_attachment subtracts half the extents to place it.
 
         Flat-on-floor coordinate mapping:
-          STL Z (long, 300 mm) → world [cos(probe_yaw), sin(probe_yaw), 0]
-          STL Y (height, 45 mm)→ world [0, 0, 1]  (pointing up)
-          STL X (width, 45 mm) → world [-sin(yaw), cos(yaw), 0]
+          STL Z (long)   → world [cos(probe_yaw), sin(probe_yaw), 0]
+          STL Y (height) → world [0, 0, 1]  (pointing up)
+          STL X (width)  → world [-sin(yaw), cos(yaw), 0]
         """
         contact_y = float(getattr(self, 'fourbar_contact_y_offset_m', 0.026))
         contact_z = float(getattr(self, 'fourbar_contact_z_closed_m', 0.218))
@@ -3224,16 +3370,28 @@ class VisionGraspNode(Node):
             mask_R = self._last_detected_object_rotation_base
             mask_pose = self.detected_object_pose
             mask_source = 'live detection'
+        # long_world keeps the measured out-of-plane tilt; probe_yaw is its
+        # horizontal heading, still reported and used by the yaw-only fallbacks.
+        long_world = None
         if mask_R is not None:
-            long_ax = mask_R[:, 0]
-            probe_yaw = math.atan2(float(long_ax[1]), float(long_ax[0])) + correction_rad
+            long_ax = normalize(mask_R[:, 0])
+            if correction_rad:
+                cc, sc = math.cos(correction_rad), math.sin(correction_rad)
+                long_ax = np.array([
+                    [cc, -sc, 0.0], [sc, cc, 0.0], [0.0, 0.0, 1.0],
+                ]) @ long_ax
+            long_world = normalize(long_ax)
+            probe_yaw = math.atan2(float(long_world[1]), float(long_world[0]))
         elif self.detected_object_yaw_rad is not None:
             offset_rad = math.radians(float(getattr(self, 'object_yaw_rotation_offset_deg', 90.0)))
             probe_yaw = self.detected_object_yaw_rad - offset_rad + correction_rad
         else:
             probe_yaw = correction_rad   # fallback
 
-        axis_world = np.array([math.cos(probe_yaw), math.sin(probe_yaw), 0.0])
+        axis_world = (
+            long_world if long_world is not None
+            else np.array([math.cos(probe_yaw), math.sin(probe_yaw), 0.0])
+        )
 
         # ── R_world_in_link: use stored GRASP orientation, NOT current TF ─────────
         # The mesh_pose is expressed in the link frame (arm_gripper_base_link).
@@ -3307,7 +3465,13 @@ class VisionGraspNode(Node):
                 float(mask_pose.pose.position.z),
             ])
             along = float(np.dot(centre_est_world - contact_world, axis_world))
-            clamp = self.attach_probe_max_centre_offset_m
+            # Never allow a grasp offset past the probe's own half length: the
+            # configured clamp is an absolute limit tuned for the longest probe,
+            # so it must also shrink with a shorter mesh.
+            clamp = min(
+                self.attach_probe_max_centre_offset_m,
+                0.5 * float(self._probe_dims()[2]),
+            )
             along_axis_offset_m = float(np.clip(along, -clamp, clamp))
             if abs(along) > clamp:
                 self.get_logger().warning(f'[CollisionWorld] Mask centre is {along*1000:.0f} mm from the '
@@ -3320,12 +3484,36 @@ class VisionGraspNode(Node):
             f'mask={mask_source}).')
 
         # ── R_stl_in_world: STL basis vectors in world frame ────────────────────
-        cy, sy = math.cos(probe_yaw), math.sin(probe_yaw)
-        R_stl_in_world = np.array([
-            [-sy, 0.0,  cy],
-            [ cy, 0.0,  sy],
-            [0.0, 1.0, 0.0],
-        ], dtype=float)
+        # Prefer the measured 3D axes. Rebuilding the frame from probe_yaw alone
+        # projects the long axis onto the world XY plane and pins STL Y to world
+        # up, which silently models every probe as perfectly horizontal — a probe
+        # tilted in the gripper or lying on uneven ground then gets a collision
+        # mesh that disagrees with reality by the whole pitch angle.
+        R_stl_in_world = None
+        if long_world is not None:
+            # STL Z is the long axis; put STL Y as close to world up as the
+            # long axis allows, and complete a right-handed frame.
+            up = np.array([0.0, 0.0, 1.0])
+            if abs(float(np.dot(long_world, up))) > 0.99:
+                up = np.array([1.0, 0.0, 0.0])
+            stl_x = normalize(np.cross(up, long_world))
+            stl_y = normalize(np.cross(long_world, stl_x))
+            R_stl_in_world = np.column_stack([stl_x, stl_y, long_world])
+            pitch_deg = abs(math.degrees(math.asin(
+                float(np.clip(long_world[2], -1.0, 1.0))
+            )))
+            if pitch_deg > 2.0:
+                self.get_logger().info(
+                    f'[CollisionWorld] Probe is pitched {pitch_deg:.1f}° out of horizontal; '
+                    f'using the measured 3D axes for the mesh instead of a flat model.')
+        if R_stl_in_world is None:
+            # No 3D axes available (yaw-only fallback): assume flat on the floor.
+            cy, sy = math.cos(probe_yaw), math.sin(probe_yaw)
+            R_stl_in_world = np.array([
+                [-sy, 0.0,  cy],
+                [ cy, 0.0,  sy],
+                [0.0, 1.0, 0.0],
+            ], dtype=float)
 
         # ── R_stl_in_link = R_world_in_link @ R_stl_in_world ──────────────────
         R_stl_in_link = R_world_in_link @ R_stl_in_world
@@ -3365,12 +3553,9 @@ class VisionGraspNode(Node):
         attached body in the MoveIt planning scene, so this is used both for
         the initial attach and for every held-probe re-alignment update.
         """
-        stl_centre = 0.5 * PROBE_STL_DIMS
+        self._ensure_probe_mesh()
+        stl_centre = 0.5 * self._probe_dims()
         origin_in_link = probe_centre_in_link - R_stl_in_link @ stl_centre
-
-        if self._probe_mesh_msg is None:
-            stl_path = self._find_probe_stl()
-            self._probe_mesh_msg = self._load_stl_mesh(stl_path) if stl_path else None
 
         inner = CollisionObject()
         inner.header.frame_id = self.planning_link
@@ -3387,8 +3572,8 @@ class VisionGraspNode(Node):
             inner.meshes = [self._probe_mesh_msg]
             inner.mesh_poses = [mesh_pose]
             shape_info = (
-                f'STL mesh {int(PROBE_STL_DIMS[2]*1000)}×{int(PROBE_STL_DIMS[0]*1000)}'
-                f'×{int(PROBE_STL_DIMS[1]*1000)} mm, '
+                f'STL mesh {int(self._probe_dims()[2]*1000)}×{int(self._probe_dims()[0]*1000)}'
+                f'×{int(self._probe_dims()[1]*1000)} mm, '
                 f'origin_in_link=[{origin_in_link[0]:.3f}, '
                 f'{origin_in_link[1]:.3f}, {origin_in_link[2]:.3f}]'
             )
@@ -3396,7 +3581,7 @@ class VisionGraspNode(Node):
             # Fallback: cylinder along the same long axis at the same centre.
             cyl = SolidPrimitive()
             cyl.type = SolidPrimitive.CYLINDER
-            cyl.dimensions = [float(PROBE_STL_DIMS[2]), float(PROBE_STL_DIMS[0]) / 2.0]
+            cyl.dimensions = [float(self._probe_dims()[2]), float(self._probe_dims()[0]) / 2.0]
             fb_pose = Pose()
             fb_pose.position.x = float(probe_centre_in_link[0])
             fb_pose.position.y = float(probe_centre_in_link[1])
@@ -3405,8 +3590,8 @@ class VisionGraspNode(Node):
             inner.primitives = [cyl]
             inner.primitive_poses = [fb_pose]
             shape_info = (
-                f'fallback cylinder h={PROBE_STL_DIMS[2]:.3f} m '
-                f'r={PROBE_STL_DIMS[0]/2:.3f} m'
+                f'fallback cylinder h={self._probe_dims()[2]:.3f} m '
+                f'r={self._probe_dims()[0]/2:.3f} m'
             )
 
         aco = AttachedCollisionObject()
@@ -3444,7 +3629,7 @@ class VisionGraspNode(Node):
         sign = 0
         if self._probe_mesh_msg is not None and len(self._probe_mesh_msg.vertices) >= 10:
             v = np.array([[p.x, p.y, p.z] for p in self._probe_mesh_msg.vertices])
-            centre = 0.5 * PROBE_STL_DIMS
+            centre = 0.5 * self._probe_dims()
             radial = np.hypot(v[:, 0] - centre[0], v[:, 1] - centre[1])
             low = v[:, 2] < centre[2]
             if int(low.sum()) >= 5 and int((~low).sum()) >= 5:
@@ -3457,17 +3642,92 @@ class VisionGraspNode(Node):
         self._probe_stl_fat_end_sign = sign
         return sign
 
+    def _ensure_probe_mesh(self) -> Optional[Mesh]:
+        """Load probe.stl once and measure the probe from it.
+
+        Every consumer goes through here so the collision body, the ICP box
+        model and the box-drop layout all describe the same probe as the mesh
+        actually on disk.
+        """
+        if self._probe_mesh_msg is not None or self._probe_mesh_load_attempted:
+            return self._probe_mesh_msg
+        self._probe_mesh_load_attempted = True
+        stl_path = self._find_probe_stl()
+        if stl_path is None:
+            self.get_logger().warning(
+                f'[CollisionWorld] probe.stl not found; falling back to '
+                f'{PROBE_STL_DIMS_FALLBACK[2]*1000:.0f} mm probe extents.')
+            return None
+        mesh = self._load_stl_mesh(stl_path)
+        if mesh is None or not mesh.vertices:
+            return None
+        self._probe_mesh_msg = mesh
+
+        v = np.array([[p.x, p.y, p.z] for p in mesh.vertices], dtype=np.float64)
+        measured = v.max(axis=0) - v.min(axis=0)
+        if np.all(measured > 1e-4):
+            self._probe_stl_dims_measured = measured
+        # Always state the size actually in use. A silent mismatch between the
+        # mesh and the configured probe is exactly the failure this logging
+        # exists to make visible, so "no message" must not mean "loaded fine".
+        differs = not np.allclose(measured, PROBE_STL_DIMS_FALLBACK, atol=2e-3)
+        self.get_logger().info(
+            f'[CollisionWorld] Probe mesh loaded from {os.path.basename(stl_path)}: '
+            f'{len(mesh.triangles)} triangles, '
+            f'{measured[0]*1000:.0f}x{measured[1]*1000:.0f}x{measured[2]*1000:.0f} mm'
+            + (f' (built-in default is '
+               f'{PROBE_STL_DIMS_FALLBACK[0]*1000:.0f}x'
+               f'{PROBE_STL_DIMS_FALLBACK[1]*1000:.0f}x'
+               f'{PROBE_STL_DIMS_FALLBACK[2]*1000:.0f} mm; using the measured size)'
+               if differs else '.'))
+        return self._probe_mesh_msg
+
+    def _warn_on_probe_width_mismatch(self) -> None:
+        """Check the grasp width window against the probe mesh at startup.
+
+        minimum_probe_width_m is a floor applied to the measured width before
+        it sizes q_close, so a floor above the real probe silently commands a
+        jaw gap wider than the probe and the gripper closes on nothing. That
+        failure looks like a bad grasp, not a bad parameter, so it is worth
+        catching the moment the mesh disagrees with the configuration.
+        """
+        dims = self._probe_dims()
+        measured = float(max(dims[0], dims[1]))
+        if self.minimum_probe_width_m > measured + 1e-4:
+            gap = fourbar.gap_from_q(
+                fourbar.q_from_gap(
+                    self.minimum_probe_width_m + self.object_width_final_clearance_m
+                )
+            )
+            self.get_logger().error(
+                f'minimum_probe_width_m={self.minimum_probe_width_m*1000:.0f} mm exceeds the '
+                f'{measured*1000:.0f} mm probe measured from the mesh. The width floor will size '
+                f'q_close for a {gap*1000:.0f} mm jaw gap, so the fingers stop about '
+                f'{(gap - measured)*1000:.0f} mm short and never grip. Set '
+                f'minimum_probe_width_m/nominal_probe_width_m to about '
+                f'{measured*1000:.0f} mm.')
+        elif self.maximum_probe_width_m < measured - 1e-4:
+            self.get_logger().warning(
+                f'maximum_probe_width_m={self.maximum_probe_width_m*1000:.0f} mm is below the '
+                f'{measured*1000:.0f} mm probe measured from the mesh; a correct width reading '
+                f'will be rejected as implausible and replaced by the nominal width.')
+
+    def _probe_dims(self) -> np.ndarray:
+        """Probe extents (X width, Y height, Z long axis), measured if possible."""
+        self._ensure_probe_mesh()
+        if self._probe_stl_dims_measured is not None:
+            return self._probe_stl_dims_measured
+        return PROBE_STL_DIMS_FALLBACK
+
     def _probe_stl_end_sign_or_default(self) -> int:
         """``_probe_stl_end_sign`` with the mesh loaded on demand.
 
         Detection runs long before the attach step loads probe.stl, so the
-        cached sign is not yet available there. Load the mesh once when first
-        asked; if it cannot be found, fall back to probe.stl's shipped profile
-        (wide body at low Z, tapered tip at high Z).
+        cached sign is not yet available there. If the mesh cannot be read,
+        fall back to probe.stl's shipped profile (wide body at low Z, tapered
+        tip at high Z).
         """
-        if self._probe_mesh_msg is None:
-            stl_path = self._find_probe_stl()
-            self._probe_mesh_msg = self._load_stl_mesh(stl_path) if stl_path else None
+        self._ensure_probe_mesh()
         sign = self._probe_stl_end_sign()
         return sign if sign != 0 else -1
 
@@ -3493,7 +3753,13 @@ class VisionGraspNode(Node):
         if n_neg < 40 or n_pos < 40:
             return None
         q_along = (pts - centre) @ R_fit[:, 2]
-        if float(np.percentile(q_along, 95)) < 0.06 or float(np.percentile(q_along, 5)) > -0.06:
+        # Require the cloud to reach 40% of the way to each end. A fixed
+        # distance would be unreachable on a short probe and lax on a long one.
+        min_reach = 0.40 * (0.5 * float(self._probe_dims()[2]))
+        if (
+            float(np.percentile(q_along, 95)) < min_reach
+            or float(np.percentile(q_along, 5)) > -min_reach
+        ):
             return None  # cloud does not reach far enough into both halves
         if w_neg > 1.15 * w_pos:
             measured_sign = -1
@@ -3656,7 +3922,7 @@ class VisionGraspNode(Node):
             float(tfm.transform.translation.z),
         ], dtype=np.float64)
 
-        half = 0.5 * PROBE_STL_DIMS
+        half = 0.5 * self._probe_dims()
         gate = self.attached_probe_realign_gate_m
         best_pts: Optional[np.ndarray] = None
         for result in results:
@@ -3838,7 +4104,7 @@ class VisionGraspNode(Node):
 
         # Sphere gate around the grasp contact: the probe cannot be further
         # than half its length (plus margin) from where it was pinched.
-        reach = 0.5 * float(PROBE_STL_DIMS[2]) + 0.05
+        reach = 0.5 * float(self._probe_dims()[2]) + 0.05
         pts = pts[np.linalg.norm(pts - contact, axis=1) <= reach]
         if len(pts) < 150:
             return None
@@ -3891,7 +4157,7 @@ class VisionGraspNode(Node):
         view_dir = view_dir / view_norm if view_norm > 1e-6 else np.array([0.0, 0.0, 1.0])
         # Visible points lie on the near surface; the true box centre is about
         # half a cross-section further along the viewing ray.
-        centre_init = centroid + view_dir * (0.5 * float(PROBE_STL_DIMS[0]))
+        centre_init = centroid + view_dir * (0.5 * float(self._probe_dims()[0]))
         y_axis = np.cross(long_axis, view_dir)
         if float(np.linalg.norm(y_axis)) < 1e-6:
             fallback = np.array([0.0, 0.0, 1.0])
@@ -3902,7 +4168,7 @@ class VisionGraspNode(Node):
         x_axis = normalize(np.cross(y_axis, long_axis))
         R_init = np.column_stack([x_axis, y_axis, long_axis])
 
-        half = 0.5 * PROBE_STL_DIMS
+        half = 0.5 * self._probe_dims()
         fit = probe_alignment.fit_box_to_points(
             pts, half, R_init, centre_init,
             iterations=2 * self.attached_probe_realign_icp_iterations,
@@ -4735,12 +5001,18 @@ class VisionGraspNode(Node):
                                image_shape: Optional[Tuple[int, ...]] = None):
         """
         Select best YOLO detection and keep its segmentation mask if available.
+
+        The model regularly returns two overlapping boxes for one probe: the
+        whole object plus a stub covering one end. Plain confidence ranking can
+        pick the stub, and a stub mask makes the PCA long axis meaningless
+        (short axis, low eigenratio), so nested duplicates are suppressed
+        before ranking. Standard IoU barely notices a small box inside a big
+        one; intersection-over-smaller-area does.
         """
-        best = None
-        best_conf = -1.0
         if image_shape is None and self.latest_color is not None:
             image_shape = self.latest_color.shape
 
+        detections = []
         for result in results:
             boxes = result.boxes
             for i, box in enumerate(boxes):
@@ -4750,28 +5022,65 @@ class VisionGraspNode(Node):
 
                 if self.target_class != 'any' and name != self.target_class:
                     continue
-
                 if conf < confidence_threshold:
                     continue
 
-                if conf > best_conf:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    mask_bool = self._get_result_mask_for_box(result, i, image_shape)
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                detections.append({
+                    'name': name,
+                    'conf': conf,
+                    'x1': int(x1),
+                    'y1': int(y1),
+                    'x2': int(x2),
+                    'y2': int(y2),
+                    'u_bbox': int((x1 + x2) * 0.5),
+                    'v_bbox': int((y1 + y2) * 0.5),
+                    'result': result,
+                    'box_index': i,
+                })
 
-                    best = {
-                        'name': name,
-                        'conf': conf,
-                        'x1': int(x1),
-                        'y1': int(y1),
-                        'x2': int(x2),
-                        'y2': int(y2),
-                        'u_bbox': int((x1 + x2) * 0.5),
-                        'v_bbox': int((y1 + y2) * 0.5),
-                        'mask': mask_bool,
-                    }
-                    best_conf = conf
+        if not detections:
+            return None
 
+        kept = self._suppress_nested_detections(detections)
+        best = max(kept, key=lambda det: det['conf'])
+        best['mask'] = self._get_result_mask_for_box(
+            best.pop('result'), best.pop('box_index'), image_shape
+        )
         return best
+
+    def _suppress_nested_detections(self, detections: List[dict]) -> List[dict]:
+        """Drop boxes largely contained inside a larger same-class box."""
+        threshold = self.detection_nested_overlap_threshold
+        areas = [
+            max(1, (d['x2'] - d['x1'])) * max(1, (d['y2'] - d['y1']))
+            for d in detections
+        ]
+        # Largest first, so a survivor is always the most complete box seen.
+        order = sorted(range(len(detections)), key=lambda i: -areas[i])
+        kept_idx: List[int] = []
+        for i in order:
+            a = detections[i]
+            nested_in = None
+            for j in kept_idx:
+                b = detections[j]
+                if a['name'] != b['name']:
+                    continue
+                overlap_w = max(0, min(a['x2'], b['x2']) - max(a['x1'], b['x1']))
+                overlap_h = max(0, min(a['y2'], b['y2']) - max(a['y1'], b['y1']))
+                inter = overlap_w * overlap_h
+                if inter and inter / float(min(areas[i], areas[j])) >= threshold:
+                    nested_in = j
+                    break
+            if nested_in is None:
+                kept_idx.append(i)
+            else:
+                self.get_logger().info(
+                    f'Suppressed duplicate {a["name"]} detection (conf={a["conf"]:.2f}, '
+                    f'{a["x2"]-a["x1"]}x{a["y2"]-a["y1"]} px) nested inside a larger one '
+                    f'(conf={detections[nested_in]["conf"]:.2f}); a partial mask would '
+                    f'corrupt the 6D pose.', throttle_duration_sec=2.0)
+        return [detections[i] for i in kept_idx]
 
     def _poll_inference(self) -> Optional[Tuple[FrameSnapshot, list]]:
         """Submit the newest consistent frame pair and return the newest
@@ -6198,7 +6507,12 @@ class VisionGraspNode(Node):
         if len(self.base_box_rpy) != 3:
             raise ValueError('base_box_rpy must contain exactly three values')
         rotation = quat_to_matrix(rpy_to_quat(*self.base_box_rpy))
-        settings = box_drop.derive_automatic_box_settings(self.base_box_dimensions_xyz)
+        probe_dims = self._probe_dims()
+        settings = box_drop.derive_automatic_box_settings(
+            self.base_box_dimensions_xyz,
+            probe_length_m=float(probe_dims[2]),
+            probe_width_m=float(max(probe_dims[0], probe_dims[1])),
+        )
         return box_drop.compute_box_drop_layout(
             self.base_box_center_xyz,
             self.base_box_dimensions_xyz,
@@ -6241,21 +6555,30 @@ class VisionGraspNode(Node):
         return target_offset, applied_yaw
 
     def _automatic_base_box_orientation_options(
-        self, layout: box_drop.BoxDropLayout
+        self,
+        layout: box_drop.BoxDropLayout,
+        desired_axis: Optional[np.ndarray] = None,
     ) -> List[Tuple[str, Quaternion, float]]:
-        """Search wrist rolls while keeping the probe lengthwise over the box."""
+        """Search wrist rolls that put the probe along ``desired_axis``.
+
+        Defaults to the box's long horizontal axis (the flat overhead drop).
+        The tilted-insertion path passes the leaning axis instead.
+        """
         if (
             self._attached_probe_axis_in_link is None
             or self._attached_probe_grasp_orientation is None
         ):
             raise ValueError('attached probe axis/orientation is unavailable')
 
-        axis_index = 0 if layout.probe_axis_name == 'X' else 1
-        desired_axis = normalize(layout.rotation[:, axis_index])
+        if desired_axis is None:
+            axis_index = 0 if layout.probe_axis_name == 'X' else 1
+            desired_axis = layout.rotation[:, axis_index]
+        desired_axis = normalize(np.asarray(desired_axis, dtype=np.float64))
         grasp_R = quat_to_matrix(self._attached_probe_grasp_orientation)
         initial_axis = normalize(grasp_R @ self._attached_probe_axis_in_link)
-        # The probe is end-symmetric, so +axis and -axis are equivalent but
-        # produce different wrist IK families.
+        # Both axis signs are generated: they point opposite probe ends into the
+        # box and land in different wrist IK families. The caller orders them by
+        # wrist travel, so whichever end is already closer to leading goes first.
         options: List[Tuple[str, Quaternion, float]] = []
         orientation_tol = max(self.base_box_drop_orientation_tolerance_rad, 0.12)
         for axis_sign in (1.0, -1.0):
@@ -6280,6 +6603,94 @@ class VisionGraspNode(Node):
                 ))
         return options
 
+    def _wrist_travel_rad(self, orientation: Quaternion) -> float:
+        """Rotation from the tool's current orientation to ``orientation``."""
+        current = self.get_current_tool_orientation_in_planning_frame()
+        if current is None:
+            return 0.0
+        return float(quaternion_distance_rad(current, orientation))
+
+    def _build_base_box_insertion_candidates(self, layout: box_drop.BoxDropLayout) -> List[dict]:
+        """Lean the probe into the box with one end below the rim.
+
+        The probe cannot be contained by the box at any angle, so rather than
+        releasing it horizontally above the opening this drives one end inside
+        and lets the rest rest over the rim. Candidates cover both lean
+        directions (which decides which end leads) and a few tilts; they are
+        ordered by wrist travel so the end already closest to leading is tried
+        first, and geometrically impossible ones are dropped up front.
+        """
+        target_offset = list(self.base_box_drop_target_point_offset_in_link)
+        if self._attached_probe_centre_in_link is not None:
+            target_offset = [float(v) for v in self._attached_probe_centre_in_link]
+
+        scored: List[Tuple[float, dict]] = []
+        skipped_no_clearance = 0
+        for tilt_deg in self.base_box_insert_tilt_options_deg:
+            for axis_sign in (1.0, -1.0):
+                insertion = box_drop.compute_probe_insertion(
+                    layout,
+                    math.radians(float(tilt_deg)),
+                    self.base_box_insert_depth_m,
+                    axis_sign=axis_sign,
+                    entry_offset_m=self.base_box_insert_entry_offset_m,
+                )
+                if not insertion.clears_opening:
+                    skipped_no_clearance += 1
+                    continue
+                options = self._automatic_base_box_orientation_options(
+                    layout, desired_axis=insertion.axis
+                )
+                for orientation_name, orientation, orientation_tol in options:
+                    pose = self._make_base_box_drop_pose(insertion.probe_centre)
+                    pose.pose.orientation = orientation
+                    scored.append((
+                        self._wrist_travel_rad(orientation),
+                        {
+                            'pose': pose,
+                            'target_offset': target_offset,
+                            'applied_yaw': 0.0,
+                            'with_orientation': True,
+                            'orientation_tol': orientation_tol,
+                            'position_region_dimensions': None,
+                            'position_region_orientation': None,
+                            'display_volume_dimensions': [
+                                float(v) for v in layout.release_volume_dimensions
+                            ],
+                            'insertion': insertion,
+                            'label': (
+                                f'insertion tilt {tilt_deg:.0f}deg lean {axis_sign:+.0f} '
+                                f'({orientation_name})'
+                            ),
+                        },
+                    ))
+
+        if not scored:
+            raise ValueError(
+                'no probe insertion pose clears the box opening; check '
+                'base_box_insert_tilt_options_deg / base_box_insert_entry_offset_m'
+            )
+
+        # Least wrist travel first: that is the "closest end leads" choice.
+        scored.sort(key=lambda item: item[0])
+        candidates = [item[1] for item in scored]
+        for index, candidate in enumerate(candidates):
+            candidate['label'] = (
+                f'insertion solution {index + 1}/{len(candidates)} — ' + candidate['label']
+            )
+
+        first = candidates[0]['insertion']
+        self._computed_base_box_probe_axis_yaw_rad = layout.probe_axis_yaw_rad
+        self.get_logger().info(
+            f'[base-box-insert] Probe {layout.settings.probe_length_m*1000:.0f} mm does not fit the '
+            f'{layout.usable_xy[0]*1000:.0f}x{layout.usable_xy[1]*1000:.0f} mm opening; leaning it in '
+            f'instead. Leading end {first.depth_m*1000:.0f} mm below the rim, '
+            f'tilt options={[f"{t:.0f}" for t in self.base_box_insert_tilt_options_deg]}deg, '
+            f'{len(candidates)} candidates ordered by wrist travel'
+            + (f', {skipped_no_clearance} rejected for wall clearance.' if skipped_no_clearance else '.')
+        )
+        return candidates
+
     def _build_base_box_drop_candidates(self) -> List[dict]:
         if self.base_box_auto_drop_enabled:
             layout = self._compute_base_box_layout()
@@ -6292,6 +6703,9 @@ class VisionGraspNode(Node):
                 self.get_logger().warning(
                     f'Probe width {layout.settings.probe_width_m*1000:.0f} mm exceeds the narrow usable '
                     'opening. This is allowed for the overhead drop; no insertion pose is required.')
+            if self.base_box_insert_enabled:
+                return self._build_base_box_insertion_candidates(layout)
+
             orientation_options = self._automatic_base_box_orientation_options(layout)
             if not orientation_options:
                 raise ValueError('no automatic wrist orientations could be generated')
@@ -6353,7 +6767,147 @@ class VisionGraspNode(Node):
             })
         return candidates
 
+    def _candidate_link_pose(self, candidate: dict) -> PoseStamped:
+        """The planning-link pose implied by a candidate's probe-centre goal.
+
+        Candidate poses target the probe centre via the constraint's
+        ``target_point_offset``; IK needs the link itself, so undo the offset.
+        """
+        pose = candidate['pose']
+        offset = np.asarray(candidate['target_offset'], dtype=np.float64).reshape(3,)
+        R = quat_to_matrix(pose.pose.orientation)
+        link_pose = PoseStamped()
+        link_pose.header.frame_id = pose.header.frame_id
+        link_pose.header.stamp = self.get_clock().now().to_msg()
+        position = np.array([
+            float(pose.pose.position.x),
+            float(pose.pose.position.y),
+            float(pose.pose.position.z),
+        ]) - R @ offset
+        link_pose.pose.position = Point(
+            x=float(position[0]), y=float(position[1]), z=float(position[2])
+        )
+        link_pose.pose.orientation = pose.pose.orientation
+        return link_pose
+
     def _send_base_box_drop_candidate(self, index: int) -> None:
+        """Screen the candidate with IK, then plan it.
+
+        A collision-aware IK query costs milliseconds; letting MoveIt discover
+        the same unreachable goal costs a full planning timeout (measured at
+        10.2 s per candidate). The query is async because this node runs on a
+        single-threaded executor that must never block.
+        """
+        if index < 0 or index >= len(self._base_box_drop_candidates):
+            self._hold_closed_after_transport_failure('No valid base-box release solution remains.')
+            return
+        if (
+            not self.base_box_ik_prescreen_enabled
+            or self._base_box_ik_screen_exhausted
+            or not self.compute_ik_client.service_is_ready()
+        ):
+            self._dispatch_base_box_drop_candidate(index)
+            return
+
+        candidate = self._base_box_drop_candidates[index]
+        req = GetPositionIK.Request()
+        req.ik_request.group_name = self.planning_group
+        req.ik_request.ik_link_name = self.planning_link
+        req.ik_request.pose_stamped = self._candidate_link_pose(candidate)
+        req.ik_request.avoid_collisions = True
+        req.ik_request.timeout = Duration(
+            sec=int(self.base_box_ik_prescreen_timeout_sec),
+            nanosec=int((self.base_box_ik_prescreen_timeout_sec % 1.0) * 1e9),
+        )
+        seed_state = self._make_current_robot_state()
+        if seed_state is not None:
+            req.ik_request.robot_state = seed_state
+
+        future = self.compute_ik_client.call_async(req)
+        future.add_done_callback(
+            lambda fut, i=index, seq=self.sequence_id, stage=self.sequence_stage:
+                self._on_base_box_drop_ik(fut, i, seq, stage)
+        )
+
+    def _on_base_box_drop_ik(
+        self,
+        future,
+        index: int,
+        expected_seq: int,
+        expected_stage: str,
+    ) -> None:
+        if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
+            return
+        result = future.result() if future.done() else None
+        # Only a definitive "no IK solution" rejects a candidate. A missing or
+        # errored response must fall through to planning, never skip.
+        if result is not None and int(result.error_code.val) != MoveItErrorCodes.SUCCESS:
+            code = int(result.error_code.val)
+            self._base_box_drop_ik_skipped += 1
+            self._base_box_ik_reject_codes[code] = (
+                self._base_box_ik_reject_codes.get(code, 0) + 1
+            )
+            next_index = index + 1
+            if next_index >= len(self._base_box_drop_candidates):
+                # The screen is an optimisation, never a veto. One IK seed
+                # failing does not prove the goal unplannable — MoveIt searches
+                # differently and can reach configurations a single query
+                # misses. Rather than give up without commanding any motion,
+                # disable screening and actually plan the ordered candidates.
+                total = len(self._base_box_drop_candidates)
+                keep = max(1, int(self.base_box_max_planned_candidates))
+                # Candidates are ordered by wrist travel, so the head of the
+                # list is the most promising. Planning all 48 at the full
+                # timeout would take minutes; cap it to a bounded sweep.
+                self._base_box_drop_candidates = self._base_box_drop_candidates[:keep]
+                self.get_logger().warning(
+                    f'IK pre-screen rejected all {total} release candidates '
+                    f'({self._describe_ik_rejections()}). The screen only skips planning, it '
+                    f'does not decide reachability, so the {keep} closest by wrist travel will '
+                    f'be planned anyway (up to '
+                    f'{keep * self.base_box_planning_time_sec:.0f} s).')
+                self._base_box_ik_screen_exhausted = True
+                self._base_box_drop_candidate_index = -1
+                self._send_base_box_drop_candidate(0)
+                return
+            self.get_logger().info(
+                f'[base-box-insert] IK pre-screen rejected release solution '
+                f'{index + 1}/{len(self._base_box_drop_candidates)} '
+                f'({self._moveit_error_name(code)}) in place of a '
+                f'{self.base_box_planning_time_sec:.0f} s planning timeout; trying '
+                f'{next_index + 1}.')
+            self._send_base_box_drop_candidate(next_index)
+            return
+        self._dispatch_base_box_drop_candidate(index)
+
+    @staticmethod
+    def _moveit_error_name(code: int) -> str:
+        """Readable MoveIt error code; the number alone hides the cause."""
+        names = {
+            MoveItErrorCodes.SUCCESS: 'SUCCESS',
+            MoveItErrorCodes.PLANNING_FAILED: 'PLANNING_FAILED',
+            MoveItErrorCodes.INVALID_MOTION_PLAN: 'INVALID_MOTION_PLAN',
+            MoveItErrorCodes.TIMED_OUT: 'TIMED_OUT',
+            MoveItErrorCodes.START_STATE_IN_COLLISION: 'START_STATE_IN_COLLISION',
+            MoveItErrorCodes.GOAL_IN_COLLISION: 'GOAL_IN_COLLISION',
+            MoveItErrorCodes.GOAL_VIOLATES_PATH_CONSTRAINTS: 'GOAL_VIOLATES_PATH_CONSTRAINTS',
+            MoveItErrorCodes.GOAL_CONSTRAINTS_VIOLATED: 'GOAL_CONSTRAINTS_VIOLATED',
+            MoveItErrorCodes.NO_IK_SOLUTION: 'NO_IK_SOLUTION',
+            MoveItErrorCodes.FAILURE: 'FAILURE',
+        }
+        return names.get(int(code), f'code={int(code)}')
+
+    def _describe_ik_rejections(self) -> str:
+        if not self._base_box_ik_reject_codes:
+            return 'no reasons recorded'
+        return ', '.join(
+            f'{self._moveit_error_name(code)} x{count}'
+            for code, count in sorted(
+                self._base_box_ik_reject_codes.items(), key=lambda kv: -kv[1]
+            )
+        )
+
+    def _dispatch_base_box_drop_candidate(self, index: int) -> None:
         if index < 0 or index >= len(self._base_box_drop_candidates):
             self._hold_closed_after_transport_failure('No valid base-box release solution remains.')
             return

@@ -22,6 +22,15 @@ def generate_launch_description():
         DeclareLaunchArgument('model_path', default_value=_share_path('models/grasp.pt')),
         DeclareLaunchArgument('target_class', default_value='probe'),
         DeclareLaunchArgument(
+            'finger_type',
+            default_value='bucket',
+            choices=['bucket', 'maintenance', 'probe'],
+            description='Fingertip physically mounted on the gripper. Must match '
+                        'the finger_type the URDF was launched with — the three '
+                        'jaws differ enough that a mismatch mis-places the '
+                        'attached probe collision mesh by about 30 mm.',
+        ),
+        DeclareLaunchArgument(
             'params_file',
             default_value=_share_path('config/vision_grasp_params.yaml'),
             description='YAML with the full vision/grasp tuning parameter set.',
@@ -45,6 +54,7 @@ def generate_launch_description():
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'model_path': LaunchConfiguration('model_path'),
                     'target_class': LaunchConfiguration('target_class'),
+                    'finger_type': LaunchConfiguration('finger_type'),
                 },
                 # Last so posture values live in one authoritative file.
                 LaunchConfiguration('pick_place_config'),

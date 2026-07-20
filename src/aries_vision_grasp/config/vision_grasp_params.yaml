@@ -91,12 +91,17 @@ vision_grasp_node:
     gripper_contact_min_position: 0.0
 
     # Size the close command from the calibrated four-bar jaw-gap curve. If
-    # segmentation cannot measure width reliably, use the known 45 mm probe.
+    # segmentation cannot measure width reliably, fall back to the known probe
+    # width. These MUST match models/probe.stl (currently 30 x 30 x 200 mm):
+    # minimum_probe_width_m is a floor on the measured width, so a value above
+    # the real probe sizes q_close for a gap wider than the probe and the
+    # fingers close on nothing. The node logs an error at startup if these
+    # disagree with the mesh.
     adaptive_gripper_enabled: true
     object_width_safety_margin_m: 0.010
-    minimum_probe_width_m: 0.045
-    nominal_probe_width_m: 0.045
-    maximum_probe_width_m: 0.060
+    minimum_probe_width_m: 0.030
+    nominal_probe_width_m: 0.030
+    maximum_probe_width_m: 0.040
     clamp_probe_width_for_grasp: true
     object_width_final_clearance_m: -0.004
     object_width_preclose_clearance_m: 0.010
@@ -107,6 +112,15 @@ vision_grasp_node:
 
     # Four-bar contact/supervisor (gap/contact tables live in
     # aries_vision_grasp/fourbar.py).
+    # Which swappable fingertip is physically mounted: bucket, maintenance or
+    # probe. This MUST match the finger_type the URDF was launched with. The
+    # three fingers share the four-bar pivots but not their jaw geometry — the
+    # maintenance and probe jaws close ~30 mm further out and reach a much
+    # narrower gap at the same joint angle — so a mismatch places the attached
+    # probe collision mesh off the real probe and every plan then fails with
+    # START_STATE_IN_COLLISION. The contact heights below are the bucket's
+    # calibrated values; for the other fingers the node derives its own.
+    finger_type: probe
     fourbar_contact_y_offset_m: 0.0259
     fourbar_contact_z_open_m: 0.1342
     fourbar_contact_z_closed_m: 0.2180
@@ -148,8 +162,11 @@ vision_grasp_node:
     # probe snaps to the bucket contact, which the four-bar close enforces
     # physically. The along-axis offset is clamped below half the probe
     # length. The synced centre also becomes the base-box drop target point.
+    # Sized for the 200 mm probe (half length 100 mm). The node also clamps
+    # this to half the measured mesh length, so a stale larger value here is
+    # capped rather than obeyed.
     attach_probe_pose_sync_enabled: true
-    attach_probe_max_centre_offset_m: 0.140
+    attach_probe_max_centre_offset_m: 0.090
 
     # Held-probe mesh re-alignment: while the probe mesh is attached, every
     # detection tick back-projects the YOLO26-seg mask through depth into the

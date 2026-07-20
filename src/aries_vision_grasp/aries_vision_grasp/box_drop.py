@@ -1,12 +1,16 @@
 """Pure geometry helpers for automatic base-box placement."""
 
+import math
 from dataclasses import dataclass
 from typing import Sequence, Tuple
 
 import numpy as np
 
-PROBE_LENGTH_M = 0.300
-PROBE_WIDTH_M = 0.045
+# Fallback probe size, overridden by whatever probe.stl actually measures —
+# pass probe_length_m/probe_width_m to derive_automatic_box_settings. These are
+# only defaults for callers that have no mesh to measure.
+PROBE_LENGTH_M = 0.200
+PROBE_WIDTH_M = 0.030
 
 
 def rotation_aligning_vectors(source: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -69,27 +73,119 @@ class BoxDropLayout:
     settings: AutomaticBoxSettings
 
 
-def derive_automatic_box_settings(dimensions_xyz: Sequence[float]) -> AutomaticBoxSettings:
-    """Derive a safe overhead release-height range from box size."""
+@dataclass(frozen=True)
+class ProbeInsertion:
+    """A tilted pose that lands one probe end inside the box."""
+
+    probe_centre: np.ndarray     # probe geometric centre, box parent frame
+    leading_end: np.ndarray      # the end that goes into the box
+    trailing_end: np.ndarray     # the end that stays above the rim
+    axis: np.ndarray             # unit vector, leading end -> trailing end
+    tilt_rad: float              # elevation of ``axis`` above the box top plane
+    depth_m: float               # how far the leading end sits below the rim
+    clears_opening: bool         # True when the probe crosses the rim plane
+                                 # inside the usable opening rather than
+                                 # through a wall
+
+
+def compute_probe_insertion(
+    layout: 'BoxDropLayout',
+    tilt_rad: float,
+    depth_m: float,
+    axis_sign: float = 1.0,
+    entry_offset_m: float = 0.0,
+) -> ProbeInsertion:
+    """Pose the probe leaning into the box with one end below the rim.
+
+    The probe is longer than the box's interior diagonal, so it can never be
+    contained: the only stable placement is one end down inside with the rest
+    leaning out over the rim. This returns that pose rather than the
+    horizontal, centred, above-the-rim pose used for a free drop.
+
+    The leading end sits ``depth_m`` below the top plane, displaced
+    ``entry_offset_m`` along the box's long axis so the probe leans across the
+    opening instead of straight up out of the middle. ``axis_sign`` selects
+    which way it leans — the caller picks whichever needs less wrist travel,
+    which also decides which probe end leads.
+    """
+    R = np.asarray(layout.rotation, dtype=np.float64)
+    long_index = 0 if layout.probe_axis_name == 'X' else 1
+    u = R[:, long_index] * (1.0 if axis_sign >= 0.0 else -1.0)
+    n = R[:, 2]
+
+    tilt = float(np.clip(tilt_rad, math.radians(5.0), math.radians(85.0)))
+    depth = max(0.0, float(depth_m))
+    # Never drive the leading end deeper than the box interior.
+    interior_depth = max(0.0, float(layout.dimensions[2]) - layout.settings.wall_thickness_m)
+    depth = min(depth, interior_depth)
+
+    leading_end = (
+        np.asarray(layout.top_center, dtype=np.float64)
+        - n * depth
+        - u * float(entry_offset_m)
+    )
+    axis = math.cos(tilt) * u + math.sin(tilt) * n
+    axis = axis / float(np.linalg.norm(axis))
+
+    probe_length = float(layout.settings.probe_length_m)
+    probe_centre = leading_end + axis * (0.5 * probe_length)
+    trailing_end = leading_end + axis * probe_length
+
+    # Where the probe crosses the rim plane: inside the usable opening means it
+    # leaves through the mouth, outside means it would clip a wall.
+    usable_half = 0.5 * float(np.max(np.maximum(layout.usable_xy, 0.0)))
+    cross_along = float(np.dot(leading_end - layout.top_center, u)) + depth / math.tan(tilt)
+    clears = bool(abs(cross_along) <= usable_half)
+
+    return ProbeInsertion(
+        probe_centre=probe_centre,
+        leading_end=leading_end,
+        trailing_end=trailing_end,
+        axis=axis,
+        tilt_rad=tilt,
+        depth_m=depth,
+        clears_opening=clears,
+    )
+
+
+def derive_automatic_box_settings(
+    dimensions_xyz: Sequence[float],
+    probe_length_m: float = PROBE_LENGTH_M,
+    probe_width_m: float = PROBE_WIDTH_M,
+) -> AutomaticBoxSettings:
+    """Derive a safe overhead release-height range from box size.
+
+    Probe dimensions are arguments rather than module constants so the caller
+    can pass what probe.stl actually measures; a stale constant here silently
+    mis-sizes clearances and the fit checks.
+    """
     dimensions = np.asarray(dimensions_xyz, dtype=np.float64)
     if dimensions.shape != (3,) or not np.all(np.isfinite(dimensions)) or np.any(dimensions <= 0.0):
         raise ValueError('base_box_dimensions_xyz must contain three positive finite values')
+    probe_length = float(probe_length_m)
+    probe_width = float(probe_width_m)
+    if not math.isfinite(probe_length) or probe_length <= 0.0:
+        raise ValueError('probe_length_m must be positive and finite')
+    if not math.isfinite(probe_width) or probe_width <= 0.0:
+        raise ValueError('probe_width_m must be positive and finite')
 
     # Approximate an ordinary box wall as 5% of its smaller horizontal side,
     # bounded to realistic 5–15 mm material thickness. Edge clearance also
     # includes a quarter probe width so the released probe cannot graze a rim.
     wall = float(np.clip(0.05 * min(dimensions[0], dimensions[1]), 0.005, 0.015))
-    edge = max(0.012, 0.25 * PROBE_WIDTH_M)
+    edge = max(0.012, 0.25 * probe_width)
 
     # Keep the release close to the rim so the probe cannot bounce out after a
     # long fall. The small continuous Z band still gives IK useful freedom.
-    first_height = max(0.035, 0.50 * PROBE_WIDTH_M + 0.010)
+    first_height = max(0.035, 0.50 * probe_width + 0.010)
     release_span = max(0.020, min(0.035, 0.20 * float(dimensions[2])))
     heights = (first_height, first_height + release_span)
     return AutomaticBoxSettings(
         wall_thickness_m=wall,
         edge_clearance_m=edge,
         release_heights_m=heights,
+        probe_length_m=probe_length,
+        probe_width_m=probe_width,
     )
 
 
