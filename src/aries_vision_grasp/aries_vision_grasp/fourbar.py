@@ -82,7 +82,11 @@ _FINGER_TABLES = {
 
 # Contact-midpoint lateral offset (m) in arm_gripper_base_link. The four-bar
 # carries every finger on the same pivots, so this is the same for all three.
-CONTACT_Y_OFFSET_M = 0.0259
+# Near zero because the fingers are mounted on the inboard face of the bars and
+# the jaw line runs down the gripper base axis; the residual millimetre is the
+# finger mesh's own asymmetry. This was 0.0259 while gripper_new.xacro stepped
+# the bucket joints the wrong way and hung the fingers off the base's +Y face.
+CONTACT_Y_OFFSET_M = 0.001
 
 FINGER_TYPES = tuple(_FINGER_TABLES)
 DEFAULT_FINGER = 'bucket'

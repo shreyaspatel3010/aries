@@ -47,10 +47,12 @@ def test_q_for_45mm_probe_is_near_minus_0_2_rad():
 
 
 def test_contact_offset_near_closed():
-    # Near a 45 mm grasp the true contact midpoint is ~(0, 25.9, 218) mm.
-    off = fourbar.contact_offset(-0.20, y_offset_m=0.0259)
+    # Near a 45 mm grasp the true contact midpoint is ~(0, 1, 218) mm: the jaw
+    # line runs down the gripper base axis, so Y is ~0 rather than the 25.9 mm
+    # that compensated for the old bucket-joint step sign in gripper_new.xacro.
+    off = fourbar.contact_offset(-0.20, y_offset_m=fourbar.CONTACT_Y_OFFSET_M)
     assert off[0] == pytest.approx(0.0)
-    assert off[1] == pytest.approx(0.0259)
+    assert off[1] == pytest.approx(0.001)
     assert off[2] == pytest.approx(0.2180, abs=1e-3)
 
 

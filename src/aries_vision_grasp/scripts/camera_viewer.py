@@ -9,7 +9,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, CameraInfo
-from cv_bridge import CvBridge
+from aries_vision_grasp.image_bridge import NumpyImageBridge
 import cv2
 import numpy as np
 
@@ -18,7 +18,7 @@ class CameraViewerNode(Node):
     def __init__(self):
         super().__init__('camera_viewer_node')
 
-        self.bridge = CvBridge()
+        self.bridge = NumpyImageBridge()
         self.latest_color = None
         self.latest_depth = None
         self.camera_info = None

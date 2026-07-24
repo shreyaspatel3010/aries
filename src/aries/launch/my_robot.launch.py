@@ -37,7 +37,7 @@ def generate_launch_description():
         [FindPackageShare('aries'), 'config', 'gz_gui_config.config']
     )
     world_path = PathJoinSubstitution(
-        [FindPackageShare('aries'), 'worlds', 'test_world.sdf']
+        [FindPackageShare('aries'), 'worlds', 'sandbox_world.sdf']
     )
     virtual_diff_config_path = PathJoinSubstitution(
         [FindPackageShare('aries'), 'config', 'virtual_differential.yaml']

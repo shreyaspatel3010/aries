@@ -11,6 +11,7 @@ from aries_vision_grasp.probe_alignment import (
     box_surface_distances,
     closest_points_on_box,
     fit_box_to_points,
+    full_model_centre_along_axis,
     long_axis_fat_end_sign,
 )
 
@@ -184,6 +185,41 @@ def test_long_axis_fat_end_sign_abstains_when_not_decisive():
 
     # Too few points to trust either half.
     assert long_axis_fat_end_sign(pts[:20], c, axis) == 0
+
+
+LENGTH = 2.0 * HALF[2]
+
+
+def test_full_model_centre_predicts_occluded_tip():
+    """With the tip buried, the centre must be pinned to the visible fat end
+    plus half the known length -- not left at the biased visible centroid."""
+    R = rodrigues([0.2, 0.8, 0.5], 0.6)
+    c_true = np.array([0.03, -0.02, 0.20])
+    axis = R[:, 2]                       # tip_sign=+1 -> fat->tip is +axis
+    pts = sample_tapered_probe(R, c_true, tip_sign=+1, n=2000)
+    # Bury the tip: keep only the body + a stub of the taper.
+    along = (pts - c_true) @ axis
+    visible = pts[along < 0.03]
+    c_visible = visible.mean(axis=0)
+    # The visible centroid is dragged toward the fat end by the occlusion.
+    assert np.linalg.norm(c_visible - c_true) > 0.03
+
+    anchored = full_model_centre_along_axis(visible, c_visible, axis, LENGTH)
+    assert anchored is not None
+    # The predicted full-model centre is far closer to the truth...
+    assert np.linalg.norm(anchored - c_true) < np.linalg.norm(c_visible - c_true)
+    assert np.linalg.norm(anchored - c_true) < 0.02
+    # ...and only the along-axis coordinate moved (lateral position preserved).
+    assert np.linalg.norm(np.cross(anchored - c_visible, axis)) < 1e-9
+
+
+def test_full_model_centre_abstains_when_fully_visible():
+    """A cloud that already spans the whole length has nothing occluded to
+    predict, so the direct fit centre is kept (returns None)."""
+    R = rodrigues([0.1, 0.3, 0.9], 0.4)
+    c = np.array([0.0, 0.0, 0.2])
+    pts = sample_tapered_probe(R, c, tip_sign=+1, n=2000)
+    assert full_model_centre_along_axis(pts, c, R[:, 2], LENGTH) is None
 
 
 def sample_visible_box_surface(rotation, centre, cam_pos, n_per_face=220,

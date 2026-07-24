@@ -69,7 +69,7 @@ class GripperArcVisualizer(Node):
         self.declare_parameter("gripper_joint_name", "gripper_gear_left_joint")
         self.declare_parameter("publish_rate_hz", 10.0)
         # Jaw midpoint sits ~25.9 mm off the base link centreline in +y.
-        self.declare_parameter("contact_y_offset_m", 0.0259)
+        self.declare_parameter("contact_y_offset_m", 0.001)
         # Extra shift of the whole arc along +z (toward the jaw tips), to line
         # the overlay up with the bucket meshes. Live-tunable:
         #   ros2 param set /gripper_arc_visualizer arc_z_offset_m 0.03

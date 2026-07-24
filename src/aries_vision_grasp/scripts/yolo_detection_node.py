@@ -23,7 +23,7 @@ import time
 import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
+from aries_vision_grasp.image_bridge import NumpyImageBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
@@ -70,7 +70,7 @@ class YoloDetectionNode(Node):
             model_path, device=self.dev, imgsz=self.imgsz, logger=self.get_logger()
         )
 
-        self.bridge   = CvBridge()
+        self.bridge   = NumpyImageBridge()
         self.img_pub  = self.create_publisher(Image,  out_topic,  1)
         self.det_pub  = self.create_publisher(String, det_topic,  1)
 

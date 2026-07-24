@@ -145,6 +145,44 @@ def long_axis_fat_end_sign(
     return 0
 
 
+def full_model_centre_along_axis(
+    points: np.ndarray,
+    centre: np.ndarray,
+    fat_to_tip_axis: np.ndarray,
+    length: float,
+    end_percentile: float = 2.0,
+    min_occlusion_m: float = 0.03,
+) -> Optional[np.ndarray]:
+    """Predict a partly-occluded probe's true centre along its long axis.
+
+    A flat box (or PCA) fit is under-constrained ALONG the shaft when one end
+    is buried: it slides the centre toward the visible body. But the exposed
+    end and the known probe ``length`` pin it. Given the fat->tip axis (already
+    resolved by the taper) and the visible cloud, this finds the visible fat
+    end and returns the centre placed half a length toward the tip -- so the
+    buried tip is predicted rather than dragging the centre.
+
+    Only the ALONG-axis coordinate is changed; the passed-in lateral position is
+    preserved. Returns None when the cloud already spans nearly the full length
+    (nothing occluded to predict), so the caller keeps the direct fit centre.
+    """
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    c = np.asarray(centre, dtype=np.float64).reshape(3,)
+    axis = np.asarray(fat_to_tip_axis, dtype=np.float64).reshape(3,)
+    n = float(np.linalg.norm(axis))
+    if n < 1e-12 or len(pts) < 3 or length <= 0.0:
+        return None
+    axis = axis / n
+    proj = (pts - c) @ axis
+    extent = float(np.percentile(proj, 100.0 - end_percentile)
+                   - np.percentile(proj, end_percentile))
+    if extent >= length - min_occlusion_m:
+        return None
+    fat_end = float(np.percentile(proj, end_percentile))
+    shift = float(np.clip(fat_end + 0.5 * length, -0.5 * length, 0.5 * length))
+    return c + shift * axis
+
+
 def axis_angle_deg(axis_a: np.ndarray, axis_b: np.ndarray) -> float:
     """Angle between two undirected axes (probe ends are symmetric)."""
     a = np.asarray(axis_a, dtype=np.float64).reshape(3,)

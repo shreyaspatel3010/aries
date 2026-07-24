@@ -15,6 +15,66 @@
          same mount pivots, so only the visual/collision mesh changes. -->
     <xacro:property name="finger_mesh" value="gripper_${finger_type}.stl"/>
 
+    <!-- Mass properties computed from each mesh by tetrahedron decomposition at
+         1050 kg/m^3 (near-solid printed plastic), COM and inertia taken about
+         that COM. Every gripper link previously carried arm_gripper_base_link's
+         copy-pasted 1.536 kg / 0.24-0.66 kg.m^2 tensor: a 9.26 kg gripper whose
+         finger inertia was 122x a real bar of the same stated mass. Driving that
+         through five mimic constraints is what DART has to solve every step, so
+         the wrong numbers show up as the linkage wedging or lagging rather than
+         as anything visibly "heavy". Real total is 341 g. -->
+    <xacro:property name="finger_mass"
+                    value="${0.0311 if finger_type == 'probe' else (0.0367 if finger_type == 'bucket' else 0.0252)}"/>
+    <xacro:property name="finger_com_y"
+                    value="${0.00715 if finger_type == 'probe' else (-0.00232 if finger_type == 'bucket' else 0.00787)}"/>
+    <xacro:property name="finger_com_z"
+                    value="${0.07024 if finger_type == 'probe' else (0.05514 if finger_type == 'bucket' else 0.06316)}"/>
+    <xacro:property name="finger_ixx"
+                    value="${3.984e-05 if finger_type == 'probe' else (2.646e-05 if finger_type == 'bucket' else 3.262e-05)}"/>
+    <xacro:property name="finger_iyy"
+                    value="${4.079e-05 if finger_type == 'probe' else (2.905e-05 if finger_type == 'bucket' else 3.250e-05)}"/>
+    <xacro:property name="finger_izz"
+                    value="${2.234e-06 if finger_type == 'probe' else (1.466e-05 if finger_type == 'bucket' else 1.064e-06)}"/>
+    <xacro:property name="finger_iyz"
+                    value="${-3.025e-07 if finger_type == 'probe' else (3.143e-06 if finger_type == 'bucket' else -1.008e-06)}"/>
+
+    <!-- Reusable inertial blocks. -->
+    <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
+        <inertial>
+            <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+            <mass value="${mass}"/>
+            <inertia ixx="${ixx}" ixy="${ixy}" ixz="${ixz}"
+                     iyy="${iyy}" iyz="${iyz}" izz="${izz}"/>
+        </inertial>
+    </xacro:macro>
+
+    <!-- Joint damping/friction, sized against the inertias ABOVE.
+         These were damping=10, friction=2: values that were self-consistent
+         only while every link still carried the base's copy-pasted 1.536 kg /
+         0.24-0.66 kg.m^2 tensor. Recomputing the inertias from the meshes cut
+         them by 3-5 orders of magnitude and left these untouched, which breaks
+         the simulation in two separate ways.
+
+         1. STABILITY. Explicit integration of a damping term needs
+            h < 2*I/b. Referred to their pivots the bars are I = 2.2e-5 and the
+            finger I = 1.9e-4 kg.m^2, so b=10 demanded h < 4.3e-6 s while the
+            worlds all run h = 1e-3 s, i.e. 26x to 231x past the limit. A
+            damping term integrated that far beyond its stability bound does
+            not damp; it oscillates with growing amplitude and hands the
+            constraint solver exploding velocities.
+         2. AUTHORITY. Coulomb friction of 2 N.m sits on links whose entire
+            gravitational torque is 0.0028 to 0.0215 N.m, i.e. 93x to 714x the
+            load it is meant to resist. It welds the linkage, so every motion
+            has to be forced through it by the servo constraint at the joints'
+            500 N.m effort ceiling.
+
+         The values below restore the physical scale: damping gives
+         h_max = 4.3 ms (4.3x margin at the 1 ms step) and friction stays well
+         under the gravity torque so it cannot lock the mechanism. Only Gazebo
+         reads these; real hardware has its own dynamics. -->
+    <xacro:property name="fourbar_joint_damping" value="0.01"/>
+    <xacro:property name="fourbar_joint_friction" value="0.001"/>
+
     <joint name="arm_gripper_base_joint" type="fixed">
         <parent link="link6"/>
         <child link="arm_gripper_base_link"/>
@@ -24,17 +84,9 @@
 
     <!--gripper base Link -->
     <link name="arm_gripper_base_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="0.2132" cx="-0.00021" cy="-0.00363" cz="0.05337"
+                                ixx="2.962e-04" iyy="3.397e-04" izz="1.303e-04"
+                                ixy="1.606e-06" ixz="1.373e-07" iyz="6.673e-07"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -58,17 +110,8 @@
 
     <!--gripper_gear_left Link -->
     <link name="gripper_gear_left_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="0.0245" cx="0.01166" cy="0.0" cz="0.005"
+                                ixx="3.162e-06" iyy="1.731e-05" izz="2.006e-05"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -95,22 +138,13 @@
         <origin xyz="-0.024 0.00838 0.090" rpy="-1.57 -1.57 0.0"/>
         <axis xyz="0 0 1"/>
         <limit effort="500" velocity="1.0" lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
-        <dynamics damping="10" friction="2"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
     </joint>
 
     <!--gripper_gear_right Link -->
     <link name="gripper_gear_right_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="0.0245" cx="0.01166" cy="0.0" cz="0.005"
+                                ixx="3.162e-06" iyy="1.731e-05" izz="2.006e-05"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -137,23 +171,14 @@
         <origin xyz="0.024 0.00838 0.090" rpy="-1.57 -1.57 0.0"/>
         <axis xyz="0 0 -1"/>
         <limit effort="500" velocity="1.0" lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
-        <dynamics damping="10" friction="2"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
     </joint>
     
     <!--gripper_left Link -->
     <link name="gripper_left_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="0.0083" cx="0.0425" cy="0.0" cz="0.005"
+                                ixx="1.236e-07" iyy="6.629e-06" izz="6.615e-06"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -180,7 +205,7 @@
         <origin xyz="-0.012 0.00838 0.123" rpy="-1.57 -1.57 0.0"/>
         <axis xyz="0 0 1"/>
         <limit effort="500" velocity="1.0" lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
-        <dynamics damping="10" friction="2"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
     </joint>
 
@@ -188,30 +213,27 @@
     <link name="gripper_gear_tip_left_link">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="0.01" />
-            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+            <mass value="0.005" />
+            <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7" />
         </inertial>
     </link>
 
     <joint name="gripper_gear_tip_left_joint" type="fixed">
         <parent link="gripper_gear_left_link"/>
         <child link="gripper_gear_tip_left_link"/>
-        <origin xyz="0.089 0.0 0.005" rpy="0.0 0.0 0.0"/>
+        <!-- 0.085563 is the PIVOT HOLE, 3.437 mm inside the bar's 0.089 mesh
+             end. That 3.437 mm used to live on the bucket joint instead, but an
+             offset there is expressed in this (rotating) frame, so the finger's
+             pivot orbited the bar tip and pivot 2 slid 5.17 mm across the
+             finger through the stroke. Carrying it here makes the frame the
+             real pivot; the finger's pose is bit-identical either way. -->
+        <origin xyz="0.085563 0.0 0.005" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!--gripper_right Link -->
     <link name="gripper_right_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="0.0083" cx="0.0425" cy="0.0" cz="0.005"
+                                ixx="1.236e-07" iyy="6.629e-06" izz="6.615e-06"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -238,7 +260,7 @@
         <origin xyz="0.012 0.00838 0.123" rpy="-1.57 -1.57 0.0"/>
         <axis xyz="0 0 -1"/>
         <limit effort="500" velocity="1.0" lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
-        <dynamics damping="10" friction="2"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
     </joint>
 
@@ -246,30 +268,28 @@
     <link name="gripper_gear_tip_right_link">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="0.01" />
-            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+            <mass value="0.005" />
+            <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7" />
         </inertial>
     </link>
 
     <joint name="gripper_gear_tip_right_joint" type="fixed">
         <parent link="gripper_gear_right_link"/>
         <child link="gripper_gear_tip_right_link"/>
-        <origin xyz="0.089 0.0 0.005" rpy="0.0 0.0 0.0"/>
+        <!-- 0.085563 is the PIVOT HOLE, 3.437 mm inside the bar's 0.089 mesh
+             end. That 3.437 mm used to live on the bucket joint instead, but an
+             offset there is expressed in this (rotating) frame, so the finger's
+             pivot orbited the bar tip and pivot 2 slid 5.17 mm across the
+             finger through the stroke. Carrying it here makes the frame the
+             real pivot; the finger's pose is bit-identical either way. -->
+        <origin xyz="0.085563 0.0 0.005" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!--gripper_bucket_left Link -->
     <link name="gripper_bucket_left_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z}"
+                                ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
+                                iyz="${finger_iyz}"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -290,13 +310,31 @@
         </collision>
     </link>
 
+    <!-- Local +Z here maps to base +Y (the plate-stack depth direction). The
+         fingers bolt to the INBOARD face of the four-bar bars, so this step is
+         negative: it brings the jaw line back onto the gripper base axis. With
+         +0.0125 the fingers hung 26 mm off the base's +Y face, which is why
+         fourbar_contact_y_offset_m used to carry a 0.0259 m correction. -->
     <joint name="gripper_bucket_left_joint" type="revolute">
         <parent link="gripper_gear_tip_left_link"/>
         <child link="gripper_bucket_left_link"/>
-        <origin xyz="-0.003437 0.0 0.0125" rpy="0.0 1.57 0.0"/>
+        <!-- No in-plane offset: this pivot IS the gear bar's tip, which is what
+             a four-bar pivot means. The old -0.003437 x term now lives on
+             gripper_gear_tip_*_joint; see the note there. Only the depth step
+             remains. -->
+        <origin xyz="0.0 0.0 -0.0125" rpy="0.0 1.57 0.0"/>
         <axis xyz="1 0 0"/>
-        <limit effort="500" velocity="1.0" lower="-1.57" upper="1.57"/>
-        <dynamics damping="10" friction="2"/>
+        <!-- Same widened window as the gear/link bars. These two were
+             hardcoded at -1.57, which is EXACTLY the commanded open
+             endpoint, so every open put the finger joints precisely on a
+             DART hard stop while the mimic constraint still demanded
+             q_finger = q_gear there. That is the wedge the header of this
+             file describes: the linkage locks at the stop and refuses the
+             following close. The other four joints were widened for this
+             reason and these two were missed. -->
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
     </joint>
 
@@ -304,30 +342,30 @@
     <link name="gripper_link_tip_left_link">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="0.01" />
-            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+            <mass value="0.005" />
+            <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7" />
         </inertial>
     </link>
 
     <joint name="gripper_link_tip_left_joint" type="fixed">
         <parent link="gripper_left_link"/>
         <child link="gripper_link_tip_left_link"/>
-        <origin xyz="0.091 0.0 0.005" rpy="0.0 0.0 0.0"/>
+        <!-- Same 0.085563 as the gear-side tip, NOT this bar's own 0.091 mesh
+             end. Both bars mimic the same angle at multiplier 1.0, which only
+             closes the loop for a PARALLELOGRAM: equal bars, coupler == ground
+             link. With unequal bars the tip-to-tip distance (the finger, pinned
+             to both) breathed 34.5 to 37.1 mm through the stroke and these
+             constraint frames drifted off the finger pivots in sim. Equal bars
+             pin the coupler at the 35.11 mm ground length. This link carries no
+             visual or collision geometry, only the red marker below. -->
+        <origin xyz="0.085563 0.0 0.005" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!--gripper_bucket_right Link -->
     <link name="gripper_bucket_right_link">
-        <inertial>
-            <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="1.5363204791731" />
-            <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
-        </inertial>
+        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z}"
+                                ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
+                                iyz="${finger_iyz}"/>
         <visual>
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
@@ -348,13 +386,23 @@
         </collision>
     </link>
 
+    <!-- Mirror of gripper_bucket_left_joint; same inboard-face step sign. -->
     <joint name="gripper_bucket_right_joint" type="revolute">
         <parent link="gripper_gear_tip_right_link"/>
         <child link="gripper_bucket_right_link"/>
-        <origin xyz="-0.003437 0.0 0.0125" rpy="0.0 -1.57 3.14159"/>
+        <origin xyz="0.0 0.0 -0.0125" rpy="0.0 -1.57 3.14159"/>
         <axis xyz="1 0 0"/>
-        <limit effort="500" velocity="1.0" lower="-1.57" upper="1.57"/>
-        <dynamics damping="10" friction="2"/>
+        <!-- Same widened window as the gear/link bars. These two were
+             hardcoded at -1.57, which is EXACTLY the commanded open
+             endpoint, so every open put the finger joints precisely on a
+             DART hard stop while the mimic constraint still demanded
+             q_finger = q_gear there. That is the wedge the header of this
+             file describes: the linkage locks at the stop and refuses the
+             following close. The other four joints were widened for this
+             reason and these two were missed. -->
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
     </joint>
 
@@ -362,15 +410,23 @@
     <link name="gripper_link_tip_right_link">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0" />
-            <mass value="0.01" />
-            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+            <mass value="0.005" />
+            <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7" />
         </inertial>
     </link>
 
     <joint name="gripper_link_tip_right_joint" type="fixed">
         <parent link="gripper_right_link"/>
         <child link="gripper_link_tip_right_link"/>
-        <origin xyz="0.091 0.0 0.005" rpy="0.0 0.0 0.0"/>
+        <!-- Same 0.085563 as the gear-side tip, NOT this bar's own 0.091 mesh
+             end. Both bars mimic the same angle at multiplier 1.0, which only
+             closes the loop for a PARALLELOGRAM: equal bars, coupler == ground
+             link. With unequal bars the tip-to-tip distance (the finger, pinned
+             to both) breathed 34.5 to 37.1 mm through the stroke and these
+             constraint frames drifted off the finger pivots in sim. Equal bars
+             pin the coupler at the 35.11 mm ground length. This link carries no
+             visual or collision geometry, only the red marker below. -->
+        <origin xyz="0.085563 0.0 0.005" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!-- Visual constraint markers to show four-bar connection -->
@@ -389,7 +445,13 @@
     <joint name="fourbar_constraint_visual_left_joint" type="fixed">
         <parent link="gripper_link_tip_left_link"/>
         <child link="fourbar_constraint_visual_left"/>
-        <origin xyz="0.0 -0.0075 0.0" rpy="1.57 0 0"/>
+        <!-- A <cylinder> extends along its own local Z, and the pivot axis is
+             the link bar's own rotation axis, which in this frame IS local Z.
+             So rpy must be zero: rpy="1.57 0 0" tipped the pin 90 deg across
+             the joint, where it swung around as q changed and read as the
+             pivot coming apart while closing. Offset half the plate step so
+             the 15 mm pin spans from the bar through to the finger. -->
+        <origin xyz="0.0 0.0 -0.00625" rpy="0 0 0"/>
     </joint>
 
     <link name="fourbar_constraint_visual_right">
@@ -407,7 +469,8 @@
     <joint name="fourbar_constraint_visual_right_joint" type="fixed">
         <parent link="gripper_link_tip_right_link"/>
         <child link="fourbar_constraint_visual_right"/>
-        <origin xyz="0.0 0.0075 0.0" rpy="1.57 0 0"/>
+        <!-- Mirror of the left marker; same local-Z pin direction. -->
+        <origin xyz="0.0 0.0 -0.00625" rpy="0 0 0"/>
     </joint>
 
 
