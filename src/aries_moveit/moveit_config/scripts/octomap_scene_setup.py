@@ -123,6 +123,16 @@ class OctomapSceneSetup(Node):
                 i = ensure(link)
                 rows[obj_i][i] = True
                 rows[i][obj_i] = True
+            # ...and against the octomap itself. The wrist camera paints the
+            # probe into the octomap from point-blank range, both while it is
+            # still on the ground and while it is held: the voxels sit exactly
+            # where the probe mesh is, because they ARE the probe. Without this
+            # the attached mesh starts every post-grasp plan in collision with
+            # its own reflection and MoveGroup aborts in well under a second,
+            # before OMPL runs at all. Clearing the octomap does not fix it --
+            # the camera repaints the held probe within one update period.
+            rows[obj_i][oct_i] = True
+            rows[oct_i][obj_i] = True
 
         acm.entry_names = names
         for k, e in enumerate(acm.entry_values):
@@ -147,7 +157,7 @@ class OctomapSceneSetup(Node):
             f"and {len(GRIPPER_LINKS)} gripper links "
             f"({len(OCTOMAP_ALLOWED_LINKS)} total); arm links keep octomap checking. "
             f"Probe objects {PROBE_OBJECT_IDS} allowed for the {len(GRIPPER_LINKS)} "
-            "gripper links; arm links still avoid the probe mesh")
+            "gripper links and for <octomap>; arm links still avoid the probe mesh")
 
         if self.call(clear_cli, Empty.Request()) is not None:
             self.get_logger().info("octomap cleared after startup")

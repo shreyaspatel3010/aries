@@ -435,6 +435,49 @@ vision_grasp_node:
     # at its old floor pose -- which, with the rover parked over it, is true
     # whether or not the jaws picked it up. Require positive evidence instead.
     lift_check_require_positive_evidence: true
+    # Back out of the grasp along the REVERSE of the final descent (pure tool
+    # -Z off the shaft, then the lateral align undone at the standoff) instead
+    # of translating straight up in the world frame. The probe goes in
+    # coaxially; with the tool pitched ~57 deg out of horizontal a vertical
+    # lift has a large component ACROSS the shaft, so it levers the clamped
+    # probe against its socket, and it ends at a pose the transport planner has
+    # never visited. Retracing ends at the standoff the arm reached seconds
+    # earlier. A world-vertical segment is appended only if the retrace does
+    # not reach lift_check_distance_m, which the visual check needs.
+    post_grasp_retrace_descent: true
+    # The lift check calls it lifted at grasp_success_min_lift_m, so once the
+    # retrace has risen that far (plus this margin) no vertical top-up is added
+    # at all. Asking for the full lift_check_distance_m instead appended a long
+    # world-vertical segment that planned to only 0.86 and aborted the task
+    # with the probe already gripped.
+    post_grasp_retrace_extra_rise_m: 0.015
+    # MoveGroup re-validates an EXECUTING trajectory against every planning-scene
+    # update and, with replan off (its default), aborts on the first one that
+    # invalidates it: moveit_error_code=-3
+    # MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE. During held-probe transport
+    # that is near-certain -- the wrist camera repaints the octomap at
+    # sensors_3d.yaml's max_update_rate (5 Hz) while staring at the probe it is
+    # carrying, and the arm sweeping reveals new space every second. The
+    # environment really is dynamic, so replan from the new scene rather than
+    # giving up on the first change.
+    # Retire the octomap once the grasp is confirmed by BOTH sensors (the
+    # camera lift check and the held-probe verdict from the octomap-input
+    # cloud). From that point everything the octomap describes is described
+    # better elsewhere -- the probe is an attached mesh, the floor is covered by
+    # the height guards, the rover is in the robot model -- and all it still
+    # does is churn: the wrist camera repaints it at 5 Hz while staring at the
+    # probe it is carrying, and every update can abort the executing transport
+    # with -3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE.
+    #
+    # This is a planning-scene switch (the ACM default entry for <octomap>), so
+    # the sensor pipeline keeps running and the setting reverts on reset.
+    # TRADE-OFF: while off, the arm will NOT avoid obstacles that exist only in
+    # the octomap. Set false to keep full checking through transport.
+    octomap_disable_after_grasp_confirmed: true
+
+    movegroup_replan_enabled: true
+    movegroup_replan_attempts: 5
+    movegroup_replan_delay_sec: 0.5
     never_open_after_contact_during_retry: true
     keep_closed_on_lift_check_failure_without_feedback: false
     require_lift_check_success_for_transport: true

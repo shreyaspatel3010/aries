@@ -482,6 +482,32 @@ class VisionGraspNode(Node):
         # evidence -- a held-probe verdict or trusted jaw contact -- and an
         # empty final close vetoes both.
         self.declare_parameter('lift_check_require_positive_evidence', True)
+        # Back out of the grasp along the reverse of the final descent instead
+        # of translating straight up in the world frame. The probe goes in
+        # coaxially along tool +Z; a world-vertical lift on a pitched tool has
+        # a large component ACROSS the shaft, which levers the clamped probe
+        # against its socket and ends at a pose the transport planner has never
+        # visited. Retracing the descent ends at the standoff the arm reached
+        # seconds earlier.
+        self.declare_parameter('post_grasp_retrace_descent', True)
+        # Margin above grasp_success_min_lift_m that the retrace must clear
+        # before the vertical top-up is skipped entirely.
+        self.declare_parameter('post_grasp_retrace_extra_rise_m', 0.015)
+        # MoveGroup aborts an executing trajectory the moment a planning-scene
+        # update invalidates it (-3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE).
+        # The octomap is repainted several times a second by the wrist camera,
+        # so during held-probe transport that is a near-certainty. Replan from
+        # the new scene instead of giving up.
+        # Once the grasp is confirmed by camera + octomap the octomap has no
+        # job left in this task: the probe rides as an attached mesh, the floor
+        # is covered by the height guards, and all the octomap still does is
+        # churn the scene and abort transport plans. Retire it for the rest of
+        # the sequence. NOTE this really does stop the arm avoiding
+        # octomap-only obstacles; set false to keep full checking.
+        self.declare_parameter('octomap_disable_after_grasp_confirmed', True)
+        self.declare_parameter('movegroup_replan_enabled', True)
+        self.declare_parameter('movegroup_replan_attempts', 5)
+        self.declare_parameter('movegroup_replan_delay_sec', 0.5)
 
         # Detected probe published as its own STL mesh in the planning scene.
         # Without it the only record of the probe is octomap voxels: 30 mm
@@ -1161,6 +1187,14 @@ class VisionGraspNode(Node):
             p('held_probe_abort_transport_on_empty').value)
         self.lift_check_require_positive_evidence = bool(
             p('lift_check_require_positive_evidence').value)
+        self.post_grasp_retrace_descent = bool(p('post_grasp_retrace_descent').value)
+        self.post_grasp_retrace_extra_rise_m = max(
+            0.0, float(p('post_grasp_retrace_extra_rise_m').value))
+        self.octomap_disable_after_grasp_confirmed = bool(
+            p('octomap_disable_after_grasp_confirmed').value)
+        self.movegroup_replan_enabled = bool(p('movegroup_replan_enabled').value)
+        self.movegroup_replan_attempts = max(1, int(p('movegroup_replan_attempts').value))
+        self.movegroup_replan_delay_sec = max(0.0, float(p('movegroup_replan_delay_sec').value))
         self.world_probe_object_enabled = bool(p('world_probe_object_enabled').value)
         self.world_probe_object_id = str(p('world_probe_object_id').value)
         self.world_probe_object_min_republish_sec = max(
@@ -1574,6 +1608,7 @@ class VisionGraspNode(Node):
         ]
         # Detected (not yet grasped) probe published as an STL collision object.
         self._world_probe_published: bool = False
+        self._octomap_collisions_enabled: bool = True
         self._world_probe_acm_applied: bool = False
         self._world_probe_acm_pending: bool = False
         self._world_probe_last_centre: Optional[np.ndarray] = None
@@ -1637,6 +1672,7 @@ class VisionGraspNode(Node):
         # _compute_axial_grasp_orientation / update_contact_poses_from_target.
         self._vertical_grasp_body_shift_base: Optional[np.ndarray] = None
         self._last_final_descent_waypoints: List[Pose] = []
+        self._last_final_descent_start: Optional[Pose] = None
         self._accepted_descent_shortfall_m: float = 0.0
         self.perception_frozen_for_sequence = False
         self.last_detection_name = ''
@@ -1919,6 +1955,7 @@ class VisionGraspNode(Node):
         self.sequence_locked_object_long_axis_base = None
         self._vertical_grasp_body_shift_base = None
         self._last_final_descent_waypoints = []
+        self._last_final_descent_start = None
         self._accepted_descent_shortfall_m = 0.0
         self.preclosed_in_air = False
         self.pregrasp_correction_count = 0
@@ -3970,6 +4007,11 @@ class VisionGraspNode(Node):
         # copy behind would put the attached mesh permanently in collision with
         # a stationary ghost of itself, which reads as an invalid start state.
         self._remove_world_probe_object('the probe is now attached to the gripper')
+        # That removal drops the ACM entries with the object, and the pre-grasp
+        # publisher (the only other caller) stops running once attached -- so
+        # re-assert here, or the attached mesh plans against an octomap full of
+        # its own voxels.
+        self._ensure_world_probe_collisions_allowed()
 
         correction_rad = math.radians(float(getattr(self, 'stl_yaw_correction_deg', 0.0)))
         # Prefer the mask pose frozen at final grasp commit — the live one is
@@ -4505,6 +4547,9 @@ class VisionGraspNode(Node):
             world_probe.operation = CollisionObject.REMOVE
             self._collision_object_pub.publish(world_probe)
             self._post_grasp_probe_attached = False
+            # MoveIt drops post_grasp_probe's ACM entries along with the object,
+            # so the next attach must re-assert them.
+            self._world_probe_acm_applied = False
             self._attached_probe_world_yaw = None
             self._attached_probe_grasp_orientation = None
             self._attached_probe_centre_in_link = None
@@ -4579,11 +4624,23 @@ class VisionGraspNode(Node):
                 rows.append([False] * len(names))
             return names.index(name)
 
-        probe_i = index_of(self.world_probe_object_id)
-        for link in self.gripper_probe_contact_links:
-            i = index_of(link)
-            rows[probe_i][i] = True
-            rows[i][probe_i] = True
+        oct_i = index_of('<octomap>')
+        for obj in (self.world_probe_object_id, 'post_grasp_probe'):
+            probe_i = index_of(obj)
+            for link in self.gripper_probe_contact_links:
+                i = index_of(link)
+                rows[probe_i][i] = True
+                rows[i][probe_i] = True
+            # The wrist camera paints the probe into the octomap from
+            # point-blank range, on the ground AND once it is held: those
+            # voxels sit exactly where the probe mesh is, because they ARE the
+            # probe. Without this the attached mesh starts every post-grasp
+            # plan in collision with its own reflection and MoveGroup aborts in
+            # under a second, before OMPL runs. Clearing the octomap does not
+            # help -- the camera repaints the held probe within one update
+            # period.
+            rows[probe_i][oct_i] = True
+            rows[oct_i][probe_i] = True
 
         acm.entry_names = names
         acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
@@ -4595,8 +4652,82 @@ class VisionGraspNode(Node):
         apply_req.scene = scene
         self._world_probe_acm_applied = True
         self.apply_planning_scene_client.call_async(apply_req)
-        self.get_logger().info(f'[CollisionWorld] Gripper links may now touch '
-            f'{self.world_probe_object_id}; arm links still avoid it.')
+        self.get_logger().info(f'[CollisionWorld] Gripper links and <octomap> may now overlap '
+            f'{self.world_probe_object_id} and post_grasp_probe; arm links still avoid them.')
+
+    def _set_octomap_collision_checking(self, enabled: bool, reason: str) -> None:
+        """Switch octomap collision checking on or off for the whole robot.
+
+        Once the grasp is confirmed the octomap has no job left in this task.
+        Everything it is meant to describe is already described better: the
+        probe is an attached mesh, the floor is handled by the height guards,
+        and the rover's own body is in the robot model. What the octomap still
+        does is churn -- the wrist camera repaints it at 5 Hz while staring at
+        the probe it is carrying, and every update re-validates the executing
+        trajectory and can abort it with -3
+        MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE.
+
+        Implemented as the ACM's DEFAULT entry for ``<octomap>``: one flag that
+        makes it allowed against every element, rather than N pairwise entries
+        that would need re-applying whenever a link or object appears. It is a
+        planning-scene switch, so it is fully reversible and does not touch the
+        sensor pipeline -- the octomap keeps building, MoveIt just stops
+        colliding against it.
+
+        TRADE-OFF, stated plainly: with this off the arm will NOT avoid any
+        obstacle that exists only in the octomap. That is the intended
+        behaviour for this task (the transport path is a known posture over the
+        rover's own chassis), but it is a real reduction in obstacle
+        avoidance. Set octomap_disable_after_grasp_confirmed false to keep it.
+        """
+        if not (self.get_planning_scene_client.service_is_ready()
+                and self.apply_planning_scene_client.service_is_ready()):
+            self.get_logger().warning('[CollisionWorld] get/apply_planning_scene unavailable; cannot '
+                f'{"enable" if enabled else "disable"} octomap collision checking.',
+                throttle_duration_sec=30.0)
+            return
+        req = GetPlanningScene.Request()
+        req.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
+        self.get_planning_scene_client.call_async(req).add_done_callback(
+            lambda fut, en=enabled, rs=reason: self._apply_octomap_collision_setting(fut, en, rs)
+        )
+
+    def _apply_octomap_collision_setting(self, future, enabled: bool, reason: str) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().warning(f'[CollisionWorld] get_planning_scene failed while switching '
+                f'octomap collision checking: {exc}')
+            return
+        if response is None:
+            return
+        acm = response.scene.allowed_collision_matrix
+        names = list(acm.default_entry_names)
+        values = [bool(v) for v in acm.default_entry_values]
+        # allowed == True means "collisions with <octomap> are permitted",
+        # i.e. checking is OFF.
+        allowed = not enabled
+        if '<octomap>' in names:
+            values[names.index('<octomap>')] = allowed
+        else:
+            names.append('<octomap>')
+            values.append(allowed)
+        acm.default_entry_names = names
+        acm.default_entry_values = values
+
+        scene = PlanningScene()
+        scene.is_diff = True
+        scene.allowed_collision_matrix = acm
+        apply_req = ApplyPlanningScene.Request()
+        apply_req.scene = scene
+        self.apply_planning_scene_client.call_async(apply_req)
+        self._octomap_collisions_enabled = bool(enabled)
+        if enabled:
+            self.get_logger().info(f'[CollisionWorld] Octomap collision checking ON: {reason}')
+        else:
+            self.get_logger().warning(f'[CollisionWorld] Octomap collision checking OFF for the rest of '
+                f'this task: {reason} The probe travels as an attached mesh and the arm will not '
+                'avoid octomap-only obstacles until the sequence resets.')
 
     def _publish_world_probe_object(
         self,
@@ -4618,6 +4749,11 @@ class VisionGraspNode(Node):
         the STL rotation is that cyclic column permutation.
         """
         if not self.world_probe_object_enabled or self._post_grasp_probe_attached:
+            return
+        # Same race as the attached-mesh realignment: adding a collision object
+        # and clearing the octomap under a plan that is already running
+        # invalidates it. The probe is not going anywhere during one motion.
+        if self._arm_motion_in_flight():
             return
         self._ensure_probe_mesh()
         self._ensure_world_probe_collisions_allowed()
@@ -4716,6 +4852,17 @@ class VisionGraspNode(Node):
 
         Skipped during the base-box release: the probe sliding out of the
         opening gripper must not yank the mesh around mid-release.
+
+        Also skipped while an arm motion is in flight, because a commit
+        REPUBLISHES the attached collision object and clears the octomap. Doing
+        that to the scene MoveGroup is planning against invalidates the solve:
+        the pick_home transport was seen aborting (status 6) after burning its
+        full 10 s planning window, having had the probe mesh moved 84 ms after
+        the goal was sent -- a 180 deg end-for-end flip, plus an octomap wipe.
+        The grip is rigid over those few seconds, so deferring the correction
+        until the motion finishes costs nothing: the realignment rides the
+        detection stream, so it re-measures and commits on the next tick after
+        the motion completes.
         """
         return (
             self.attached_probe_realign_enabled
@@ -4724,7 +4871,19 @@ class VisionGraspNode(Node):
             and self._attached_probe_R_stl_in_link is not None
             and self._attached_probe_centre_in_link is not None
             and self.sequence_stage != stages.RELEASE_IN_BASE_BOX
+            and not self._arm_motion_in_flight()
         )
+
+    def _arm_motion_in_flight(self) -> bool:
+        """True while MoveIt is planning or executing an arm motion.
+
+        Covers both routes: a MoveGroup goal (which plans AND executes inside
+        one action, so the scene must hold still for the whole thing) and a
+        Cartesian path request awaiting its plan.
+        """
+        if getattr(self, '_active_move_goal_handle', None) is not None:
+            return True
+        return getattr(self, '_cartesian_plan_in_flight', None) is not None
 
     def _mask_points_in_link(
         self,
@@ -5851,6 +6010,46 @@ class VisionGraspNode(Node):
             '(no diagonal sweep through the probe at jaw height).'
         )
         return [align, goal_link_pose]
+
+    def _final_ascent_waypoints(self) -> Optional[List[Pose]]:
+        """The final descent, retraced backwards in the gripper's own frame.
+
+        The probe was entered coaxially: pure translation along tool +Z down
+        the shaft, after a lateral align taken at the standoff. The only motion
+        that backs out of that without levering the probe sideways is the same
+        path reversed -- pure tool -Z first, then the lateral step undone at
+        the standoff.
+
+        A world-vertical lift is not that motion. With the tool pitched (57 deg
+        out of horizontal on this probe) a straight-up translation has a large
+        component ACROSS the shaft, so it pries the probe in its socket while
+        the jaws are clamped on it, and it leaves the arm at a pose the
+        transport planner has never visited. Retracing the descent instead ends
+        at the standoff the arm demonstrably reached seconds earlier, which is
+        a far better start state for the pick_home plan.
+
+        Returns None when no descent was recorded (nothing to reverse).
+        """
+        wps = self._last_final_descent_waypoints
+        start = self._last_final_descent_start
+        if not wps or start is None:
+            return None
+        # Drop the descent's own goal: that IS where the arm is standing now.
+        # What remains, reversed, is every intermediate waypoint followed by the
+        # standoff the descent began from.
+        back: List[Pose] = list(wps[:-1])[::-1] + [start]
+        goal_orientation = wps[-1].orientation
+        out: List[Pose] = []
+        for w in back:
+            pose = Pose()
+            pose.position = Point(
+                x=float(w.position.x), y=float(w.position.y), z=float(w.position.z)
+            )
+            # Hold the committed grasp orientation throughout, exactly as the
+            # descent did: this is a translation back out, not a re-orientation.
+            pose.orientation = goal_orientation
+            out.append(pose)
+        return out
 
     def _final_descent_shortfall_m(self, fraction: float) -> Optional[float]:
         """How far short of the commanded contact a partial descent stops.
@@ -7772,6 +7971,18 @@ class VisionGraspNode(Node):
 
     def _after_lift_verification_success(self, reason: str) -> None:
         self.holding_object = True
+        # The grasp is confirmed here by BOTH sensors -- the camera lift check
+        # above and the held-probe verdict from the octomap-input cloud. That
+        # is the last thing the octomap is needed for in this task, so retire
+        # it: from here the probe rides as an attached mesh and the octomap
+        # only contributes scene churn that aborts transport plans.
+        if self.octomap_disable_after_grasp_confirmed and self._octomap_collisions_enabled:
+            verdict = self._held_probe_verdict()
+            self._set_octomap_collision_checking(
+                False,
+                f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}).',
+            )
+            self._clear_octomap('grasp-confirmed-octomap-retired')
         if self.post_grasp_lift_then_pick_home:
             self.get_logger().info(f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
             self.send_post_grasp_vertical_lift()
@@ -8682,7 +8893,16 @@ class VisionGraspNode(Node):
     # ------------------------------------------------------------------ #
 
     def send_lift_check(self) -> None:
-        """Move straight up by lift_check_distance_m to see if the probe came with us."""
+        """Back out of the grasp and rise far enough to see if the probe came too.
+
+        The extraction retraces the final descent backwards in the gripper
+        frame (see _final_ascent_waypoints) rather than translating straight up
+        in the world: pulling a coaxially gripped probe out of its socket
+        sideways levers it against the hole. Only once the arm is back at the
+        standoff does a world-vertical segment top the motion up to
+        lift_check_distance_m, which the visual lift check needs to tell a
+        lifted probe from one still on the floor.
+        """
         if self.grasp_pose is None:
             self.send_retreat()
             return
@@ -8695,10 +8915,61 @@ class VisionGraspNode(Node):
         if self.locked_target_before_lift is None:
             self.locked_target_before_lift = grasp_xyz.copy()
 
+        waypoints: List[Pose] = []
+        if self.post_grasp_retrace_descent:
+            back = self._final_ascent_waypoints()
+            if back:
+                waypoints = list(back)
+                start = self.get_current_link_pose_in_planning_frame()
+                risen_mm = (
+                    (waypoints[-1].position.z - start.position.z) * 1000.0
+                    if start is not None else 0.0
+                )
+                self.get_logger().info(f'Post-grasp extraction retraces the final descent in reverse: '
+                    f'{len(waypoints)} gripper-frame waypoint(s) back to the standoff '
+                    f'({risen_mm:.1f} mm of vertical rise), instead of prying the probe '
+                    'sideways with a world-vertical lift.')
+
+        # Top up only to the rise the visual check actually needs, not to the
+        # full lift_check_distance_m. The check calls it lifted at
+        # grasp_success_min_lift_m, so asking for 200 mm when 55 mm settles it
+        # appends a long world-vertical segment that the arm may not be able to
+        # follow: a 0.86 Cartesian fraction was seen aborting the whole task
+        # while the probe was already gripped. Any residual is still requested
+        # straight up, but only for what is missing.
+        goal_link = self.contact_pose_to_link_pose(lift_pose)
+        if not waypoints:
+            waypoints.append(goal_link)
+        else:
+            start = self.get_current_link_pose_in_planning_frame()
+            risen = (
+                float(waypoints[-1].position.z - start.position.z)
+                if start is not None else 0.0
+            )
+            needed = min(
+                float(self.lift_check_distance_m),
+                float(self.grasp_success_min_lift_m) + float(self.post_grasp_retrace_extra_rise_m),
+            )
+            if risen < needed:
+                top = Pose()
+                top.position = Point(
+                    x=float(waypoints[-1].position.x),
+                    y=float(waypoints[-1].position.y),
+                    z=float(waypoints[-1].position.z + (needed - risen)),
+                )
+                top.orientation = waypoints[-1].orientation
+                waypoints.append(top)
+                self.get_logger().info(f'Retrace rose {risen*1000:.1f} mm, short of the '
+                    f'{needed*1000:.1f} mm the lift check needs; adding a {(needed-risen)*1000:.1f} mm '
+                    'vertical top-up (the probe is clear of its socket by then).')
+            else:
+                self.get_logger().info(f'Retrace rose {risen*1000:.1f} mm, past the '
+                    f'{needed*1000:.1f} mm the lift check needs; no vertical top-up required.')
+
         self.sequence_stage = 'move_lift_check'
         self._lift_floor_fail_count = 0
         self._lift_check_last_nonlifted_target = None
-        self._send_cartesian_path([self.contact_pose_to_link_pose(lift_pose)])
+        self._send_cartesian_path(waypoints)
 
     def start_lift_verification(self) -> None:
         """After lift motion succeeds, wait briefly for a detection that matches lifted position."""
@@ -9070,6 +9341,27 @@ class VisionGraspNode(Node):
         )
         return True
 
+    def _apply_replan_options(self, goal: MoveGroup.Goal) -> None:
+        """Let MoveGroup replan when the live octomap invalidates a running plan.
+
+        MoveGroup's PlanExecution re-validates the executing trajectory against
+        every planning-scene update, and with ``replan`` false (the default) the
+        first update that invalidates it aborts the motion outright:
+        ``moveit_error_code=-3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE``.
+
+        That is guaranteed to happen here. The depth camera repaints the
+        octomap at sensors_3d.yaml's ``max_update_rate: 5.0`` while the arm is
+        moving, and the wrist camera is staring at the probe it is carrying, so
+        the scene changes several times per second throughout transport. The
+        environment is genuinely dynamic; aborting on the first change is the
+        wrong response, replanning from the new scene is the right one.
+        """
+        if not self.movegroup_replan_enabled:
+            return
+        goal.planning_options.replan = True
+        goal.planning_options.replan_attempts = int(self.movegroup_replan_attempts)
+        goal.planning_options.replan_delay = float(self.movegroup_replan_delay_sec)
+
     def _build_cartesian_path_request(
         self,
         waypoints: List[Pose],
@@ -9180,12 +9472,19 @@ class VisionGraspNode(Node):
                     f'delta=({dx*1000:.1f},{dy*1000:.1f},{dz*1000:.1f})mm '
                     f'collision_check=on orientation_path_constraint={self.cartesian_lock_orientation}.')
         final_waypoint = waypoints[-1] if waypoints else None
+        # Length of the path being asked for, so a partial plan can be confirmed
+        # against how far it actually goes rather than against the full goal.
+        path_len = 0.0
+        start_pose = self.get_current_link_pose_in_planning_frame()
+        if start_pose is not None and waypoints:
+            pts = [np.array([start_pose.position.x, start_pose.position.y, start_pose.position.z])]
+            pts += [np.array([w.position.x, w.position.y, w.position.z]) for w in waypoints]
+            path_len = float(sum(np.linalg.norm(b - a) for a, b in zip(pts[:-1], pts[1:])))
         self._cartesian_plan_in_flight = (expected_stage, expected_seq)
         future = self.cartesian_client.call_async(req)
         future.add_done_callback(
-            lambda fut, st=expected_stage, seq=expected_seq, wp=final_waypoint: self._on_cartesian_path(
-                fut, st, seq, wp
-            )
+            lambda fut, st=expected_stage, seq=expected_seq, wp=final_waypoint, pl=path_len:
+                self._on_cartesian_path(fut, st, seq, wp, pl)
         )
 
     def _on_cartesian_path(
@@ -9194,6 +9493,7 @@ class VisionGraspNode(Node):
         expected_stage: str,
         expected_seq: int,
         final_waypoint: Optional[Pose],
+        path_length_m: float = 0.0,
     ) -> None:
         try:
             resp = future.result()
@@ -9298,12 +9598,27 @@ class VisionGraspNode(Node):
         target_pose.header.frame_id = self.planning_frame
         target_pose.header.stamp = self.get_clock().now().to_msg()
         target_pose.pose = final_waypoint
+        # A partial plan stops short BY DESIGN -- fractions down to
+        # cartesian_fraction_min are accepted and executed. Confirming such a
+        # trajectory against the full goal pose is then guaranteed to fail: a
+        # 0.86 fraction here reported position_error=0.0637m/0.0200m and halted
+        # the task with the probe already gripped. Widen the gate by the
+        # shortfall the plan itself declared, so the check still catches an arm
+        # that did not follow the trajectory it was given.
+        position_tol = self.arm_pose_confirmation_position_tolerance_m
+        shortfall = max(0.0, path_length_m * (1.0 - float(resp.fraction)))
+        if shortfall > 0.0:
+            position_tol += shortfall
+            self.get_logger().info(f'Cartesian plan is {resp.fraction:.2f} of a '
+                f'{path_length_m*1000:.0f} mm path, so it stops about {shortfall*1000:.1f} mm '
+                f'short; confirming against {position_tol*1000:.1f} mm instead of '
+                f'{self.arm_pose_confirmation_position_tolerance_m*1000:.1f} mm.')
         if not self._register_pose_motion_confirmation(
             stage,
             expected_seq,
             target_pose,
             [0.0, 0.0, 0.0],
-            self.arm_pose_confirmation_position_tolerance_m,
+            position_tol,
             final_waypoint.orientation,
             self.arm_pose_confirmation_orientation_tolerance_rad,
         ):
@@ -9439,6 +9754,10 @@ class VisionGraspNode(Node):
         # the planning scene so the next grasp attempt starts clean.
         self._remove_post_grasp_collision_objects()
         self._remove_world_probe_object('grasp sequence reset')
+        # A new attempt gets the octomap back: it was only retired because THIS
+        # grasp was already confirmed.
+        if not self._octomap_collisions_enabled:
+            self._set_octomap_collision_checking(True, 'grasp sequence reset.')
 
         if getattr(self, '_gripper_wait_timer', None) is not None:
             self._gripper_wait_timer.cancel()
@@ -9901,6 +10220,7 @@ class VisionGraspNode(Node):
         goal.planning_options.plan_only = False
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        self._apply_replan_options(goal)
         confirmation_orientation = orientation_constraint if with_orientation else None
         if not self._register_pose_motion_confirmation(
             expected_stage,
@@ -9977,6 +10297,7 @@ class VisionGraspNode(Node):
         goal.planning_options.plan_only = False
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        self._apply_replan_options(goal)
         if not self._register_joint_motion_confirmation(
             expected_stage,
             expected_seq,
@@ -10122,8 +10443,24 @@ class VisionGraspNode(Node):
                 )
                 return
             if expected_stage == 'move_pick_home' and self.place_in_base_box_after_grasp:
+                # action_status alone is just ABORTED(6) and hides WHY. The
+                # MoveItErrorCode separates a genuine planning failure (-1)
+                # from a start state already in collision (-10) or a goal in
+                # collision (-12) -- three completely different fixes.
+                moveit_code = getattr(
+                    getattr(getattr(result_wrap, 'result', None), 'error_code', None),
+                    'val', 'unknown',
+                )
+                hint = {
+                    -1: 'PLANNING_FAILED: OMPL searched and found nothing.',
+                    -10: 'START_STATE_IN_COLLISION: the arm is already in collision before '
+                         'moving -- with the held probe attached, suspect octomap voxels '
+                         'painted onto the probe itself.',
+                    -12: 'GOAL_IN_COLLISION: the transport posture itself is blocked.',
+                }.get(moveit_code if isinstance(moveit_code, int) else None, '')
                 self._hold_closed_after_transport_failure(
-                    f'MoveIt held-probe motion to pick_home failed with status {result_wrap.status}.'
+                    f'MoveIt held-probe motion to pick_home failed with '
+                    f'action_status={result_wrap.status}, moveit_error_code={moveit_code}. {hint}'
                 )
                 return
             if (
