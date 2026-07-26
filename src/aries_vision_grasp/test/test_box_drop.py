@@ -8,6 +8,7 @@ from aries_vision_grasp.box_drop import (
     compute_box_drop_layout,
     compute_probe_insertion,
     derive_automatic_box_settings,
+    probe_tip_from_attached_geometry,
     rotation_aligning_vectors,
 )
 
@@ -154,6 +155,34 @@ def test_rotation_rejects_zero_probe_axis():
         rotation_aligning_vectors([0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
 
 
+@pytest.mark.parametrize(
+    ('fat_sign', 'expected_tip'),
+    (
+        (-1, [0.1, 0.2, 0.4]),
+        (+1, [0.1, 0.2, 0.2]),
+    ),
+)
+def test_attached_probe_tip_is_opposite_the_stl_fat_end(fat_sign, expected_tip):
+    tip = probe_tip_from_attached_geometry(
+        [0.1, 0.2, 0.3], [0.0, 0.0, 4.0], 0.2, fat_sign
+    )
+    assert tip == pytest.approx(expected_tip)
+
+
+@pytest.mark.parametrize(
+    ('centre', 'axis', 'length', 'fat_sign'),
+    (
+        ([0.0, 0.0], [0.0, 0.0, 1.0], 0.2, -1),
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 0.2, -1),
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0, -1),
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.2, 0),
+    ),
+)
+def test_attached_probe_tip_rejects_invalid_geometry(centre, axis, length, fat_sign):
+    with pytest.raises(ValueError):
+        probe_tip_from_attached_geometry(centre, axis, length, fat_sign)
+
+
 def test_probe_needs_tilting_but_does_fit_the_rover_box_diagonally():
     """Why the release is tilted rather than flat: the probe is too long to lie
     along the opening, yet short enough to fit the interior diagonal — so
@@ -201,6 +230,28 @@ def test_insertion_puts_the_leading_end_below_the_rim():
     # Ends are a full probe length apart.
     span = float(np.linalg.norm(insertion.trailing_end - insertion.leading_end))
     assert span == pytest.approx(layout.settings.probe_length_m)
+
+
+@pytest.mark.parametrize('tilt_deg', (30.0, 45.0, 60.0))
+def test_tip_only_depth_leaves_probe_centre_outside_box(tilt_deg):
+    """The fallback inserts the endpoint, never the probe centre/gripper."""
+    layout = rover_layout()
+    insertion = compute_probe_insertion(
+        layout,
+        math.radians(tilt_deg),
+        0.020,
+        axis_sign=+1.0,
+        entry_offset_m=0.035,
+    )
+    local_tip = layout.rotation.T @ (
+        insertion.leading_end - layout.top_center
+    )
+    local_centre = layout.rotation.T @ (
+        insertion.probe_centre - layout.top_center
+    )
+    assert insertion.clears_opening
+    assert local_tip[2] == pytest.approx(-0.020)
+    assert local_centre[2] >= 0.005
 
 
 def test_insertion_axis_signs_lean_opposite_ways():

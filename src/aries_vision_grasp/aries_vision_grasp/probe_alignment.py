@@ -145,6 +145,49 @@ def long_axis_fat_end_sign(
     return 0
 
 
+def orient_long_axis_from_fat_contact(
+    long_axis: np.ndarray,
+    centre: np.ndarray,
+    contact: np.ndarray,
+    stl_fat_end_sign: int,
+    min_axial_separation_m: float = 0.01,
+) -> Tuple[np.ndarray, bool]:
+    """Orient an STL long axis using a known contact on its fat end.
+
+    Vision can recover a probe's long *axis* even when the tapered end is
+    buried or occluded, but PCA cannot recover the direction along that axis.
+    The grasp supplies the missing fact: this gripper closes on the probe's
+    wide body, so the STL fat end must be the end nearest ``contact``.
+
+    ``stl_fat_end_sign`` says whether the STL fat end is at positive or
+    negative long-axis coordinates. The returned axis is normalized and the
+    boolean reports whether it was flipped. When the estimated centre and
+    contact are too close along the axis to decide reliably, the input
+    direction is retained.
+    """
+    axis = np.asarray(long_axis, dtype=np.float64).reshape(3,)
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-12:
+        return axis.copy(), False
+    axis = axis / norm
+
+    sign = int(stl_fat_end_sign)
+    if sign not in (-1, 1):
+        return axis, False
+
+    centre_arr = np.asarray(centre, dtype=np.float64).reshape(3,)
+    contact_arr = np.asarray(contact, dtype=np.float64).reshape(3,)
+    axial_separation = float(np.dot(centre_arr - contact_arr, axis))
+    if abs(axial_separation) < max(0.0, float(min_axial_separation_m)):
+        return axis, False
+
+    # The fat endpoint is centre + sign * half_length * axis. It is nearer the
+    # contact than the opposite endpoint exactly when sign * separation < 0.
+    if float(sign) * axial_separation > 0.0:
+        return -axis, True
+    return axis, False
+
+
 def full_model_centre_along_axis(
     points: np.ndarray,
     centre: np.ndarray,
@@ -269,6 +312,17 @@ def fit_box_to_points(
     q = (pts - c) @ R
     s = closest_points_on_box(q, h)
     resid = np.linalg.norm(q - s, axis=1)
+    if trim_fraction > 0.0 and len(pts) >= 30:
+        cutoff = float(np.percentile(
+            resid, 100.0 * (1.0 - trim_fraction)
+        ))
+    else:
+        cutoff = float('inf')
+    if outlier_residual_m is not None and used_iterations >= 3:
+        cutoff = min(cutoff, float(outlier_residual_m))
+    keep = resid <= max(cutoff, 1e-6)
+    if int(keep.sum()) < 12:
+        return None
     rms = float(np.sqrt(np.mean(resid[keep] ** 2)))
     return BoxFitResult(
         rotation=R,

@@ -11,6 +11,8 @@ from aries_vision_grasp.grasp_verification import (
     cloud_is_probe_like,
     empty_close_gap,
     jaw_region_mask,
+    jaw_volume_near_range,
+    self_filter_blinds_jaw_volume,
 )
 
 # Four-bar contact point in the planning link frame, and the tool approach
@@ -196,3 +198,71 @@ def test_the_logged_failure_reproduces_as_empty():
             scene, CONTACT, AXIS, RADIUS, ALONG_LO, ALONG_HI).sum())
         ev.add(EMPTY if in_volume < 25 else HELD, float(t))
     assert ev.verdict(4.0) == EMPTY
+
+
+# --- self-filter blindness -------------------------------------------------
+#
+# Numbers below are measured off the running sim: the gripper camera sits at
+# (0, 0.045, 0.035) in the planning link looking down the tool axis, so the jaw
+# volume spans 0.155-0.355 m in front of it, and MoveIt's padded self-filter
+# leaves nothing nearer than 0.349 m alive.
+CAM_TO_LINK_Z = 0.035
+CONTACT_IN_SENSOR = np.array([0.0, -0.044, CONTACT[2] - CAM_TO_LINK_Z])
+
+
+def test_jaw_volume_near_range_is_the_near_end_face_for_a_coaxial_camera():
+    near = jaw_volume_near_range(
+        CONTACT_IN_SENSOR, AXIS, RADIUS, ALONG_LO, ALONG_HI)
+    # Camera looks along the axis, so the radius contributes nothing.
+    assert near == pytest.approx(CONTACT[2] - CAM_TO_LINK_Z + ALONG_LO, abs=1e-9)
+
+
+def test_jaw_volume_near_range_subtracts_the_radius_when_viewed_side_on():
+    side_axis = np.array([1.0, 0.0, 0.0])
+    near = jaw_volume_near_range(
+        CONTACT_IN_SENSOR, side_axis, RADIUS, ALONG_LO, ALONG_HI)
+    assert near == pytest.approx(CONTACT_IN_SENSOR[2] - RADIUS, abs=1e-9)
+
+
+def test_padded_self_filter_is_reported_blind_at_jaw_range():
+    """The logged false EMPTY: filter keeps nothing nearer than 0.349 m."""
+    near = jaw_volume_near_range(
+        CONTACT_IN_SENSOR, AXIS, RADIUS, ALONG_LO, ALONG_HI)
+    ranges = np.random.default_rng(3).uniform(0.349, 1.166, 5000)
+    blinded, nearest = self_filter_blinds_jaw_volume(ranges, near, 0.010)
+    assert blinded
+    assert nearest == pytest.approx(0.349, abs=0.01)
+
+
+def test_a_filter_that_keeps_the_near_field_is_trusted():
+    """Reduce the padding until returns survive at jaw range and the cloud
+    becomes usable evidence again -- the gate must re-open by itself."""
+    near = jaw_volume_near_range(
+        CONTACT_IN_SENSOR, AXIS, RADIUS, ALONG_LO, ALONG_HI)
+    ranges = np.concatenate([
+        np.random.default_rng(4).uniform(0.14, 0.30, 500),   # near field kept
+        np.random.default_rng(5).uniform(0.35, 1.0, 4500),
+    ])
+    blinded, nearest = self_filter_blinds_jaw_volume(ranges, near, 0.010)
+    assert not blinded
+    assert nearest < near
+
+
+def test_an_entirely_empty_cloud_is_blind_not_empty():
+    blinded, nearest = self_filter_blinds_jaw_volume(np.empty(0), 0.155, 0.010)
+    assert blinded
+    assert nearest == float('inf')
+
+
+def test_blind_frames_never_reach_an_empty_verdict():
+    """The regression: three blind frames used to pool into EMPTY and abort a
+    good grasp. They must pool into UNKNOWN, which keeps transport waiting."""
+    near = jaw_volume_near_range(
+        CONTACT_IN_SENSOR, AXIS, RADIUS, ALONG_LO, ALONG_HI)
+    ranges = np.random.default_rng(6).uniform(0.349, 1.166, 5000)
+    ev = HeldProbeEvidence(window_sec=8.0, min_votes=3,
+                           min_held_votes=2, empty_fraction=0.75)
+    for t in range(3):
+        blinded, _ = self_filter_blinds_jaw_volume(ranges, near, 0.010)
+        ev.add(UNKNOWN if blinded else EMPTY, float(t))
+    assert ev.verdict(2.0) == UNKNOWN

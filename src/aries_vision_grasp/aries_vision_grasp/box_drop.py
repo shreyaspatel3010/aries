@@ -88,6 +88,37 @@ class ProbeInsertion:
                                  # through a wall
 
 
+def probe_tip_from_attached_geometry(
+    probe_centre_in_link: np.ndarray,
+    stl_long_axis_in_link: np.ndarray,
+    probe_length_m: float,
+    stl_fat_end_sign: int,
+) -> np.ndarray:
+    """Return the tapered endpoint in the planning-link frame.
+
+    ``stl_long_axis_in_link`` is the signed STL +Z axis.  The fat-end sign is
+    measured from the STL profile, so the tapered tip is always on the
+    opposite end.  Keeping this point explicit lets the box fallback constrain
+    the probe tip, rather than constraining the probe centre and inadvertently
+    pulling the gripper into the box.
+    """
+    centre = np.asarray(probe_centre_in_link, dtype=np.float64)
+    axis = np.asarray(stl_long_axis_in_link, dtype=np.float64)
+    length = float(probe_length_m)
+    fat_sign = int(stl_fat_end_sign)
+    axis_norm = float(np.linalg.norm(axis))
+    if centre.shape != (3,) or not np.all(np.isfinite(centre)):
+        raise ValueError('probe centre must be a finite 3D point')
+    if axis.shape != (3,) or not np.all(np.isfinite(axis)) or axis_norm < 1e-12:
+        raise ValueError('STL long axis must be a finite non-zero 3D vector')
+    if not math.isfinite(length) or length <= 0.0:
+        raise ValueError('probe length must be positive and finite')
+    if fat_sign not in (-1, 1):
+        raise ValueError('STL fat-end sign must be -1 or +1')
+    tip_direction = -float(fat_sign) * axis / axis_norm
+    return centre + 0.5 * length * tip_direction
+
+
 def compute_probe_insertion(
     layout: 'BoxDropLayout',
     tilt_rad: float,
@@ -97,10 +128,10 @@ def compute_probe_insertion(
 ) -> ProbeInsertion:
     """Pose the probe leaning into the box with one end below the rim.
 
-    The probe is longer than the box's interior diagonal, so it can never be
-    contained: the only stable placement is one end down inside with the rest
-    leaning out over the rim. This returns that pose rather than the
-    horizontal, centred, above-the-rim pose used for a free drop.
+    The probe is longer than the box's usable horizontal axis, so it cannot be
+    released flat through the opening. This returns a one-end-leading pose
+    that can settle diagonally inside when the interior diagonal is long
+    enough, rather than the horizontal pose used for a free drop.
 
     The leading end sits ``depth_m`` below the top plane, displaced
     ``entry_offset_m`` along the box's long axis so the probe leans across the

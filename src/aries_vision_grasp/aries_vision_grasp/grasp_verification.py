@@ -35,6 +35,44 @@ EMPTY = 'empty'
 UNKNOWN = 'unknown'
 
 
+def backproject_depth(
+    depth: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    stride: int = 1,
+) -> np.ndarray:
+    """Back-project a depth image to ``(N, 3)`` XYZ in the optical frame.
+
+    Used for MoveIt's self-filtered depth image, which is what a
+    DepthImageOctomapUpdater publishes in place of the filtered cloud a
+    PointCloudOctomapUpdater would. Zero, negative and non-finite pixels carry
+    no range and are dropped — for the filtered image that includes every pixel
+    the robot self-filter removed, which is precisely the point: what survives
+    is non-robot.
+
+    ``stride`` subsamples both axes. Pixel coordinates are taken before
+    subsampling, so a strided call returns the same 3D points as a full-rate one
+    would at those pixels rather than a rescaled cloud.
+    """
+    depth = np.asarray(depth, dtype=np.float32)
+    if depth.ndim != 2:
+        raise ValueError(f'expected a 2D depth image, got shape {depth.shape}')
+    if not (fx > 0.0 and fy > 0.0):
+        raise ValueError(f'invalid focal lengths fx={fx}, fy={fy}')
+    step = max(1, int(stride))
+
+    sub = depth[::step, ::step]
+    vs, us = np.nonzero(np.isfinite(sub) & (sub > 0.0))
+    if len(us) == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    z = sub[vs, us].astype(np.float64)
+    u = us.astype(np.float64) * step
+    v = vs.astype(np.float64) * step
+    return np.column_stack(((u - cx) * z / fx, (v - cy) * z / fy, z))
+
+
 def jaw_region_mask(
     points: np.ndarray,
     contact: np.ndarray,
@@ -73,6 +111,74 @@ def jaw_region_mask(
         & (along <= float(along_hi_m))
         & (radial <= float(radius_m))
     )
+
+
+def jaw_volume_near_range(
+    contact_in_sensor: np.ndarray,
+    axis_in_sensor: np.ndarray,
+    radius_m: float,
+    along_lo_m: float,
+    along_hi_m: float,
+) -> float:
+    """Nearest range at which the jaw volume can present a surface.
+
+    ``contact_in_sensor``/``axis_in_sensor`` are the jaw volume's contact point
+    and tool axis expressed in the depth camera's optical frame, where +Z is
+    the viewing direction, so "range" is that Z coordinate.
+
+    Z is linear in position, so its minimum over the (convex) cylinder segment
+    is attained on one of the two end rims: the nearer end centre, offset by
+    the radius projected onto the plane normal to the axis. For a camera
+    looking straight down the tool axis that projection vanishes and the
+    nearest point is the near end face itself.
+    """
+    c = np.asarray(contact_in_sensor, dtype=np.float64).reshape(3,)
+    a = np.asarray(axis_in_sensor, dtype=np.float64).reshape(3,)
+    norm = float(np.linalg.norm(a))
+    if norm < 1e-12:
+        return float(c[2])
+    a = a / norm
+    # |component of the view direction perpendicular to the axis|
+    perp = math.sqrt(max(0.0, 1.0 - float(a[2]) ** 2))
+    ends = (c + a * float(along_lo_m), c + a * float(along_hi_m))
+    return min(float(e[2]) for e in ends) - float(radius_m) * perp
+
+
+def self_filter_blinds_jaw_volume(
+    ranges_m: np.ndarray,
+    volume_near_range_m: float,
+    margin_m: float = 0.01,
+) -> Tuple[bool, float]:
+    """Did the robot self-filter blank the range band the jaw volume occupies?
+
+    MoveIt's mesh_filter does not delete a fixed shell around the robot. Its
+    vertex shader displaces every model vertex along its own normal by
+    ``lambda = c.x*z^2 + c.y*z + c.z`` (the padding coefficients derived from
+    ``padding_scale``/``padding_offset``), and the fragment shader then drops
+    every sensor pixel lying from that inflated surface up to
+    ``shadow_threshold`` behind it. On a gripper-mounted camera the gripper
+    fills the near field, so the surviving cloud simply *starts* some way out —
+    measured at 0.35 m on this robot, while the jaw volume begins at 0.16 m.
+
+    A probe held in the jaws presents its nearest surface at the volume's near
+    end. If nothing whatsoever survived that close, the filter cannot have
+    shown it, and "no points inside the jaw volume" then says nothing about
+    what is held: it is a blind sensor, not an empty gripper. Reporting EMPTY
+    from it aborts good grasps.
+
+    The test is deliberately made against live data rather than hard-coded, so
+    it re-enables itself if the padding is ever reduced enough for the filter
+    to keep returns at jaw range.
+
+    Returns ``(blinded, nearest_surviving_range_m)``; the range is ``inf`` when
+    nothing survived at all.
+    """
+    r = np.asarray(ranges_m, dtype=np.float64).reshape(-1)
+    r = r[np.isfinite(r) & (r > 0.0)]
+    if len(r) == 0:
+        return True, float('inf')
+    nearest = float(r.min())
+    return nearest > float(volume_near_range_m) + float(margin_m), nearest
 
 
 def cloud_is_probe_like(

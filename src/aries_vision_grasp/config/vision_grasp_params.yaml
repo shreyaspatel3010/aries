@@ -125,7 +125,17 @@ vision_grasp_node:
     # the real probe sizes q_close for a gap wider than the probe and the
     # fingers close on nothing. The node logs an error at startup if these
     # disagree with the mesh.
-    adaptive_gripper_enabled: true
+    # false: command the jaws to the hard close limit (gripper_close_width)
+    # regardless of the measured probe width, and let the probe itself stop
+    # them. Sizing the command to the ESTIMATED width leaves the grasp at the
+    # mercy of a few mm of segmentation/depth error, which reads as a loose or
+    # empty close. Note this only makes the intent explicit: with
+    # final_close_full_close: true (pick_place.yaml) the final command already
+    # over-closed to the same limit, so what actually changes here is that the
+    # approach aim point and pre-close angle stop depending on the width
+    # estimate. Contact verification is unaffected — it gates on the fixed
+    # minimum/maximum_probe_width_m below, not on the estimate.
+    adaptive_gripper_enabled: false
     object_width_safety_margin_m: 0.010
     minimum_probe_width_m: 0.030
     nominal_probe_width_m: 0.030
@@ -208,7 +218,30 @@ vision_grasp_node:
     # confirm_samples agreeing frames; deviations beyond the fast thresholds
     # skip the republish rate limit. After a commit the octomap is cleared so
     # voxels painted by the probe at its old pose cannot poison planning.
-    attached_probe_realign_enabled: true
+    # The attached probe mesh is placed from the repeatable coaxial grip (jaws on
+    # the Ø30 cylindrical body, tool axis down the shaft) and then left alone.
+    # Perception-driven placement + live realignment was tried and removed: the
+    # along-axis offset is the direction a cylinder fit resolves worst, so the
+    # mesh started tens of mm off, and fits that had locked onto another
+    # probe-shaped cloud swung it 27-61°, which painted the arm into
+    # START_STATE_IN_COLLISION. The grip does not need perceiving — it is known.
+    # Held-probe VERIFICATION (is anything in the jaws at all) stays on; only the
+    # mesh-moving realignment is disabled.
+    attached_probe_fixed_grip_enabled: true
+    # Pushes the attached mesh this much further down the tool axis, on top of
+    # the grip offset. Measured against Gazebo with the probe actually gripped:
+    # the mesh sat 50.2 mm up the shaft from the real probe, with only 1.9 mm of
+    # lateral and 1.3 deg of axis error -- so the placement was wrong purely
+    # along the axis. The cause is the modelled four-bar contact point, which at
+    # z=0.220 in the link falls 25 mm PAST the probe's butt end (0.245); nothing
+    # gripping the O30 body (z 0.245-0.295) can be there, so the real pinch is
+    # ~0.270. Corrects the collision mesh ONLY: the same contact offset also
+    # aims the grasp, and that aim does land the jaws on the fat body, so moving
+    # it would break a working grasp to fix a collision model. Fixing the
+    # contact point itself is the real repair -- it would also re-centre the
+    # held-probe jaw volume -- and then this drops back to 0.
+    attached_probe_axial_offset_m: 0.050
+    attached_probe_realign_enabled: false
     attached_probe_realign_confidence_threshold: 0.30
     attached_probe_realign_gate_m: 0.10
     attached_probe_realign_min_gate_fraction: 0.35
@@ -222,6 +255,14 @@ vision_grasp_node:
     attached_probe_realign_agreement_angle_deg: 6.0
     attached_probe_realign_fast_position_m: 0.030
     attached_probe_realign_fast_angle_deg: 12.0
+    # Ceilings, not deadbands: reject a fit that claims the clamped probe moved
+    # further than this, because that is a mis-association with another
+    # probe-shaped cloud rather than a slip. Anisotropic on purpose — the jaws
+    # pin the probe across its axis but let it sit anywhere along it, and the
+    # axial offset is the one attach time gets wrong.
+    attached_probe_realign_max_correction_deg: 20.0
+    attached_probe_realign_max_lateral_correction_m: 0.020
+    attached_probe_realign_max_axial_correction_m: 0.100
     attached_probe_realign_min_republish_sec: 0.2
     attached_probe_realign_clear_octomap: true
     attached_probe_realign_octomap_min_interval_sec: 2.0
@@ -257,8 +298,16 @@ vision_grasp_node:
     held_probe_octomap_cloud_topic: /move_group/gripper_camera_filtered_cloud
     # Jaw volume: a cylinder about the tool approach axis through the four-bar
     # contact point, spanning from just behind the jaws to past the fingertips
-    # where a coaxially gripped probe protrudes (and where the self-filter's
-    # 60 mm gripper padding no longer masks it away).
+    # where a coaxially gripped probe protrudes.
+    # NOTE: extending past the fingertips does NOT escape the self-filter. The
+    # padding is not a 60 mm shell in space -- mesh_filter displaces each model
+    # vertex along its normal by a quadratic in depth and then drops everything
+    # from that inflated surface back to shadow_threshold (0.20 m), so on this
+    # gripper-mounted camera NOTHING nearer than ~0.35 m survives while the jaw
+    # volume spans 0.16-0.36 m. Measured on the running sim: 6376 raw pixels
+    # land in the jaw volume and all 6376 are filtered out. The cloud therefore
+    # votes UNKNOWN there, never EMPTY (see self_filter_blinds_jaw_volume); a
+    # HELD vote still comes from the ProbeRealign fit, which reads raw depth.
     held_probe_region_radius_m: 0.055
     held_probe_region_along_min_m: -0.030
     held_probe_region_along_max_m: 0.170
@@ -339,6 +388,18 @@ vision_grasp_node:
     # pick it -- that lean was costing up to a 180 deg wrist spin for an
     # identical grasp. Set false to go back to lean-derived azimuth.
     grasp_azimuth_follow_wrist: true
+    # Score equivalent azimuths using collision-aware IK at both pre-grasp and
+    # final grasp before moving. Joint6 is bounded (not continuous), so direct
+    # numeric travel is used and solutions near ±179° are penalized.
+    grasp_joint_aware_orientation_search_enabled: true
+    grasp_joint_aware_azimuth_candidates: 12
+    grasp_joint_aware_ik_timeout_sec: 0.20
+    grasp_joint_aware_cartesian_timeout_sec: 0.75
+    grasp_wrist_joint_name: joint6
+    grasp_wrist_joint_weight: 6.0
+    grasp_wrist_joint_lower_rad: -3.12414
+    grasp_wrist_joint_upper_rad: 3.12414
+    grasp_wrist_joint_limit_margin_rad: 0.30
 
     vertical_grasp_body_offset_auto: true
     vertical_grasp_body_offset_m: 0.075

@@ -29,7 +29,13 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
@@ -66,7 +72,14 @@ from visualization_msgs.msg import Marker, MarkerArray
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from aries_vision_grasp import box_drop, fourbar, grasp_verification, probe_alignment, stages
+from aries_vision_grasp import (
+    box_drop,
+    fourbar,
+    grasp_verification,
+    probe_alignment,
+    stages,
+    wrist_planning,
+)
 from aries_vision_grasp.image_bridge import NumpyImageBridge
 from aries_vision_grasp.geometry import (
     CameraOffsetEstimate,
@@ -80,7 +93,11 @@ from aries_vision_grasp.geometry import (
     wrap_to_pi,
     wrist_extension_shortfall_m,
 )
-from aries_vision_grasp.inference import YoloWorker, load_yolo_model
+from aries_vision_grasp.inference import (
+    YoloWorker,
+    classify_frame_age,
+    load_yolo_model,
+)
 
 try:
     import ultralytics  # noqa: F401
@@ -145,7 +162,8 @@ class ProbeTrack:
     R_base: np.ndarray               # 3x3; col0 long axis (fat->tip), col2 normal
     dims: np.ndarray                 # probe extents (X, Y, Z long) in metres
     created_sec: float
-    last_update_sec: float
+    last_update_sec: float           # last associated visual observation
+    last_pose_update_sec: float      # last observation that changed the 6D pose
     hit_count: int = 0
     miss_count: int = 0
     confidence: float = 0.0
@@ -199,6 +217,7 @@ class VisionGraspNode(Node):
         # a mismatched pair projects the mask onto the wrong depth pixels.
         self.declare_parameter('max_color_depth_stamp_gap_sec', 0.15)
         self.declare_parameter('sensor_sync_queue_size', 20)
+        self.declare_parameter('inference_result_max_age_sec', 2.0)
 
         # Close-range tracking:
         # YOLO often fails when the probe is very close, partially cropped,
@@ -417,6 +436,29 @@ class VisionGraspNode(Node):
         # inaccurate grasp right after close and follows in-hand slips
         # immediately; the base-box drop facts (world yaw, centre and axis in
         # the link frame) are updated with it.
+        # Place the attached probe mesh from the repeatable grip geometry rather
+        # than from perception. The coaxial grasp always closes on the Ø30 body
+        # with the tool axis down the shaft, so the held pose is a known
+        # consequence of the grip. Perceiving it instead was the wrong trade: the
+        # along-axis offset is what a cylinder fit resolves worst, so the mesh
+        # started tens of mm off, and letting live fits correct it allowed fits
+        # that had locked onto a different probe-shaped cloud to swing the mesh
+        # by 27-61°, which painted the arm into START_STATE_IN_COLLISION.
+        # Normally paired with attached_probe_realign_enabled: false.
+        self.declare_parameter('attached_probe_fixed_grip_enabled', True)
+        # Extra distance along the tool axis, ON TOP of the grip offset, from the
+        # modelled four-bar contact point to the probe centre. It exists because
+        # the modelled contact point is short of where the jaws physically pinch:
+        # measured against Gazebo with the probe gripped, the attached mesh sat
+        # 50.2 mm up the shaft from the real probe (1.9 mm lateral, 1.3° of axis
+        # error, so the placement is wrong ONLY along the axis). The modelled
+        # contact at z=0.220 in the link even falls 25 mm past the probe's butt
+        # end at 0.245, which nothing gripping the Ø30 body (z 0.245-0.295) can
+        # do -- the physical pinch is at ~0.270.
+        # This corrects the MESH ONLY, deliberately. The same contact offset also
+        # aims the grasp, and that aim currently lands the jaws on the fat body,
+        # so moving it would break a working grasp to fix a collision model.
+        self.declare_parameter('attached_probe_axial_offset_m', 0.050)
         self.declare_parameter('attached_probe_realign_enabled', True)
         self.declare_parameter('attached_probe_realign_confidence_threshold', 0.30)
         self.declare_parameter('attached_probe_realign_gate_m', 0.10)
@@ -431,6 +473,25 @@ class VisionGraspNode(Node):
         self.declare_parameter('attached_probe_realign_agreement_angle_deg', 6.0)
         self.declare_parameter('attached_probe_realign_fast_position_m', 0.030)
         self.declare_parameter('attached_probe_realign_fast_angle_deg', 12.0)
+        # Ceilings on how far one correction may move the attached mesh. Every
+        # other threshold here is a floor (how much change is worth acting on)
+        # or a mutual-agreement window; none bounds disagreement with the
+        # ATTACHED pose, so a run of fits locked onto the wrong probe-shaped
+        # cloud committed 27° and 61° axis swings. Chosen above
+        # attached_probe_realign_fast_angle_deg (12°) so a genuine fast slip
+        # still commits, but well under the tens of degrees that only a
+        # mis-association can produce.
+        self.declare_parameter('attached_probe_realign_max_correction_deg', 20.0)
+        # The position ceiling must be anisotropic, because the grip is. Closed
+        # jaws pin the probe LATERALLY (that is what clamping means), so a fit
+        # that moves the centre sideways is describing a different object. Along
+        # its OWN axis the probe is free — it sits whereever it was when the jaws
+        # shut, and that offset is exactly what attach time estimates worst,
+        # since a cylinder sliding along its axis barely changes how it looks.
+        # An isotropic ceiling here would reject the one correction most needed:
+        # a measured attach was 78 mm short along the axis and laterally right.
+        self.declare_parameter('attached_probe_realign_max_lateral_correction_m', 0.020)
+        self.declare_parameter('attached_probe_realign_max_axial_correction_m', 0.100)
         self.declare_parameter('attached_probe_realign_min_republish_sec', 0.2)
         self.declare_parameter('attached_probe_realign_clear_octomap', True)
         self.declare_parameter('attached_probe_realign_octomap_min_interval_sec', 2.0)
@@ -460,6 +521,23 @@ class VisionGraspNode(Node):
         self.declare_parameter('held_probe_verification_enabled', True)
         self.declare_parameter('held_probe_octomap_cloud_topic',
                                '/move_group/gripper_camera_filtered_cloud')
+        # The cloud above only exists under a PointCloudOctomapUpdater. This
+        # stack runs a DepthImageOctomapUpdater (sensors_3d.yaml), which honours
+        # filtered_cloud_topic for nothing and instead republishes the
+        # self-filtered depth IMAGE on a fixed name. Setting the cloud topic
+        # there therefore produced a subscription nobody ever published to, so
+        # held-probe verification never received one sample and its verdict was
+        # permanently UNKNOWN — the empty-close net was silently inoperative.
+        # Back-project this image into the same point cache instead; the cloud
+        # subscription stays for stacks that really do publish one.
+        self.declare_parameter('held_probe_filtered_depth_topic', '/filtered_depth')
+        self.declare_parameter('held_probe_filtered_depth_info_topic',
+                               '/gripper_camera/depth/camera_info')
+        # Back-projecting every pixel of a 640x480 frame at the updater's
+        # max_update_rate is wasted work when the jaw volume covers a small part
+        # of the view; 2 keeps ~77k points, far above
+        # held_probe_cloud_min_total_points.
+        self.declare_parameter('held_probe_filtered_depth_stride', 2)
         self.declare_parameter('held_probe_region_radius_m', 0.055)
         self.declare_parameter('held_probe_region_along_min_m', -0.030)
         self.declare_parameter('held_probe_region_along_max_m', 0.170)
@@ -469,6 +547,11 @@ class VisionGraspNode(Node):
         # Below this the cloud itself is unusable (sensor stalled, everything
         # self-filtered away), so the frame votes UNKNOWN rather than EMPTY.
         self.declare_parameter('held_probe_cloud_min_total_points', 400)
+        # How much nearer than the nearest surviving return the jaw volume must
+        # start before the cloud is declared blind there. Small: the comparison
+        # is between a measured cloud boundary and a computed volume, and both
+        # are good to a few mm.
+        self.declare_parameter('held_probe_cloud_near_field_margin_m', 0.010)
         self.declare_parameter('held_probe_cloud_max_age_sec', 1.5)
         self.declare_parameter('held_probe_evidence_window_sec', 8.0)
         self.declare_parameter('held_probe_evidence_min_votes', 3)
@@ -602,10 +685,11 @@ class VisionGraspNode(Node):
         # deep) before the ladder moves on.
         self.declare_parameter('base_box_ik_prescreen_enabled', True)
         self.declare_parameter('base_box_ik_prescreen_timeout_sec', 0.5)
-        # Upper bound on candidates actually handed to the planner when the IK
-        # screen rejects everything and the ladder falls back to planning. The
-        # full candidate set is cheap to screen but expensive to plan.
-        self.declare_parameter('base_box_max_planned_candidates', 6)
+        # Hard upper bound on candidates handed to the planner in each
+        # insertion strategy. The full candidate set is cheap to IK-screen but
+        # expensive to plan; this cap also covers mixed IK-success/OMPL-failure
+        # runs so they cannot consume tens of full planning timeouts.
+        self.declare_parameter('base_box_max_planned_candidates', 2)
         self.declare_parameter('base_box_planning_time_sec', 10.0)
         self.declare_parameter('base_box_release_wait_sec', 0.0)
         self.declare_parameter('return_pick_home_after_base_box_place', True)
@@ -682,6 +766,9 @@ class VisionGraspNode(Node):
         self.declare_parameter('probe_track_enabled', True)
         self.declare_parameter('probe_track_max_jump_m', 0.08)
         self.declare_parameter('probe_track_max_axis_deg', 25.0)
+        self.declare_parameter('probe_track_axis_min_eigenratio', 6.0)
+        self.declare_parameter('probe_track_raw_validation_max_jump_m', 0.035)
+        self.declare_parameter('probe_track_pose_hold_sec', 3.0)
         # How long a decisive fat-end (taper) resolution stays valid for frames
         # that cannot decide. Without this the centre convention and the axis
         # direction both flip frame to frame on marginal clouds.
@@ -715,6 +802,20 @@ class VisionGraspNode(Node):
         # near where it already is instead of on the probe's (arbitrary) lean
         # direction. Pure symmetry exploitation: the grasp itself is identical.
         self.declare_parameter('grasp_azimuth_follow_wrist', True)
+        # Before moving, evaluate equivalent gripper azimuths with MoveIt IK at
+        # BOTH pre-grasp and final grasp. Choose the branch with the least live
+        # joint motion, heavily weighting bounded joint6 and avoiding its
+        # limits. Tool-quaternion proximity alone cannot distinguish IK
+        # families and was observed to send joint6 the long way around.
+        self.declare_parameter('grasp_joint_aware_orientation_search_enabled', True)
+        self.declare_parameter('grasp_joint_aware_azimuth_candidates', 12)
+        self.declare_parameter('grasp_joint_aware_ik_timeout_sec', 0.20)
+        self.declare_parameter('grasp_joint_aware_cartesian_timeout_sec', 0.75)
+        self.declare_parameter('grasp_wrist_joint_name', 'joint6')
+        self.declare_parameter('grasp_wrist_joint_weight', 6.0)
+        self.declare_parameter('grasp_wrist_joint_lower_rad', -3.12414)
+        self.declare_parameter('grasp_wrist_joint_upper_rad', 3.12414)
+        self.declare_parameter('grasp_wrist_joint_limit_margin_rad', 0.30)
         # A final descent that stops short is only a failure if the jaws miss the
         # probe. The grip aims at the MIDDLE of the wide body, so a shortfall under
         # that body's half-length still closes on the same section, and does it
@@ -757,6 +858,8 @@ class VisionGraspNode(Node):
         self.declare_parameter('target_filter_outlier_distance_m', 0.025)
         self.declare_parameter('target_stability_max_sample_gap_sec', 0.75)
         self.declare_parameter('target_lock_min_confidence', 0.70)
+        self.declare_parameter('target_lock_continue_min_confidence', 0.58)
+        self.declare_parameter('target_stability_min_pose_fit_samples', 3)
 
         # Rover-motion interlock.  The wrist/arm must not move while the rover
         # base is being driven because the camera target and collision geometry
@@ -823,6 +926,22 @@ class VisionGraspNode(Node):
         # no probe in the jaws the gripper simply reaches full close and the
         # lift verification catches the miss.
         self.declare_parameter('final_close_full_close', True)
+        # Keep the full-close setpoint commanded after contact completes the
+        # close. Contact completion cancels the gripper action, and JTC answers
+        # a cancel by holding the MEASURED position — which silently abandons
+        # the deliberate over-close and drops the clamping load to whatever
+        # penetration happens to remain. The probe is then retained by friction
+        # alone and can be lost during transport while the close still reports
+        # success. Re-asserting the target keeps the jaws loaded against it.
+        self.declare_parameter('reassert_close_after_contact', True)
+        # ...but re-asserting the FULL-close target presses without limit. On a
+        # rigid flat-sided object that just holds; on the probe's tapered shaft
+        # it acts as a wedge and walks the jaws shut, squeezing the probe out —
+        # measured creeping from q=-0.0516 at contact to -0.0383 while "holding".
+        # Re-assert a bounded overshoot past the angle contact actually stopped
+        # at instead: enough travel to keep the jaws loaded, not enough to walk
+        # them closed. 0.02 rad is ~3 mm of jaw gap on the four-bar curve.
+        self.declare_parameter('reassert_close_overshoot_rad', 0.02)
         self.declare_parameter('trust_gripper_contact_for_success', True)
         self.declare_parameter('lift_check_floor_fail_samples', 3)
         self.declare_parameter('never_open_after_contact_during_retry', True)
@@ -944,6 +1063,9 @@ class VisionGraspNode(Node):
             0.0, float(p('max_color_depth_stamp_gap_sec').value)
         )
         self.sensor_sync_queue_size = max(2, int(p('sensor_sync_queue_size').value))
+        self.inference_result_max_age_sec = max(
+            0.1, float(p('inference_result_max_age_sec').value)
+        )
 
         self.refine_confidence_threshold = float(p('refine_confidence_threshold').value)
         self.refine_use_projection_fallback = bool(p('refine_use_projection_fallback').value)
@@ -1127,6 +1249,10 @@ class VisionGraspNode(Node):
         self.clear_octomap_service_name = str(p('clear_octomap_service_name').value)
         self.attach_probe_pose_sync_enabled = bool(p('attach_probe_pose_sync_enabled').value)
         self.attach_probe_max_centre_offset_m = max(0.0, float(p('attach_probe_max_centre_offset_m').value))
+        self.attached_probe_fixed_grip_enabled = bool(
+            p('attached_probe_fixed_grip_enabled').value)
+        self.attached_probe_axial_offset_m = float(
+            p('attached_probe_axial_offset_m').value)
         self.attached_probe_realign_enabled = bool(p('attached_probe_realign_enabled').value)
         self.attached_probe_realign_confidence_threshold = float(
             p('attached_probe_realign_confidence_threshold').value)
@@ -1154,6 +1280,20 @@ class VisionGraspNode(Node):
             0.0, float(p('attached_probe_realign_fast_position_m').value))
         self.attached_probe_realign_fast_angle_deg = max(
             0.0, float(p('attached_probe_realign_fast_angle_deg').value))
+        # Never below the fast-slip thresholds: a ceiling under the floor that
+        # decides "act immediately" would reject every correction it let through.
+        self.attached_probe_realign_max_correction_deg = max(
+            self.attached_probe_realign_fast_angle_deg,
+            float(p('attached_probe_realign_max_correction_deg').value))
+        self.attached_probe_realign_max_lateral_correction_m = max(
+            0.0, float(p('attached_probe_realign_max_lateral_correction_m').value))
+        # Never below half the probe: sliding further than that would put the
+        # grip off the end of the mesh, so it is a real bound rather than a
+        # tuning knob.
+        self.attached_probe_realign_max_axial_correction_m = min(
+            max(0.0, float(p('attached_probe_realign_max_axial_correction_m').value)),
+            0.5 * float(self._probe_dims()[2]),
+        )
         self.attached_probe_realign_min_republish_sec = max(
             0.0, float(p('attached_probe_realign_min_republish_sec').value))
         self.attached_probe_realign_clear_octomap = bool(
@@ -1183,6 +1323,14 @@ class VisionGraspNode(Node):
         self.held_probe_cloud_min_total_points = max(
             1, int(p('held_probe_cloud_min_total_points').value))
         self.held_probe_cloud_max_age_sec = max(0.1, float(p('held_probe_cloud_max_age_sec').value))
+        self.held_probe_cloud_near_field_margin_m = max(
+            0.0, float(p('held_probe_cloud_near_field_margin_m').value))
+        self.held_probe_filtered_depth_topic = str(
+            p('held_probe_filtered_depth_topic').value or '')
+        self.held_probe_filtered_depth_info_topic = str(
+            p('held_probe_filtered_depth_info_topic').value or '')
+        self.held_probe_filtered_depth_stride = max(
+            1, int(p('held_probe_filtered_depth_stride').value))
         self.held_probe_abort_transport_on_empty = bool(
             p('held_probe_abort_transport_on_empty').value)
         self.lift_check_require_positive_evidence = bool(
@@ -1322,6 +1470,31 @@ class VisionGraspNode(Node):
             p('vertical_grasp_max_tilt_from_vertical_deg').value
         )
         self.grasp_azimuth_follow_wrist = bool(p('grasp_azimuth_follow_wrist').value)
+        self.grasp_joint_aware_orientation_search_enabled = bool(
+            p('grasp_joint_aware_orientation_search_enabled').value
+        )
+        self.grasp_joint_aware_azimuth_candidates = max(
+            2, int(p('grasp_joint_aware_azimuth_candidates').value)
+        )
+        self.grasp_joint_aware_ik_timeout_sec = max(
+            0.05, float(p('grasp_joint_aware_ik_timeout_sec').value)
+        )
+        self.grasp_joint_aware_cartesian_timeout_sec = max(
+            0.10, float(p('grasp_joint_aware_cartesian_timeout_sec').value)
+        )
+        self.grasp_wrist_joint_name = str(p('grasp_wrist_joint_name').value)
+        self.grasp_wrist_joint_weight = max(
+            1.0, float(p('grasp_wrist_joint_weight').value)
+        )
+        self.grasp_wrist_joint_lower_rad = float(
+            p('grasp_wrist_joint_lower_rad').value
+        )
+        self.grasp_wrist_joint_upper_rad = float(
+            p('grasp_wrist_joint_upper_rad').value
+        )
+        self.grasp_wrist_joint_limit_margin_rad = max(
+            0.0, float(p('grasp_wrist_joint_limit_margin_rad').value)
+        )
         self.final_approach_accept_partial_enabled = bool(
             p('final_approach_accept_partial_enabled').value
         )
@@ -1348,6 +1521,19 @@ class VisionGraspNode(Node):
         self.probe_track_enabled = bool(p('probe_track_enabled').value)
         self.probe_track_max_jump_m = float(p('probe_track_max_jump_m').value)
         self.probe_track_max_axis_deg = float(p('probe_track_max_axis_deg').value)
+        self.probe_track_axis_min_eigenratio = max(
+            self.object_orientation_min_eigenratio,
+            float(p('probe_track_axis_min_eigenratio').value),
+        )
+        self.probe_track_raw_validation_max_jump_m = max(
+            0.001, min(
+                self.probe_track_max_jump_m,
+                float(p('probe_track_raw_validation_max_jump_m').value),
+            )
+        )
+        self.probe_track_pose_hold_sec = max(
+            0.0, float(p('probe_track_pose_hold_sec').value)
+        )
         self.probe_fat_dir_latch_sec = float(p('probe_fat_dir_latch_sec').value)
         self.probe_track_timeout_sec = float(p('probe_track_timeout_sec').value)
         self.probe_track_position_smoothing = float(
@@ -1409,6 +1595,16 @@ class VisionGraspNode(Node):
         self.target_lock_min_confidence = float(np.clip(
             float(p('target_lock_min_confidence').value), 0.0, 1.0
         ))
+        self.target_lock_continue_min_confidence = float(np.clip(
+            float(p('target_lock_continue_min_confidence').value),
+            0.0,
+            self.target_lock_min_confidence,
+        ))
+        self.target_stability_min_pose_fit_samples = int(np.clip(
+            int(p('target_stability_min_pose_fit_samples').value),
+            1,
+            self.target_stability_samples,
+        ))
 
         self.pause_arm_when_rover_moving = bool(p('pause_arm_when_rover_moving').value)
         self.rover_motion_cmd_vel_topic = str(p('rover_motion_cmd_vel_topic').value)
@@ -1447,6 +1643,12 @@ class VisionGraspNode(Node):
             0.0, float(p('gripper_contact_min_closing_travel_rad').value)
         )
         self.final_close_full_close = bool(p('final_close_full_close').value)
+        self.reassert_close_after_contact = bool(
+            p('reassert_close_after_contact').value
+        )
+        self.reassert_close_overshoot_rad = max(
+            0.0, float(p('reassert_close_overshoot_rad').value)
+        )
         self.gripper_contact_gap_tolerance_m = max(
             0.0, float(p('gripper_contact_gap_tolerance_m').value)
         )
@@ -1547,6 +1749,7 @@ class VisionGraspNode(Node):
 
         self.latest_color: Optional[np.ndarray] = None
         self.latest_color_stamp: Optional[rclpy.time.Time] = None
+        self.latest_color_frame: str = ''
         self.latest_depth: Optional[np.ndarray] = None
         self.latest_depth_stamp: Optional[rclpy.time.Time] = None
         self.latest_depth_frame: Optional[str] = None
@@ -1569,6 +1772,7 @@ class VisionGraspNode(Node):
         self._attached_probe_grasp_orientation: Optional[Quaternion] = None
         self._attached_probe_centre_in_link: Optional[np.ndarray] = None
         self._attached_probe_axis_in_link: Optional[np.ndarray] = None
+        self._attached_probe_tip_resolved: bool = False
         # Held-probe re-alignment: full attached box pose, the STL mesh cache
         # (loaded once, republished on every correction), and the recent
         # link-frame measurements awaiting confirmation.
@@ -1618,8 +1822,12 @@ class VisionGraspNode(Node):
         self._base_box_drop_candidate_index: int = -1
         self._base_box_drop_round: int = 0
         self._base_box_drop_position_only_active: bool = False
+        self._base_box_tip_fallback_active: bool = False
         self._base_box_drop_start_collision_retry_index: int = -1
         self._base_box_drop_ik_skipped: int = 0
+        self._base_box_center_plans_attempted: int = 0
+        self._base_box_tip_plans_attempted: int = 0
+        self._base_box_ik_request_token: int = 0
         # Set once the screen has rejected a whole round: from then on the
         # candidates are planned directly instead of screened away.
         self._base_box_ik_screen_exhausted: bool = False
@@ -1631,6 +1839,8 @@ class VisionGraspNode(Node):
         # probe mesh is attached.
         self._grasp_time_object_pose: Optional[PoseStamped] = None
         self._grasp_time_object_R: Optional[np.ndarray] = None
+        self._grasp_time_tip_resolved: bool = False
+        self._grasp_close_link_pose: Optional[Pose] = None
         self.camera_info: Optional[CameraInfo] = None
         self._yolo_worker: Optional[YoloWorker] = None
         self._stamp_gap_warned_sec = 0.0
@@ -1640,6 +1850,10 @@ class VisionGraspNode(Node):
         self.target_history: List[np.ndarray] = []
         self.target_history_stamps: List[float] = []
         self.target_confidence_history: List[float] = []
+        # Parallel to target_history: whether each sample had a fresh 6D pose
+        # fit. Kept in lockstep by _clear_target_stability_history() and the
+        # window trim, and gates the stability verdict.
+        self.target_pose_fit_history: List[bool] = []
         self.filtered_target_point_base: Optional[np.ndarray] = None
         self.filtered_target_confidence: float = 0.0
         self.target_filter_max_residual_m: float = float('inf')
@@ -1653,6 +1867,9 @@ class VisionGraspNode(Node):
         self._retry_grasp_target: Optional[np.ndarray] = None
         self._retry_grasp_orientation_until_sec: float = 0.0
         self.sequence_wrist_value: Optional[float] = None
+        self._grasp_orientation_search: Optional[dict] = None
+        self._grasp_orientation_search_token: int = 0
+        self._grasp_pregrasp_joint_targets: dict = {}
         self.current_joint_positions: dict = {}
         self.current_joint_update_sec: dict = {}
         self._refine_buffer: List[np.ndarray] = []
@@ -1713,8 +1930,16 @@ class VisionGraspNode(Node):
         # True when the latest PCA long axis was pointed at the probe tip from
         # the cloud's own taper rather than left on eigh's arbitrary sign.
         self._object_axis_tip_resolved: bool = False
+        self._last_object_orientation_eigenratio: float = 0.0
         self._probe_fat_dir_cam: Optional[np.ndarray] = None
         self._probe_fat_dir_sec: float = -1e9
+        self._probe_track_association_rejected: bool = False
+        self._probe_track_pose_held: bool = False
+        self._last_detection_uses_held_pose: bool = False
+        self._last_object_shape_fit_ok: bool = False
+        self._last_shape_raw_world: Optional[np.ndarray] = None
+        self._last_shape_rotation_world_camera: Optional[np.ndarray] = None
+        self._camera_calibration_track_id: Optional[int] = None
         self.detected_object_yaw_rad: Optional[float] = None              # yaw in planning_frame
         # Persistent probe identity (see ProbeTrack / _update_probe_track).
         self._probe_track: Optional[ProbeTrack] = None
@@ -1805,6 +2030,32 @@ class VisionGraspNode(Node):
                 f'{self.held_probe_region_along_min_m*1000:+.0f}mm to '
                 f'{self.held_probe_region_along_max_m*1000:+.0f}mm along the tool axis '
                 'through the four-bar contact point.')
+        # Same self-filtered data, as the depth image the DepthImageOctomapUpdater
+        # actually publishes. Feeds the identical point cache, so the jaw-volume
+        # test, staleness gate and verdict pooling are shared with the cloud path.
+        self.filtered_depth_sub = None
+        self.filtered_depth_info_sub = None
+        self._filtered_depth_info: Optional[CameraInfo] = None
+        if self.held_probe_verification_enabled and self.held_probe_filtered_depth_topic:
+            self.filtered_depth_sub = self.create_subscription(
+                Image,
+                self.held_probe_filtered_depth_topic,
+                self._filtered_depth_cb,
+                qos_profile_sensor_data,
+            )
+            self.filtered_depth_info_sub = self.create_subscription(
+                CameraInfo,
+                self.held_probe_filtered_depth_info_topic,
+                self._filtered_depth_info_cb,
+                qos_profile_sensor_data,
+            )
+            self.get_logger().info(
+                'Held-probe verification also reads the self-filtered depth image '
+                f'{self.held_probe_filtered_depth_topic} (intrinsics from '
+                f'{self.held_probe_filtered_depth_info_topic}, stride '
+                f'{self.held_probe_filtered_depth_stride}). Required because a '
+                'DepthImageOctomapUpdater publishes no filtered cloud.'
+            )
         self.rover_motion_sub = None
         if self.pause_arm_when_rover_moving and self.rover_motion_cmd_vel_topic:
             self.rover_motion_sub = self.create_subscription(
@@ -1816,8 +2067,34 @@ class VisionGraspNode(Node):
             self.get_logger().info(f'Rover-motion arm safety enabled: topic={self.rover_motion_cmd_vel_topic}, '
                 f'linear>{self.rover_motion_linear_threshold_mps:.3f} m/s or '
                 f'angular>{self.rover_motion_angular_threshold_radps:.3f} rad/s pauses arm motion.')
-        self.det_vis_pub = self.create_publisher(Image, '/vision_grasp/detection_image', 10)
+        # Offer TRANSIENT_LOCAL so RViz/rqt subscribers that request a latched
+        # image are compatible, while VOLATILE live viewers remain compatible
+        # too. Keeping one frame also makes the panel populate immediately
+        # instead of waiting for the next YOLO cycle.
+        detection_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.det_vis_pub = self.create_publisher(
+            Image,
+            '/vision_grasp/detection_image',
+            detection_image_qos,
+        )
         self.gripper_pub = self.create_publisher(Float64, p('gripper_topic').value, 10)
+        # JTC's topic interface, used only to re-assert the close setpoint after
+        # contact completes the close. It has no goal lifecycle, so the standing
+        # command cannot later abort on a goal-tolerance violation the way a
+        # re-sent action goal would. Derived from the action name so both follow
+        # the same controller.
+        self._gripper_traj_pub = self.create_publisher(
+            JointTrajectory,
+            self.gripper_action_name.replace(
+                '/follow_joint_trajectory', '/joint_trajectory'
+            ),
+            10,
+        )
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
         self.object_pose_pub = self.create_publisher(PoseStamped, self.object_pose_topic, 10)
         self.object_track_id_pub = self.create_publisher(Int32, self.object_track_id_topic, 10)
@@ -1869,6 +2146,7 @@ class VisionGraspNode(Node):
         try:
             self.latest_color = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
             self.latest_color_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+            self.latest_color_frame = str(msg.header.frame_id)
             self._color_frame_queue.append((self.latest_color_stamp, self.latest_color))
         except Exception as exc:
             self.get_logger().error(f'Color conversion failed: {exc}')
@@ -1939,12 +2217,19 @@ class VisionGraspNode(Node):
         self.sequence_id += 1
         self._cancel_pending_timers()
         self._cancel_final_grasp_pose_check_timer()
+        self._grasp_orientation_search = None
+        self._grasp_orientation_search_token += 1
+        self._grasp_pregrasp_joint_targets = {}
         self._base_box_drop_candidates = []
         self._base_box_drop_candidate_index = -1
         self._base_box_drop_round = 0
         self._base_box_drop_position_only_active = False
+        self._base_box_tip_fallback_active = False
         self._base_box_drop_start_collision_retry_index = -1
         self._base_box_drop_ik_skipped = 0
+        self._base_box_center_plans_attempted = 0
+        self._base_box_tip_plans_attempted = 0
+        self._base_box_ik_request_token += 1
         self._base_box_ik_screen_exhausted = False
         self._base_box_ik_reject_codes = {}
         self._active_base_box_drop_pose = None
@@ -2298,6 +2583,7 @@ class VisionGraspNode(Node):
         self.last_gripper_actual = float(current)
         self.last_gripper_target = float(target)
         self._cancel_active_gripper_goal()
+        self._reassert_close_setpoint(float(target), float(current))
         self.get_logger().warning(
             f'Final close {"confirmed" if contact_trusted else "completed WITHOUT contact trust"} '
             f'by {evidence}: '
@@ -2307,6 +2593,46 @@ class VisionGraspNode(Node):
         )
         if cb is not None:
             cb()
+
+    def _reassert_close_setpoint(self, target: float, contact_q: float) -> None:
+        """Re-command a bounded close setpoint so the jaws stay loaded.
+
+        Cancelling the gripper action leaves JTC holding the measured contact
+        position, so the over-close the grasp relies on is released the moment
+        contact is confirmed. Publishing on the controller's topic interface
+        restores a standing closing setpoint instead.
+
+        The setpoint is ``contact_q`` plus a bounded overshoot, NOT the full
+        close: commanding full close presses without limit, which on the probe's
+        tapered shaft wedges the jaws progressively shut and ejects it. Bounded
+        overshoot keeps preload against a rigid stop while capping how far the
+        jaws can travel if the grip is not in fact rigid. Fire-and-forget on
+        purpose — no wait timer and no callback, so this cannot disturb the state
+        machine, and the release open command later supersedes it.
+        """
+        if not self.reassert_close_after_contact:
+            return
+        # Closing is +q, so the bounded setpoint is the tighter of "a little
+        # past contact" and the commanded target; it never opens the jaws.
+        bounded = min(float(target), float(contact_q) + self.reassert_close_overshoot_rad)
+        if bounded <= float(contact_q):
+            return
+        target = bounded
+        traj = JointTrajectory()
+        traj.joint_names = [self.gripper_joint_name]
+        point = JointTrajectoryPoint()
+        point.positions = [float(target)]
+        point.velocities = [0.0]
+        point.time_from_start = Duration(sec=0, nanosec=200_000_000)
+        traj.points = [point]
+        self._gripper_traj_pub.publish(traj)
+        self.get_logger().info(
+            f'Re-asserted a bounded close setpoint at q={target:.5f} '
+            f'(contact stopped at {contact_q:.5f}, overshoot capped at '
+            f'{self.reassert_close_overshoot_rad:.3f} rad) so the jaws stay '
+            'loaded without walking shut; cancelling the action alone would '
+            'have left the controller holding the measured contact position.'
+        )
 
     def command_gripper_and_then(
         self,
@@ -2650,7 +2976,14 @@ class VisionGraspNode(Node):
 
     def publish_debug_image(self, img: np.ndarray) -> None:
         try:
-            self.det_vis_pub.publish(self.bridge.cv2_to_imgmsg(img, encoding='bgr8'))
+            msg = self.bridge.cv2_to_imgmsg(img, encoding='bgr8')
+            # RViz DepthCloud uses approximate-time synchronization between the
+            # depth and color images. Preserve the camera timestamp/frame rather
+            # than publishing the YOLO image with the default zero header.
+            if self.latest_color_stamp is not None:
+                msg.header.stamp = self.latest_color_stamp.to_msg()
+            msg.header.frame_id = self.latest_color_frame
+            self.det_vis_pub.publish(msg)
         except Exception as exc:
             self.get_logger().warning(f'Failed to publish detection image: {exc}')
 
@@ -2914,6 +3247,7 @@ class VisionGraspNode(Node):
           - the object appears too round (eigenvalue ratio < object_orientation_min_eigenratio)
             meaning orientation cannot be reliably determined from shape alone
         """
+        self._last_object_orientation_eigenratio = 0.0
         pts_all = self._mask_cloud_camera(mask_bool, depth_image)
         if pts_all is None:
             return None
@@ -2940,6 +3274,7 @@ class VisionGraspNode(Node):
         if eigenvalues[1] < 1e-9:
             return None
         ratio = float(eigenvalues[0] / eigenvalues[1])
+        self._last_object_orientation_eigenratio = ratio
         if ratio < self.object_orientation_min_eigenratio:
             self.get_logger().info(f'Object orientation skipped: eigenratio={ratio:.1f} '
                 f'< min={self.object_orientation_min_eigenratio:.1f} '
@@ -2970,7 +3305,7 @@ class VisionGraspNode(Node):
             pts, centroid, R[:, 0],
             min_reach_m=0.40 * (0.5 * float(self._probe_dims()[2])),
         )
-        if fat_sign == 0 and self._probe_fat_dir_cam is not None and (
+        if fat_sign == 0 and not self.busy and self._probe_fat_dir_cam is not None and (
             self._now_sec() - self._probe_fat_dir_sec <= self.probe_fat_dir_latch_sec
         ):
             # Same latch as the box-fit anchoring: an undecided frame must not
@@ -2989,6 +3324,7 @@ class VisionGraspNode(Node):
             f'long_axis_cam=[{R[0,0]:.2f},{R[1,0]:.2f},{R[2,0]:.2f}]  '
             f'tip_resolved={self._object_axis_tip_resolved}  '
             f'shape_fit={"on" if shape_fit_ok else "off"}', throttle_duration_sec=1.0)
+        self._last_object_shape_fit_ok = bool(shape_fit_ok)
         return centroid, R
 
     def _mask_cloud_camera(
@@ -3123,15 +3459,18 @@ class VisionGraspNode(Node):
         axis_ft = None
         if fat_sign != 0:
             axis_ft = -long_fit if fat_sign > 0 else long_fit   # oriented fat->tip
-            self._probe_fat_dir_cam = axis_ft.copy()
-            self._probe_fat_dir_sec = self._now_sec()
+            if not self.busy:
+                self._probe_fat_dir_cam = axis_ft.copy()
+                self._probe_fat_dir_sec = self._now_sec()
         elif (
+            not self.busy
+            and
             self._probe_fat_dir_cam is not None
             and self._now_sec() - self._probe_fat_dir_sec <= self.probe_fat_dir_latch_sec
         ):
-            # Camera-frame latch is safe here: consecutive detections are ~0.3 s
-            # apart while the arm holds still during acquisition, and perception
-            # is frozen outright once the target locks.
+            # A camera-frame latch is valid only during idle acquisition.
+            # Once a sequence is busy the wrist may move between frames, so a
+            # remembered camera-frame vector must never orient a later cloud.
             axis_ft = (
                 long_fit
                 if float(np.dot(long_fit, self._probe_fat_dir_cam)) > 0.0
@@ -3154,12 +3493,14 @@ class VisionGraspNode(Node):
                 centre_fit = anchored
         return centre_fit, R_cam, True
 
-    def _clear_detected_object_pose(self) -> None:
+    def _clear_detected_object_pose(self, clear_fat_dir: bool = False) -> None:
         self.detected_object_pose = None
         self._last_detected_object_rotation_base = None
         self._object_axis_tip_resolved = False
-        self._probe_fat_dir_cam = None
-        self._probe_fat_dir_sec = -1e9
+        self._last_object_shape_fit_ok = False
+        if clear_fat_dir:
+            self._probe_fat_dir_cam = None
+            self._probe_fat_dir_sec = -1e9
 
     def _compute_object_pose_in_planning_frame(
         self,
@@ -3172,33 +3513,29 @@ class VisionGraspNode(Node):
         if depth_frame is None:
             return None
 
-        centroid_base = self.transform_point(
-            np.array(centroid_cam, dtype=np.float64),
-            depth_frame,
-            self.planning_frame,
-            stamp=stamp,
+        tfm = self._lookup_transform(
+            depth_frame, self.planning_frame, stamp
         )
-        if centroid_base is None:
+        if tfm is None:
             return None
-
-        try:
-            tfm = self.tf_buffer.lookup_transform(
-                self.planning_frame,
-                depth_frame,
-                stamp if stamp is not None else rclpy.time.Time(),
-            )
-        except TransformException:
-            try:
-                tfm = self.tf_buffer.lookup_transform(
-                    self.planning_frame,
-                    depth_frame,
-                    rclpy.time.Time(),
-                )
-            except TransformException as exc:
-                self.get_logger().warning(f'TF lookup for object pose failed: {exc}')
-                return None
-
         R_tf = quat_to_matrix(tfm.transform.rotation)
+        translation = np.array([
+            float(tfm.transform.translation.x),
+            float(tfm.transform.translation.y),
+            float(tfm.transform.translation.z),
+        ], dtype=np.float64)
+        # Apply the same calibrated camera-axis correction used by the raw
+        # mask target. Previously the shape-aware pose silently bypassed this
+        # offset and then replaced the calibrated target downstream.
+        raw_centroid_base = (
+            R_tf @ np.asarray(centroid_cam, dtype=np.float64).reshape(3,)
+            + translation
+        )
+        self._last_shape_raw_world = raw_centroid_base.copy()
+        self._last_shape_rotation_world_camera = R_tf.copy()
+        centroid_base = (
+            raw_centroid_base + R_tf @ self.grasp_target_offset_in_camera
+        )
         long_axis = normalize(R_tf @ R_obj_cam[:, 0].reshape(3,))
         normal_axis = normalize(R_tf @ R_obj_cam[:, 2].reshape(3,))
 
@@ -3235,6 +3572,7 @@ class VisionGraspNode(Node):
         self,
         centroid_cam: np.ndarray,
         R_obj_cam: np.ndarray,
+        confidence: Optional[float] = None,
         depth_frame: Optional[str] = None,
         stamp: Optional[rclpy.time.Time] = None,
     ) -> None:
@@ -3253,8 +3591,17 @@ class VisionGraspNode(Node):
         # it stays locked on one physical probe for the whole process instead of
         # hopping between per-frame detections.
         if self.probe_track_enabled:
+            self._probe_track_pose_held = False
             track = self._update_probe_track(
-                centre_base, R_obj_base, self.last_detection_conf, self._now_sec()
+                centre_base,
+                R_obj_base,
+                self.last_detection_conf if confidence is None else confidence,
+                self._now_sec(),
+                pose_reliable=self._last_object_shape_fit_ok,
+                axis_reliable=(
+                    self._last_object_orientation_eigenratio
+                    >= self.probe_track_axis_min_eigenratio
+                ),
             )
             if track is None:
                 self._clear_detected_object_pose()
@@ -3265,6 +3612,29 @@ class VisionGraspNode(Node):
 
         self.detected_object_pose = pose_msg
         self._last_detected_object_rotation_base = R_obj_base
+
+        # Auto-calibration must observe one rigid geometric point. Raw
+        # mask/bbox centres slide with occlusion and viewpoint; an accepted
+        # full-model shape centre does not. Reset the regression window when
+        # track identity changes so two physical probes are never mixed.
+        if (
+            self._last_object_shape_fit_ok
+            and self._last_shape_raw_world is not None
+            and self._last_shape_rotation_world_camera is not None
+        ):
+            track_id = (
+                int(self._probe_track.track_id)
+                if self._probe_track is not None else None
+            )
+            if track_id != self._camera_calibration_track_id:
+                self._camera_calibration_raw_world.clear()
+                self._camera_calibration_rotations.clear()
+                self._pending_camera_offset_estimate = None
+                self._camera_calibration_track_id = track_id
+            self._record_camera_offset_calibration_sample(
+                self._last_shape_raw_world,
+                self._last_shape_rotation_world_camera,
+            )
 
         if self.publish_object_pose_enabled:
             self.object_pose_pub.publish(pose_msg)
@@ -3287,6 +3657,8 @@ class VisionGraspNode(Node):
         R_obj_base: np.ndarray,
         conf: float,
         now_sec: float,
+        pose_reliable: bool = True,
+        axis_reliable: bool = True,
     ) -> Optional['ProbeTrack']:
         """Associate a fresh shape-fit pose with the persistent probe track.
 
@@ -3315,6 +3687,7 @@ class VisionGraspNode(Node):
                 dims=self._probe_dims().copy(),
                 created_sec=now_sec,
                 last_update_sec=now_sec,
+                last_pose_update_sec=now_sec,
                 hit_count=1,
                 miss_count=0,
                 confidence=float(conf),
@@ -3328,13 +3701,28 @@ class VisionGraspNode(Node):
 
         jump = float(np.linalg.norm(centre_base - track.centre_base))
         axis_deg = probe_alignment.axis_angle_deg(long_new, track.long_axis())
-        if jump > self.probe_track_max_jump_m or axis_deg > self.probe_track_max_axis_deg:
+        axis_mismatch = axis_reliable and axis_deg > self.probe_track_max_axis_deg
+        if jump > self.probe_track_max_jump_m or axis_mismatch:
             track.miss_count += 1
+            self._probe_track_association_rejected = True
             self.get_logger().warning(
                 f'Probe track#{track.track_id} rejected a non-matching fit '
-                f'(jump={jump*1000:.0f}mm > {self.probe_track_max_jump_m*1000:.0f} or '
-                f'axis={axis_deg:.0f}° > {self.probe_track_max_axis_deg:.0f}); '
+                f'(jump={jump*1000:.0f}mm/{self.probe_track_max_jump_m*1000:.0f} max, '
+                f'axis={axis_deg:.0f}°/{self.probe_track_max_axis_deg:.0f} max'
+                f'{"; axis trusted" if axis_reliable else "; axis marginal/ignored"}); '
                 f'holding the locked pose.', throttle_duration_sec=1.0)
+            return None
+
+        # A marginal PCA frame still proves that the same probe is visible, but
+        # its raw visible centroid and arbitrary long axis must not pull a good
+        # full-model fit around. Refresh identity while holding the last reliable
+        # 6D pose; a later reliable shape fit will resume the EMA.
+        if not pose_reliable:
+            track.last_update_sec = now_sec
+            track.hit_count += 1
+            track.miss_count = 0
+            track.confidence = float(conf)
+            self._probe_track_pose_held = True
             return track
 
         # Match: EMA-blend centre and axis, keep the id. Flip the incoming long
@@ -3349,6 +3737,7 @@ class VisionGraspNode(Node):
         track.centre_base = (1.0 - a_p) * track.centre_base + a_p * centre_base
         track.R_base = self._blend_rotation(track.R_base, R_obj_base, a_a)
         track.last_update_sec = now_sec
+        track.last_pose_update_sec = now_sec
         track.hit_count += 1
         track.miss_count = 0
         track.confidence = float(conf)
@@ -3634,6 +4023,14 @@ class VisionGraspNode(Node):
             try:
                 tfm = self.tf_buffer.lookup_transform(target_frame, source_frame, stamp)
             except TransformException:
+                if self._arm_motion_in_flight():
+                    self.get_logger().warning(
+                        f'TF at image stamp unavailable for {source_frame} -> '
+                        f'{target_frame} while the arm is moving; dropping this '
+                        f'detection instead of projecting it with the latest TF.',
+                        throttle_duration_sec=2.0,
+                    )
+                    return None
                 self.get_logger().warning(
                     f'TF at image stamp unavailable for {source_frame} -> {target_frame}; '
                     'using latest transform for this detection.',
@@ -3665,7 +4062,6 @@ class VisionGraspNode(Node):
         ], dtype=np.float64)
         point_camera = np.array(point_camera, dtype=np.float64).reshape(3,)
         raw_world = rotation @ point_camera + translation
-        self._record_camera_offset_calibration_sample(raw_world, rotation)
         return raw_world + rotation @ self.grasp_target_offset_in_camera
 
     def _record_camera_offset_calibration_sample(
@@ -4057,10 +4453,15 @@ class VisionGraspNode(Node):
         # orientation AT GRASP TIME.  If we used the current TF (at pick_home),
         # the link would have a completely different orientation and R_stl_in_link
         # would be wrong — producing the "mirrored" STL seen in RViz.
-        actual_link_pose = (
-            self.get_current_link_pose_in_planning_frame()
-            if self.attach_probe_pose_sync_enabled else None
-        )
+        actual_link_pose = None
+        if self.attach_probe_pose_sync_enabled:
+            actual_link_pose = self._grasp_close_link_pose
+            if actual_link_pose is None:
+                actual_link_pose = self.get_current_link_pose_in_planning_frame()
+                self.get_logger().warning(
+                    '[CollisionWorld] Grasp-close link snapshot is unavailable; '
+                    'falling back to the current TF for attachment geometry.'
+                )
         link_orientation: Optional[Quaternion] = None
         if actual_link_pose is not None:
             # The arm is stationary at the grasp pose, so the measured TF is
@@ -4096,6 +4497,56 @@ class VisionGraspNode(Node):
             contact_in_link = np.array([float(eff[0]), float(eff[1]), float(eff[2])])
         else:
             contact_in_link = np.array([0.0, contact_y, contact_z])
+
+        # A partly buried probe often exposes too little of its tapered end for
+        # the mask-width test to resolve the PCA sign. That sign is otherwise
+        # arbitrary, and treating it as STL +Z reverses the asymmetric mesh
+        # end-for-end in RViz. The grasp itself supplies a stronger physical
+        # constraint: this node deliberately closes on the probe's wide body,
+        # so the STL fat end must be the end nearest the four-bar contact.
+        #
+        # Apply this even when the earlier taper test claimed a direction: at
+        # close time the measured contact is direct task geometry, while the
+        # taper estimate can be contaminated by the socket, fingers or a
+        # point-blank partial mask. Abstain when centre/contact separation along
+        # the shaft is too small to distinguish the ends.
+        contact_resolved_tip_direction = False
+        if (
+            long_world is not None
+            and actual_link_pose is not None
+            and mask_pose is not None
+        ):
+            link_pos = np.array([
+                float(actual_link_pose.position.x),
+                float(actual_link_pose.position.y),
+                float(actual_link_pose.position.z),
+            ])
+            contact_world = link_pos + R_link_in_world @ contact_in_link
+            centre_est_world = np.array([
+                float(mask_pose.pose.position.x),
+                float(mask_pose.pose.position.y),
+                float(mask_pose.pose.position.z),
+            ])
+            min_end_separation = min(0.01, 0.10 * float(self._probe_dims()[2]))
+            contact_resolved_tip_direction = bool(
+                abs(float(np.dot(centre_est_world - contact_world, long_world)))
+                >= min_end_separation
+            )
+            long_world, end_flipped = probe_alignment.orient_long_axis_from_fat_contact(
+                long_world,
+                centre_est_world,
+                contact_world,
+                self._probe_stl_end_sign_or_default(),
+                min_axial_separation_m=min_end_separation,
+            )
+            if end_flipped:
+                self.get_logger().warning(
+                    '[CollisionWorld] Reversed the detected probe axis at attach time: '
+                    'the STL fat end must be nearest the four-bar grasp contact. '
+                    'This corrects the 180° end-for-end mesh ambiguity.'
+                )
+            probe_yaw = math.atan2(float(long_world[1]), float(long_world[0]))
+            axis_world = long_world
 
         # ── Probe centre: where along the probe was it actually grasped? ────────
         # The four-bar close physically snaps the probe to the bucket contact
@@ -4175,6 +4626,39 @@ class VisionGraspNode(Node):
         # ── R_stl_in_link = R_world_in_link @ R_stl_in_world ──────────────────
         R_stl_in_link = R_world_in_link @ R_stl_in_world
 
+        # Fixed-grip attach: the grasp is repeatable, so take the held pose from
+        # that geometry instead of from perception. Everything above still runs
+        # because its logging is how a mis-detection stays visible, but the
+        # published pose comes from the grip, not the mask.
+        if self.attached_probe_fixed_grip_enabled:
+            R_fixed, centre_fixed = self._fixed_held_probe_pose_in_link(contact_in_link)
+            axial_delta_m = float(np.dot(
+                centre_fixed - probe_centre_in_link, normalize(R_fixed[:, 2])
+            ))
+            self.get_logger().info(
+                '[CollisionWorld] Fixed-grip attach: placing the probe from the '
+                f'repeatable coaxial grip ({self._attached_probe_centre_offset_m()*1000:.0f} mm '
+                f'from its centre to the modelled jaw contact = '
+                f'{self._fat_body_grip_offset_m()*1000:.0f} mm grip offset + '
+                f'{self.attached_probe_axial_offset_m*1000:.0f} mm axial correction, '
+                'down the tool axis, fat body in '
+                f'the jaws) instead of the mask fit. Centre '
+                f'[{centre_fixed[0]:.3f}, {centre_fixed[1]:.3f}, {centre_fixed[2]:.3f}] '
+                f'vs mask-derived '
+                f'[{probe_centre_in_link[0]:.3f}, {probe_centre_in_link[1]:.3f}, '
+                f'{probe_centre_in_link[2]:.3f}] '
+                f'({axial_delta_m*1000:+.0f} mm along the shaft).'
+            )
+            R_stl_in_link = R_fixed
+            probe_centre_in_link = centre_fixed
+            # Keep the recorded world yaw consistent with the pose published, or
+            # the base-box drop orients the probe from a different fact than the
+            # collision mesh describes.
+            axis_world_fixed = R_link_in_world @ normalize(R_fixed[:, 2])
+            probe_yaw = math.atan2(
+                float(axis_world_fixed[1]), float(axis_world_fixed[0])
+            )
+
         shape_info = self._publish_probe_attachment(R_stl_in_link, probe_centre_in_link)
         # Rigid-body facts recorded at attach time, used by the base-box drop
         # to orient the held probe: its world yaw at grasp, the link
@@ -4192,6 +4676,15 @@ class VisionGraspNode(Node):
             if link_orientation is not None else None
         )
         self._attached_probe_axis_in_link = normalize(R_world_in_link @ axis_world)
+        self._attached_probe_tip_resolved = bool(
+            self._grasp_time_tip_resolved or contact_resolved_tip_direction
+        )
+        if not self._attached_probe_tip_resolved:
+            self.get_logger().warning(
+                '[CollisionWorld] Attached probe end direction remains ambiguous; '
+                'tip-leading base-box insertion will stay disabled until live '
+                'width-profile evidence resolves the tapered end.'
+            )
         self._reset_probe_realign_state()
         self.get_logger().info(
             f'[CollisionWorld] Attached probe: {shape_info}, '
@@ -4499,6 +4992,7 @@ class VisionGraspNode(Node):
             measured_sign = 1
         else:
             return None
+        self._attached_probe_tip_resolved = True
         if measured_sign == stl_sign:
             return R_fit
         flipped = R_fit.copy()
@@ -4555,6 +5049,7 @@ class VisionGraspNode(Node):
             self._attached_probe_centre_in_link = None
             self._attached_probe_axis_in_link = None
             self._attached_probe_R_stl_in_link = None
+            self._attached_probe_tip_resolved = False
             self._probe_realign_measurements.clear()
             self._probe_reacquire_measurements.clear()
             removed.append('probe')
@@ -4870,8 +5365,30 @@ class VisionGraspNode(Node):
             and self.holding_object
             and self._attached_probe_R_stl_in_link is not None
             and self._attached_probe_centre_in_link is not None
-            and self.sequence_stage != stages.RELEASE_IN_BASE_BOX
+            and self.sequence_stage not in (
+                stages.RELEASE_IN_BASE_BOX,
+                'move_base_box_drop',
+            )
             and not self._arm_motion_in_flight()
+        )
+
+    def _held_probe_monitor_should_run(self) -> bool:
+        """True when the grip should be watched without touching the mesh.
+
+        Same scope as ``_attached_probe_realign_should_run`` minus the
+        realignment switch, and minus the in-flight-motion guard: that guard
+        exists because a realign COMMIT republishes the collision object and
+        wipes the octomap under a live plan. Sampling evidence does neither, so
+        it is safe while the arm moves — which is exactly when a probe slips.
+        """
+        return (
+            self.held_probe_verification_enabled
+            and self._post_grasp_probe_attached
+            and self.holding_object
+            and self.sequence_stage not in (
+                stages.RELEASE_IN_BASE_BOX,
+                'move_base_box_drop',
+            )
         )
 
     def _arm_motion_in_flight(self) -> bool:
@@ -4883,7 +5400,9 @@ class VisionGraspNode(Node):
         """
         if getattr(self, '_active_move_goal_handle', None) is not None:
             return True
-        return getattr(self, '_cartesian_plan_in_flight', None) is not None
+        if getattr(self, '_cartesian_plan_in_flight', None) is not None:
+            return True
+        return getattr(self, '_pending_arm_motion_confirmation', None) is not None
 
     def _mask_points_in_link(
         self,
@@ -5328,11 +5847,6 @@ class VisionGraspNode(Node):
 
         self._probe_reacquire_measurements.clear()
         R_meas, c_meas = measurement
-        self._sample_held_probe_evidence(fit_centre_in_link=c_meas)
-        if self._check_held_probe_during_transport():
-            return  # the attached mesh has just been removed; do not republish it
-        self._probe_realign_last_measurement_sec = now_sec
-        self._probe_realign_measurements.append((now_sec, R_meas, c_meas))
 
         R_att = self._attached_probe_R_stl_in_link
         c_att = self._attached_probe_centre_in_link
@@ -5342,6 +5856,50 @@ class VisionGraspNode(Node):
         # (axis_angle_deg reads ~0°): detect it from the signed dot product so
         # the deadband cannot swallow a tip-direction correction.
         end_flip = float(np.dot(R_meas[:, 2], R_att[:, 2])) < 0.0
+
+        # Plausibility ceiling. Everything below only checks that consecutive
+        # fits agree with EACH OTHER, which two fits of the same WRONG object
+        # satisfy perfectly — and the fit accepts any probe-shaped cloud within
+        # reach of the link, including a probe lying on the floor. The physical
+        # invariant nothing else encodes: a probe clamped in closed jaws cannot
+        # swing its axis by tens of degrees. Commits of 27° and 61° were slamming
+        # the attached mesh around and painting the arm into
+        # START_STATE_IN_COLLISION. Past the ceiling this is a mis-association,
+        # not a slip, so it must not count as a held-probe vote either, and the
+        # measurement timestamp must keep ageing so the stale/re-acquire path
+        # takes over instead of a wrong pose being committed. An end flip is
+        # exempt: it reads ~0° here and is a genuine correction.
+        # Split the centre correction along/across the attached probe axis: the
+        # jaws pin the lateral component, the axial one is free to slide.
+        axis_att = normalize(R_att[:, 2])
+        delta_centre = c_meas - c_att
+        d_axial_m = abs(float(np.dot(delta_centre, axis_att)))
+        d_lateral_m = float(np.linalg.norm(delta_centre - axis_att * np.dot(delta_centre, axis_att)))
+        if not end_flip and (
+            d_axis_deg > self.attached_probe_realign_max_correction_deg
+            or d_lateral_m > self.attached_probe_realign_max_lateral_correction_m
+            or d_axial_m > self.attached_probe_realign_max_axial_correction_m
+        ):
+            self.get_logger().warning(
+                f'[ProbeRealign] Rejected an implausible fit: it implies the held '
+                f'probe rotated {d_axis_deg:.1f} deg and moved {d_lateral_m*1000:.0f} mm '
+                f'across / {d_axial_m*1000:.0f} mm along its own axis (ceilings '
+                f'{self.attached_probe_realign_max_correction_deg:.0f} deg, '
+                f'{self.attached_probe_realign_max_lateral_correction_m*1000:.0f} mm '
+                f'across, {self.attached_probe_realign_max_axial_correction_m*1000:.0f} mm '
+                'along). Closed jaws cannot rotate or sideways-shift the probe that '
+                'far, so this is another probe-shaped cloud rather than a slip; not '
+                'committing it and not counting it as held.',
+                throttle_duration_sec=5.0,
+            )
+            self._check_held_probe_during_transport()
+            return
+
+        self._sample_held_probe_evidence(fit_centre_in_link=c_meas)
+        if self._check_held_probe_during_transport():
+            return  # the attached mesh has just been removed; do not republish it
+        self._probe_realign_last_measurement_sec = now_sec
+        self._probe_realign_measurements.append((now_sec, R_meas, c_meas))
         if (
             not end_flip
             and d_centre_m < self.attached_probe_realign_position_deadband_m
@@ -5471,6 +6029,80 @@ class VisionGraspNode(Node):
                 f'{self.held_probe_octomap_cloud_topic} ({len(pts)} pts, '
                 f'frame={self._filtered_cloud_frame}).')
 
+    def _filtered_depth_info_cb(self, msg: CameraInfo) -> None:
+        self._filtered_depth_info = msg
+
+    def _filtered_depth_cb(self, msg: Image) -> None:
+        """Back-project MoveIt's self-filtered depth image into the point cache.
+
+        The DepthImageOctomapUpdater removes the robot's own links from the
+        depth image before the octomap is built, so a non-robot object left
+        inside the jaw volume is exactly the positive/negative evidence the
+        verdict wants — the same semantics as the filtered cloud, just delivered
+        as an image. Writing into the cloud cache keeps one jaw-volume test and
+        one staleness gate for both sources.
+        """
+        info = self._filtered_depth_info
+        if info is None:
+            self.get_logger().warning(
+                '[HeldProbe] Self-filtered depth received before its CameraInfo on '
+                f'{self.held_probe_filtered_depth_info_topic}; cannot back-project yet.',
+                throttle_duration_sec=30.0,
+            )
+            return
+        try:
+            depth = self.bridge.imgmsg_to_cv2(msg, '32FC1')
+        except Exception as exc:
+            self.get_logger().warning(
+                f'[HeldProbe] Could not read {self.held_probe_filtered_depth_topic}: {exc}',
+                throttle_duration_sec=30.0,
+            )
+            return
+
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        if fx <= 0.0 or fy <= 0.0:
+            return
+        # The published image can be a different size than the CameraInfo when
+        # the updater is fed a resized stream; scale the intrinsics rather than
+        # back-projecting through the wrong principal point.
+        depth = np.asarray(depth, dtype=np.float32)
+        if info.width and info.height and (
+            depth.shape[1] != info.width or depth.shape[0] != info.height
+        ):
+            sx = depth.shape[1] / float(info.width)
+            sy = depth.shape[0] / float(info.height)
+            fx, cx = fx * sx, cx * sx
+            fy, cy = fy * sy, cy * sy
+
+        # An all-invalid frame yields zero points rather than an error: entirely
+        # self-filtered or unobserved carries no information, and the
+        # min-total-points gate then votes UNKNOWN instead of mistaking it for
+        # "nothing in the jaws".
+        try:
+            pts = grasp_verification.backproject_depth(
+                depth, fx, fy, cx, cy, self.held_probe_filtered_depth_stride
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                f'[HeldProbe] Cannot back-project {self.held_probe_filtered_depth_topic}: '
+                f'{exc}',
+                throttle_duration_sec=30.0,
+            )
+            return
+
+        self._filtered_cloud_points_in_frame = pts
+        self._filtered_cloud_frame = str(msg.header.frame_id)
+        self._filtered_cloud_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+        self._filtered_cloud_recv_sec = self._now_sec()
+        if not self._filtered_cloud_seen:
+            self._filtered_cloud_seen = True
+            self.get_logger().info(
+                '[HeldProbe] Self-filtered depth is live on '
+                f'{self.held_probe_filtered_depth_topic} ({len(pts)} pts, '
+                f'frame={self._filtered_cloud_frame}).'
+            )
+
     def _reset_held_probe_evidence(self) -> None:
         self._held_probe_evidence.reset()
         self._empty_close_detected = False
@@ -5487,13 +6119,17 @@ class VisionGraspNode(Node):
         axis = normalize(np.asarray(self.approach_axis_in_tool, dtype=np.float64).reshape(3,))
         return contact, axis
 
-    def _octomap_jaw_occupancy(self) -> Optional[Tuple[int, int, np.ndarray]]:
+    def _octomap_jaw_occupancy(self) -> Optional[Tuple[int, int, np.ndarray, bool]]:
         """Non-robot points inside the jaw volume, from the octomap-input cloud.
 
-        Returns ``(points_in_volume, total_points, region_points)`` or None
-        when the cloud is missing, stale, too sparse to trust, or cannot be
+        Returns ``(points_in_volume, total_points, region_points, blinded)`` or
+        None when the cloud is missing, stale, too sparse to trust, or cannot be
         transformed into the planning link frame — all of which mean the
         sensor could not look, not that the gripper is empty.
+
+        ``blinded`` reports that the self-filter deleted the whole range band
+        the jaw volume sits in, so an empty region proves nothing (see
+        ``grasp_verification.self_filter_blinds_jaw_volume``).
         """
         pts_sensor = self._filtered_cloud_points_in_frame
         if pts_sensor is None or len(pts_sensor) < self.held_probe_cloud_min_total_points:
@@ -5526,7 +6162,37 @@ class VisionGraspNode(Node):
             self.held_probe_region_along_min_m,
             self.held_probe_region_along_max_m,
         )
-        return int(mask.sum()), int(len(pts_link)), pts_link[mask]
+
+        # Could this cloud have shown a held probe at all? Express the jaw
+        # volume in the camera's own frame and compare its near end against the
+        # nearest range the self-filter left alive.
+        contact_in_sensor = R.T @ (contact - t)
+        axis_in_sensor = R.T @ axis
+        near_range = grasp_verification.jaw_volume_near_range(
+            contact_in_sensor,
+            axis_in_sensor,
+            self.held_probe_region_radius_m,
+            self.held_probe_region_along_min_m,
+            self.held_probe_region_along_max_m,
+        )
+        blinded, nearest = grasp_verification.self_filter_blinds_jaw_volume(
+            pts_sensor[:, 2],
+            near_range,
+            self.held_probe_cloud_near_field_margin_m,
+        )
+        if blinded:
+            self.get_logger().warning(
+                '[HeldProbe] The self-filtered cloud cannot see the jaw volume: its '
+                f'nearest surviving return is {nearest*1000:.0f}mm out while the jaw '
+                f'volume starts at {near_range*1000:.0f}mm. MoveIt pads the robot model '
+                'along its normals (sensors_3d.yaml padding_scale/padding_offset) and '
+                'drops everything from that inflated surface back to shadow_threshold, '
+                'which on a gripper-mounted camera blanks the entire near field the jaws '
+                'occupy. An empty jaw volume in this cloud is therefore a blind sensor, '
+                'not an empty gripper, so it votes UNKNOWN and never EMPTY.',
+                throttle_duration_sec=30.0,
+            )
+        return int(mask.sum()), int(len(pts_link)), pts_link[mask], bool(blinded)
 
     def _vote_held_probe(self, verdict: str, detail: str) -> None:
         """Record one frame's verdict and log the pooled result when it flips."""
@@ -5611,12 +6277,19 @@ class VisionGraspNode(Node):
                 'octomap-input cloud unavailable/stale/untransformable',
             )
             return
-        in_volume, total, region_pts = occupancy
+        in_volume, total, region_pts, blinded = occupancy
         if in_volume < self.held_probe_region_min_points:
+            # Absence of points is only evidence when the cloud could have
+            # carried them. With the jaw volume inside the self-filter's masked
+            # near field this branch is a CONSTANT empty vote: it fires whether
+            # the jaws are full or bare, and it aborted a grasp that the close
+            # stall, the lift check and the raw wrist depth all agreed was good.
             self._vote_held_probe(
-                grasp_verification.EMPTY,
+                grasp_verification.UNKNOWN if blinded else grasp_verification.EMPTY,
                 f'{in_volume} non-robot pts in the jaw volume (of {total} in the '
-                f'filtered cloud); need {self.held_probe_region_min_points}',
+                f'filtered cloud); need {self.held_probe_region_min_points}'
+                + (' -- but the self-filter blanked the jaw volume\'s whole range '
+                   'band, so this says nothing about what is held' if blinded else ''),
             )
             return
         probe_like, elongation, extent = grasp_verification.cloud_is_probe_like(
@@ -5783,22 +6456,14 @@ class VisionGraspNode(Node):
         cos_a = float(np.clip(np.dot(R_cur[:, 0], R_target[:, 0]), -1.0, 1.0))
         return abs(math.degrees(math.acos(cos_a)))
 
-    def _vertical_grasp_body_shift(self, approach_unit_base: np.ndarray) -> Optional[np.ndarray]:
-        """Base-frame shift that slides the coaxial grasp up onto the fat body.
+    def _fat_body_grip_offset_m(self) -> float:
+        """Distance from the probe's centre to the grip station, toward the fat end.
 
-        ``approach_unit_base`` is tool +Z pointing down the shaft (toward the
-        tip), so ``-approach`` points up toward the exposed body. The detected
-        pose reports the centre of the WHOLE probe, which for probe.stl sits on
-        the thin Ø20 shaft; the jaws are sized for the Ø30 body, so aiming there
-        pinches the wrong section. We therefore move the contact up the shaft to
-        the middle of the wide cylindrical base measured off the mesh
-        (``_probe_fat_section_span_m``), rather than to a hand-tuned distance.
-
-        Clamped to keep the contact band inside that measured body section, so
-        the grip can neither slide back down onto the shaft nor run off the flat
-        butt. Falls back to ``vertical_grasp_body_offset_m`` when the mesh cannot
-        be profiled, or when the offset is pinned by configuration. Returns None
-        when the offset is disabled or clamps to nothing.
+        This is the ONE definition of "where along the probe do the jaws close".
+        The approach shift and the attached-mesh pose both read it, so the
+        collision mesh cannot describe a different grip than the one the arm
+        actually aimed for — the two drifting apart is what put the attached mesh
+        tens of mm off along the probe axis.
         """
         span = self._probe_fat_section_span_m() if self.vertical_grasp_body_offset_auto else None
         if span is not None:
@@ -5819,23 +6484,90 @@ class VisionGraspNode(Node):
                 f'{self.vertical_grasp_body_offset_m*1000:.0f} mm).',
                 once=True,
             )
-        else:
-            offset = float(self.vertical_grasp_body_offset_m)
-            half_len = 0.5 * float(self._probe_dims()[2])
-            clamp = max(0.0, half_len - float(self.vertical_grasp_body_offset_end_margin_m))
-            if offset > clamp:
-                # A silently clamped offset grips a different section than the
-                # one configured, which reads as a bad grasp rather than a bad
-                # parameter -- exactly the confusion this branch must not add.
-                self.get_logger().warning(
-                    f'vertical_grasp_body_offset_m={offset*1000:.0f} mm exceeds the '
-                    f'{clamp*1000:.0f} mm limit (half the {half_len*2*1000:.0f} mm probe less '
-                    f'the {self.vertical_grasp_body_offset_end_margin_m*1000:.0f} mm end margin) '
-                    f'and will grip {(offset - clamp)*1000:.0f} mm lower down the shaft. '
-                    'Enable vertical_grasp_body_offset_auto to take this from the mesh instead.',
-                    once=True,
-                )
-            offset = min(offset, clamp)
+            return offset
+
+        offset = float(self.vertical_grasp_body_offset_m)
+        half_len = 0.5 * float(self._probe_dims()[2])
+        clamp = max(0.0, half_len - float(self.vertical_grasp_body_offset_end_margin_m))
+        if offset > clamp:
+            # A silently clamped offset grips a different section than the
+            # one configured, which reads as a bad grasp rather than a bad
+            # parameter -- exactly the confusion this branch must not add.
+            self.get_logger().warning(
+                f'vertical_grasp_body_offset_m={offset*1000:.0f} mm exceeds the '
+                f'{clamp*1000:.0f} mm limit (half the {half_len*2*1000:.0f} mm probe less '
+                f'the {self.vertical_grasp_body_offset_end_margin_m*1000:.0f} mm end margin) '
+                f'and will grip {(offset - clamp)*1000:.0f} mm lower down the shaft. '
+                'Enable vertical_grasp_body_offset_auto to take this from the mesh instead.',
+                once=True,
+            )
+        return min(offset, clamp)
+
+    def _fixed_held_probe_pose_in_link(
+        self, contact_in_link: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Deterministic held-probe pose: the grip the robot actually repeats.
+
+        The coaxial grasp is repeatable — the jaws always close on the Ø30
+        cylindrical body with the tool axis down the shaft — so the probe's pose
+        in the gripper frame is a fixed consequence of that geometry and does not
+        need to be perceived. Estimating it from the mask instead put the mesh
+        tens of mm off along the axis (the direction a cylinder fit resolves
+        worst), and correcting that from live fits let mis-associated fits slam
+        the mesh around.
+
+        STL +Z runs fat-end → tip, and the fat end is the end nearest the
+        gripper, so STL +Z is the tool approach axis. The centre then sits one
+        grip offset -- plus ``attached_probe_axial_offset_m``, which absorbs the
+        modelled contact point being short of the physical pinch -- further along
+        that axis than the contact point. Rotation about the shaft is a free DOF
+        for a round probe, so any right-handed frame on that axis is equally
+        valid; it is built off the link frame to stay deterministic run to run.
+        """
+        axis = normalize(np.asarray(self.approach_axis_in_tool, dtype=np.float64).reshape(3,))
+        # Pick whichever link axis is least parallel to the shaft as the seed, so
+        # the cross products stay well conditioned for any tool orientation.
+        seed = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(seed, axis))) > 0.9:
+            seed = np.array([0.0, 1.0, 0.0])
+        stl_x = normalize(np.cross(seed, axis))
+        stl_y = normalize(np.cross(axis, stl_x))
+        R_stl_in_link = np.column_stack([stl_x, stl_y, axis])
+        centre_in_link = (
+            np.asarray(contact_in_link, dtype=np.float64)
+            + axis * self._attached_probe_centre_offset_m()
+        )
+        return R_stl_in_link, centre_in_link
+
+    def _attached_probe_centre_offset_m(self) -> float:
+        """Distance from the modelled contact point to the attached probe centre.
+
+        The grip offset says where along the probe the jaws close; the axial
+        offset corrects the modelled contact point itself, which sits short of
+        the physical pinch. Only the attached mesh uses this sum -- the approach
+        still aims with ``_fat_body_grip_offset_m`` alone, so correcting the
+        collision model cannot move the grasp.
+        """
+        return self._fat_body_grip_offset_m() + float(self.attached_probe_axial_offset_m)
+
+    def _vertical_grasp_body_shift(self, approach_unit_base: np.ndarray) -> Optional[np.ndarray]:
+        """Base-frame shift that slides the coaxial grasp up onto the fat body.
+
+        ``approach_unit_base`` is tool +Z pointing down the shaft (toward the
+        tip), so ``-approach`` points up toward the exposed body. The detected
+        pose reports the centre of the WHOLE probe, which for probe.stl sits on
+        the thin Ø20 shaft; the jaws are sized for the Ø30 body, so aiming there
+        pinches the wrong section. We therefore move the contact up the shaft to
+        the middle of the wide cylindrical base measured off the mesh
+        (``_probe_fat_section_span_m``), rather than to a hand-tuned distance.
+
+        Clamped to keep the contact band inside that measured body section, so
+        the grip can neither slide back down onto the shaft nor run off the flat
+        butt. Falls back to ``vertical_grasp_body_offset_m`` when the mesh cannot
+        be profiled, or when the offset is pinned by configuration. Returns None
+        when the offset is disabled or clamps to nothing.
+        """
+        offset = self._fat_body_grip_offset_m()
         if offset <= 1e-4:
             return None
         return normalize(np.asarray(approach_unit_base, dtype=np.float64)) * (-offset)
@@ -6469,6 +7201,7 @@ class VisionGraspNode(Node):
         self.target_history.clear()
         self.target_history_stamps.clear()
         self.target_confidence_history.clear()
+        self.target_pose_fit_history.clear()
         self.filtered_target_point_base = None
         self.filtered_target_confidence = 0.0
         self.target_filter_max_residual_m = float('inf')
@@ -6482,15 +7215,26 @@ class VisionGraspNode(Node):
         ):
             self._clear_target_stability_history()
 
-    def is_target_stable(self, p: np.ndarray, confidence: float) -> bool:
+    def is_target_stable(
+        self,
+        p: np.ndarray,
+        confidence: float,
+        pose_fit_fresh: bool = True,
+    ) -> bool:
         """Build a consecutive, spatially coherent 3D cluster and median-filter it."""
         now_sec = self._now_sec()
         self._expire_target_stability_history(now_sec)
 
-        if confidence < self.target_lock_min_confidence:
+        confidence_floor = (
+            self.target_lock_continue_min_confidence
+            if self.target_history
+            else self.target_lock_min_confidence
+        )
+        if confidence < confidence_floor:
             self.get_logger().info(
-                f'Probe confidence {confidence:.2f} is below lock threshold '
-                f'{self.target_lock_min_confidence:.2f}; not adding it to the '
+                f'Probe confidence {confidence:.2f} is below '
+                f'{"continuation" if self.target_history else "initial lock"} threshold '
+                f'{confidence_floor:.2f}; not adding it to the '
                 'target stability window.',
                 throttle_duration_sec=1.0,
             )
@@ -6513,11 +7257,13 @@ class VisionGraspNode(Node):
         self.target_history.append(candidate.copy())
         self.target_history_stamps.append(now_sec)
         self.target_confidence_history.append(float(confidence))
+        self.target_pose_fit_history.append(bool(pose_fit_fresh))
 
         while len(self.target_history) > self.target_filter_window_samples:
             self.target_history.pop(0)
             self.target_history_stamps.pop(0)
             self.target_confidence_history.pop(0)
+            self.target_pose_fit_history.pop(0)
 
         points = np.asarray(self.target_history, dtype=np.float64)
         filtered = np.median(points, axis=0)
@@ -6533,6 +7279,8 @@ class VisionGraspNode(Node):
         return (
             self.target_filter_max_residual_m <= self.target_stability_max_jump_m
             and self.target_filter_rms_m <= self.target_stability_rms_m
+            and sum(self.target_pose_fit_history)
+            >= self.target_stability_min_pose_fit_samples
         )
 
     def _now_sec(self) -> float:
@@ -6763,11 +7511,18 @@ class VisionGraspNode(Node):
 
         best_pair = None
         best_key = None
+        closest_gap_sec = float('inf')
         for color_stamp, color in self._color_frame_queue:
             for depth_stamp, depth_frame, depth in self._depth_frame_queue:
                 gap_sec = abs((color_stamp - depth_stamp).nanoseconds) * 1e-9
+                closest_gap_sec = min(closest_gap_sec, gap_sec)
+                if gap_sec > self.max_color_depth_stamp_gap_sec:
+                    continue
                 newest_sec = max(color_stamp.nanoseconds, depth_stamp.nanoseconds) * 1e-9
-                key = (gap_sec, -newest_sec)
+                # Freshness wins once a pair is inside the synchronization
+                # bound. Otherwise an old exact pair can make the inference
+                # worker drain a backlog while newer usable frames wait.
+                key = (-newest_sec, gap_sec)
                 if best_key is None or key < best_key:
                     best_key = key
                     best_pair = (
@@ -6776,46 +7531,68 @@ class VisionGraspNode(Node):
 
         if best_pair is not None:
             color_stamp, color, depth_stamp, depth_frame, depth, gap_sec = best_pair
-            if gap_sec <= self.max_color_depth_stamp_gap_sec:
-                pair_key = (color_stamp.nanoseconds, depth_stamp.nanoseconds)
-                if pair_key != self._last_inference_pair_key:
-                    self._last_inference_pair_key = pair_key
-                    # Drop submitted/older frames so an old exact pair cannot
-                    # permanently beat newer near-synchronized pairs.
-                    self._color_frame_queue = deque(
-                        (item for item in self._color_frame_queue
-                         if item[0].nanoseconds > color_stamp.nanoseconds),
-                        maxlen=self.sensor_sync_queue_size,
-                    )
-                    self._depth_frame_queue = deque(
-                        (item for item in self._depth_frame_queue
-                         if item[0].nanoseconds > depth_stamp.nanoseconds),
-                        maxlen=self.sensor_sync_queue_size,
-                    )
-                    snap = FrameSnapshot(
-                        color=color.copy(),
-                        color_stamp_sec=color_stamp.nanoseconds * 1e-9,
-                        # depth_cb replaces the array, never mutates it in place,
-                        # so holding a reference is safe.
-                        depth=depth,
-                        depth_stamp_sec=depth_stamp.nanoseconds * 1e-9,
-                        depth_frame=depth_frame,
-                        stamp=depth_stamp,
-                    )
-                    self._yolo_worker.submit(snap, snap.color)
-            else:
-                now_sec = self._now_sec()
-                if now_sec - self._stamp_gap_warned_sec > 5.0:
-                    self._stamp_gap_warned_sec = now_sec
-                    self.get_logger().warning(
-                        f'Waiting for synchronized camera frames: closest color/depth pair differs by '
-                        f'{gap_sec:.3f}s (> {self.max_color_depth_stamp_gap_sec:.3f}s '
-                        'max_color_depth_stamp_gap_sec). A mismatched pair on a '
-                        'moving camera yields a wrong 3D target; check camera rates '
-                        'if this persists.'
-                    )
+            pair_key = (color_stamp.nanoseconds, depth_stamp.nanoseconds)
+            if pair_key != self._last_inference_pair_key:
+                self._last_inference_pair_key = pair_key
+                self._color_frame_queue = deque(
+                    (item for item in self._color_frame_queue
+                     if item[0].nanoseconds > color_stamp.nanoseconds),
+                    maxlen=self.sensor_sync_queue_size,
+                )
+                self._depth_frame_queue = deque(
+                    (item for item in self._depth_frame_queue
+                     if item[0].nanoseconds > depth_stamp.nanoseconds),
+                    maxlen=self.sensor_sync_queue_size,
+                )
+                snap = FrameSnapshot(
+                    color=color.copy(),
+                    color_stamp_sec=color_stamp.nanoseconds * 1e-9,
+                    depth=depth,
+                    depth_stamp_sec=depth_stamp.nanoseconds * 1e-9,
+                    depth_frame=depth_frame,
+                    stamp=depth_stamp,
+                )
+                self._yolo_worker.submit(snap, snap.color)
+        elif closest_gap_sec < float('inf'):
+            now_sec = self._now_sec()
+            if now_sec - self._stamp_gap_warned_sec > 5.0:
+                self._stamp_gap_warned_sec = now_sec
+                self.get_logger().warning(
+                    f'Waiting for synchronized camera frames: closest color/depth pair differs by '
+                    f'{closest_gap_sec:.3f}s (> {self.max_color_depth_stamp_gap_sec:.3f}s '
+                    'max_color_depth_stamp_gap_sec). A mismatched pair on a '
+                    'moving camera yields a wrong 3D target; check camera rates '
+                    'if this persists.'
+                )
 
-        return self._yolo_worker.take_result()
+        completed = self._yolo_worker.take_result()
+        if completed is None:
+            return None
+        completed_snap, _ = completed
+        result_age = self._now_sec() - completed_snap.depth_stamp_sec
+        verdict, reason = classify_frame_age(
+            result_age,
+            using_sim_time=bool(self.get_parameter('use_sim_time').value),
+            max_age_sec=self.inference_result_max_age_sec,
+        )
+        if verdict == 'clock_mismatch':
+            # Not a tuning problem: inference is fine and every result is being
+            # thrown away, so this is an error rather than a warning.
+            self.get_logger().error(
+                f'Camera stamps are on a different clock than this node: frame '
+                f'stamp={completed_snap.depth_stamp_sec:.2f}s vs node '
+                f'now={self._now_sec():.2f}s. No inference can pass the '
+                f'freshness gate until this is fixed: {reason}.',
+                throttle_duration_sec=5.0,
+            )
+            return None
+        if verdict == 'stale':
+            self.get_logger().warning(
+                f'Dropping stale vision inference result: {reason}.',
+                throttle_duration_sec=2.0,
+            )
+            return None
+        return completed
 
     def detect_target_once(
         self,
@@ -6843,6 +7620,9 @@ class VisionGraspNode(Node):
             return None
 
         snap, results = completed
+        self._probe_track_association_rejected = False
+        self._probe_track_pose_held = False
+        self._last_detection_uses_held_pose = False
 
         annotated = self._annotate_yolo_results(snap.color, results)
         if not allow_state_updates and self.busy:
@@ -6856,6 +7636,16 @@ class VisionGraspNode(Node):
         # so it runs regardless of allow_state_updates/perception freeze.
         if self._attached_probe_realign_should_run():
             self._realign_attached_probe_from_results(snap, results)
+        elif self._held_probe_monitor_should_run():
+            # Realignment is off, but "is the probe still in the jaws" is a
+            # separate question from "where exactly is it". Keep sampling the
+            # empty-grip evidence during transport — it is read-only and never
+            # moves the attached mesh, so it cannot reintroduce the mesh being
+            # yanked around. Without this, disabling realignment would also
+            # silently retire the only check that catches a dropped probe
+            # between the lift check and the release.
+            self._sample_held_probe_evidence()
+            self._check_held_probe_during_transport()
 
         best = self._select_best_detection(
             results, self.confidence_threshold, image_shape=snap.color.shape
@@ -6906,13 +7696,45 @@ class VisionGraspNode(Node):
                 self._update_detected_object_pose_from_camera(
                     centroid_cam,
                     self._last_detected_orientation_cam,
+                    confidence=best['conf'],
                     depth_frame=snap.depth_frame,
                     stamp=snap.stamp,
                 )
+                self._last_detection_uses_held_pose = self._probe_track_pose_held
+                if self._probe_track_association_rejected:
+                    if publish_debug:
+                        self._stamp_debug_status(
+                            annotated, 'Rejected non-matching probe fit',
+                            color=(0, 0, 255),
+                        )
+                        self.publish_debug_image(annotated)
+                    return None
             else:
                 self._clear_detected_object_pose()
         elif allow_state_updates:
             self._clear_detected_object_pose()
+
+        if (
+            allow_state_updates
+            and self.busy
+            and self.probe_track_enabled
+            and self._probe_track is not None
+            and (
+                self._now_sec() - self._probe_track.last_update_sec
+                <= self.probe_track_timeout_sec
+            )
+            and self.detected_object_pose is None
+        ):
+            # Do not let an unassociated mask/bbox centre replace a still-fresh
+            # shape track during arm motion. Partial occlusion made those raw
+            # points jump by 60–90 mm in the supplied trace.
+            if publish_debug:
+                self._stamp_debug_status(
+                    annotated, 'Shape track held; raw target ignored',
+                    color=(0, 165, 255),
+                )
+                self.publish_debug_image(annotated)
+            return None
 
         # Shape-aware width: once the known probe box is fitted, the width is a
         # model fact, not a mask guess. This replaces the noisy mask width (which
@@ -6967,6 +7789,42 @@ class VisionGraspNode(Node):
             if publish_debug:
                 self.publish_debug_image(annotated)
             return None
+
+        # If PCA/shape fitting is marginal for one frame, validate the fresh
+        # track against the independent raw mask point and keep the last good
+        # full-model pose. This prevents alternating between the fitted centre
+        # and a visible-mask centroid. The pose hold is deliberately bounded
+        # and held samples alone cannot satisfy the final stability lock.
+        if (
+            allow_state_updates
+            and self.shape_aware_pose_enabled
+            and self.detected_object_pose is None
+            and self.probe_track_enabled
+            and self._probe_track is not None
+        ):
+            track = self._probe_track
+            now_sec = self._now_sec()
+            pose_age = now_sec - track.last_pose_update_sec
+            raw_jump = float(np.linalg.norm(point_base - track.centre_base))
+            if (
+                pose_age <= self.probe_track_pose_hold_sec
+                and raw_jump <= self.probe_track_raw_validation_max_jump_m
+            ):
+                track.last_update_sec = now_sec
+                track.hit_count += 1
+                track.miss_count = 0
+                track.confidence = float(best['conf'])
+                self.detected_object_pose = self.make_pose(
+                    track.centre_base, matrix_to_quat(track.R_base)
+                )
+                self._last_detected_object_rotation_base = track.R_base.copy()
+                self._last_detection_uses_held_pose = True
+                self.get_logger().info(
+                    f'Probe track#{track.track_id} held through a marginal 6D '
+                    f'frame (raw-mask agreement={raw_jump*1000:.0f}mm, '
+                    f'pose age={pose_age:.1f}s).',
+                    throttle_duration_sec=1.0,
+                )
 
         if self.reject_targets_below_floor and float(point_base[2]) < self.floor_z_min:
             if publish_debug:
@@ -7094,6 +7952,22 @@ class VisionGraspNode(Node):
 
     def detect_and_maybe_grasp(self) -> None:
         now_sec = self._now_sec()
+        if self.latest_color is None:
+            self.get_logger().warning(
+                'Waiting for gripper-camera color frames on '
+                '/gripper_camera/color/image_raw; detection image cannot be '
+                'published yet. Check enable_depth_sensor and camera topics.',
+                throttle_duration_sec=5.0,
+            )
+            return
+        if self.latest_depth is None or self.camera_info is None:
+            self.get_logger().warning(
+                'Color frames are available, but aligned depth/camera_info is '
+                'still missing; publishing the live color view while waiting.',
+                throttle_duration_sec=5.0,
+            )
+            self.publish_debug_image(self.latest_color)
+            return
         if self._rover_motion_active():
             self.get_logger().warning('Vision grasp paused because rover is moving.', throttle_duration_sec=1.0)
             return
@@ -7144,7 +8018,11 @@ class VisionGraspNode(Node):
 
         point_base, name, conf = detection
 
-        if not self.is_target_stable(point_base, conf):
+        if not self.is_target_stable(
+            point_base,
+            conf,
+            pose_fit_fresh=not self._last_detection_uses_held_pose,
+        ):
             self.get_logger().info(
                 f'Target seen but waiting for stable filtered 3D position '
                 f'({len(self.target_history)}/{self.target_stability_samples} samples, '
@@ -7230,6 +8108,547 @@ class VisionGraspNode(Node):
 
         self.start_grasp_sequence()
 
+    @staticmethod
+    def _joint_map_from_robot_state(robot_state: RobotState) -> dict:
+        """Return finite named joint positions from a MoveIt robot state."""
+        result = {}
+        if robot_state is None:
+            return result
+        joint_state = getattr(robot_state, 'joint_state', None)
+        if joint_state is None:
+            return result
+        for name, position in zip(joint_state.name, joint_state.position):
+            value = float(position)
+            if name and math.isfinite(value):
+                result[str(name)] = value
+        return result
+
+    def _grasp_ik_request(
+        self,
+        contact_pose: PoseStamped,
+        orientation: Quaternion,
+        seed_state: Optional[RobotState],
+    ) -> GetPositionIK.Request:
+        """Build an exact, collision-aware IK query for one grasp azimuth."""
+        candidate_contact = PoseStamped()
+        candidate_contact.header.frame_id = contact_pose.header.frame_id
+        candidate_contact.header.stamp = self.get_clock().now().to_msg()
+        candidate_contact.pose.position = Point(
+            x=float(contact_pose.pose.position.x),
+            y=float(contact_pose.pose.position.y),
+            z=float(contact_pose.pose.position.z),
+        )
+        candidate_contact.pose.orientation = orientation
+
+        candidate_link = PoseStamped()
+        candidate_link.header = candidate_contact.header
+        candidate_link.pose = self.contact_pose_to_link_pose(candidate_contact)
+
+        req = GetPositionIK.Request()
+        req.ik_request.group_name = self.planning_group
+        req.ik_request.ik_link_name = self.planning_link
+        req.ik_request.pose_stamped = candidate_link
+        req.ik_request.avoid_collisions = True
+        timeout = self.grasp_joint_aware_ik_timeout_sec
+        req.ik_request.timeout = Duration(
+            sec=int(timeout),
+            nanosec=int((timeout % 1.0) * 1e9),
+        )
+        if seed_state is not None:
+            req.ik_request.robot_state = seed_state
+        return req
+
+    def _start_joint_aware_grasp_orientation_search(
+        self,
+        base_orientation: Quaternion,
+    ) -> bool:
+        """Select an equivalent grasp that minimizes the complete joint path.
+
+        The old heuristic compared tool-frame azimuth only. It could therefore
+        choose an inverse-kinematics family that put bounded joint6 on the
+        opposite side of its range, causing a nearly full revolution and
+        leaving no IK continuation for the final descent. This search checks
+        both pre-grasp and grasp before any motion is commanded.
+        """
+        if not self.grasp_joint_aware_orientation_search_enabled:
+            return False
+        if self.pre_grasp_pose is None or self.grasp_pose is None:
+            return False
+        if not self.compute_ik_client.service_is_ready():
+            self.get_logger().warning(
+                'Joint-aware grasp orientation search skipped because '
+                'the MoveIt compute_ik service is unavailable.'
+            )
+            return False
+        if not self.cartesian_client.service_is_ready():
+            self.get_logger().warning(
+                'Joint-aware grasp orientation search skipped because '
+                'the MoveIt Cartesian-path service is unavailable.'
+            )
+            return False
+
+        required_names = tuple(self.arm_feedback_joint_names)
+        wrist_name = self.grasp_wrist_joint_name
+        if wrist_name not in required_names:
+            self.get_logger().warning(
+                f'Joint-aware grasp orientation search skipped: wrist joint '
+                f'"{wrist_name}" is not in arm_feedback_joint_names.'
+            )
+            return False
+        missing = [
+            name for name in required_names
+            if name not in self.current_joint_positions
+        ]
+        if missing:
+            self.get_logger().warning(
+                'Joint-aware grasp orientation search skipped because live '
+                f'joint feedback is incomplete: missing={missing}.'
+            )
+            return False
+
+        # A coaxial grasp of the round probe is invariant to arbitrary tool
+        # rotation about local +Z. For other grasps only use the jaw's 180°
+        # symmetry; intermediate rotations could change the grasp itself.
+        count = (
+            self.grasp_joint_aware_azimuth_candidates
+            if self._vertical_grasp_body_shift_base is not None
+            else 2
+        )
+        variants = [
+            (angle, matrix_to_quat(rotation))
+            for angle, rotation in wrist_planning.azimuth_variants(
+                quat_to_matrix(base_orientation),
+                count,
+            )
+        ]
+        self._grasp_orientation_search = {
+            'sequence_id': self.sequence_id,
+            'candidates': variants,
+            'index': 0,
+            'phase': 'pregrasp',
+            'best': None,
+            'current': {
+                name: float(self.current_joint_positions[name])
+                for name in required_names
+            },
+            'required_names': required_names,
+            'pre_solution': None,
+            'pre_joints': None,
+            'grasp_joints': None,
+            'indeterminate': 0,
+            'definitive_rejections': 0,
+        }
+        self.sequence_stage = 'optimize_grasp_orientation'
+        self.get_logger().info(
+            f'Joint-aware grasp search: evaluating {len(variants)} equivalent '
+            f'azimuths at both pre-grasp and final grasp before moving; '
+            f'{wrist_name} motion has {self.grasp_wrist_joint_weight:.1f}x weight.'
+        )
+        self._request_grasp_orientation_ik()
+        return True
+
+    def _request_grasp_orientation_ik(self) -> None:
+        search = self._grasp_orientation_search
+        if search is None or search['sequence_id'] != self.sequence_id:
+            return
+        index = int(search['index'])
+        candidates = search['candidates']
+        if index >= len(candidates):
+            self._finish_grasp_orientation_search()
+            return
+
+        phase = str(search['phase'])
+        orientation = candidates[index][1]
+        if phase == 'pregrasp':
+            contact_pose = self.pre_grasp_pose
+            seed_state = self._make_current_robot_state()
+        else:
+            contact_pose = self.grasp_pose
+            seed_state = search['pre_solution']
+        if contact_pose is None:
+            self._finish_grasp_orientation_search()
+            return
+
+        req = self._grasp_ik_request(contact_pose, orientation, seed_state)
+        try:
+            future = self.compute_ik_client.call_async(req)
+        except Exception as exc:
+            search['indeterminate'] += 1
+            self.get_logger().warning(
+                f'Joint-aware grasp IK request failed for candidate '
+                f'{index + 1}/{len(candidates)} ({phase}): {exc}'
+            )
+            self._advance_grasp_orientation_candidate()
+            return
+
+        self._grasp_orientation_search_token += 1
+        token = self._grasp_orientation_search_token
+        future.add_done_callback(
+            lambda fut, seq=self.sequence_id, i=index, p=phase, t=token:
+                self._on_grasp_orientation_ik(fut, seq, i, p, t)
+        )
+        self.call_later(
+            self.grasp_joint_aware_ik_timeout_sec + 0.25,
+            lambda seq=self.sequence_id, i=index, p=phase, t=token:
+                self._on_grasp_orientation_search_timeout(seq, i, p, t),
+        )
+
+    def _on_grasp_orientation_search_timeout(
+        self,
+        expected_seq: int,
+        index: int,
+        phase: str,
+        request_token: int,
+    ) -> None:
+        search = self._grasp_orientation_search
+        if (
+            search is None
+            or expected_seq != self.sequence_id
+            or search['sequence_id'] != expected_seq
+            or self.sequence_stage != 'optimize_grasp_orientation'
+            or request_token != self._grasp_orientation_search_token
+            or int(search['index']) != index
+            or str(search['phase']) != phase
+        ):
+            return
+        self._grasp_orientation_search_token += 1
+        search['indeterminate'] += 1
+        self.get_logger().warning(
+            f'Joint-aware grasp {phase} check timed out for candidate '
+            f'{index + 1}/{len(search["candidates"])} ({phase}); trying the next azimuth.'
+        )
+        self._advance_grasp_orientation_candidate()
+
+    def _on_grasp_orientation_ik(
+        self,
+        future,
+        expected_seq: int,
+        index: int,
+        phase: str,
+        request_token: int,
+    ) -> None:
+        search = self._grasp_orientation_search
+        if (
+            search is None
+            or expected_seq != self.sequence_id
+            or search['sequence_id'] != expected_seq
+            or self.sequence_stage != 'optimize_grasp_orientation'
+            or request_token != self._grasp_orientation_search_token
+            or int(search['index']) != index
+            or str(search['phase']) != phase
+        ):
+            return
+        self._grasp_orientation_search_token += 1
+        try:
+            result = future.result() if future.done() else None
+        except Exception as exc:
+            search['indeterminate'] += 1
+            self.get_logger().warning(
+                f'Joint-aware grasp IK response failed for candidate '
+                f'{index + 1}/{len(search["candidates"])} ({phase}): {exc}'
+            )
+            self._advance_grasp_orientation_candidate()
+            return
+
+        if (
+            result is None
+            or int(result.error_code.val) != MoveItErrorCodes.SUCCESS
+        ):
+            if result is None:
+                search['indeterminate'] += 1
+            else:
+                search['definitive_rejections'] += 1
+            self._advance_grasp_orientation_candidate()
+            return
+
+        joints = self._joint_map_from_robot_state(result.solution)
+        required_names = search['required_names']
+        if any(name not in joints for name in required_names):
+            search['indeterminate'] += 1
+            self._advance_grasp_orientation_candidate()
+            return
+
+        if phase == 'pregrasp':
+            search['pre_solution'] = result.solution
+            search['pre_joints'] = joints
+            search['phase'] = 'grasp'
+            self._request_grasp_orientation_ik()
+            return
+
+        search['grasp_joints'] = joints
+        search['phase'] = 'cartesian'
+        self._request_grasp_orientation_cartesian()
+
+    def _request_grasp_orientation_cartesian(self) -> None:
+        """Verify that IK remains continuous through the final insertion."""
+        search = self._grasp_orientation_search
+        if search is None or search['sequence_id'] != self.sequence_id:
+            return
+        index = int(search['index'])
+        orientation = search['candidates'][index][1]
+        if self.grasp_pose is None or search['pre_solution'] is None:
+            self._advance_grasp_orientation_candidate()
+            return
+
+        candidate_contact = PoseStamped()
+        candidate_contact.header.frame_id = self.grasp_pose.header.frame_id
+        candidate_contact.header.stamp = self.get_clock().now().to_msg()
+        candidate_contact.pose.position = Point(
+            x=float(self.grasp_pose.pose.position.x),
+            y=float(self.grasp_pose.pose.position.y),
+            z=float(self.grasp_pose.pose.position.z),
+        )
+        candidate_contact.pose.orientation = orientation
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = self.planning_frame
+        req.header.stamp = candidate_contact.header.stamp
+        req.group_name = self.planning_group
+        req.link_name = self.planning_link
+        req.waypoints = [self.contact_pose_to_link_pose(candidate_contact)]
+        req.max_step = self.cartesian_max_step
+        req.jump_threshold = self.cartesian_jump_threshold
+        req.avoid_collisions = True
+        req.start_state = search['pre_solution']
+
+        try:
+            future = self.cartesian_client.call_async(req)
+        except Exception as exc:
+            search['indeterminate'] += 1
+            self.get_logger().warning(
+                f'Joint-aware Cartesian request failed for candidate '
+                f'{index + 1}/{len(search["candidates"])}: {exc}'
+            )
+            self._advance_grasp_orientation_candidate()
+            return
+
+        self._grasp_orientation_search_token += 1
+        token = self._grasp_orientation_search_token
+        future.add_done_callback(
+            lambda fut, seq=self.sequence_id, i=index, t=token:
+                self._on_grasp_orientation_cartesian(fut, seq, i, t)
+        )
+        self.call_later(
+            self.grasp_joint_aware_cartesian_timeout_sec,
+            lambda seq=self.sequence_id, i=index, t=token:
+                self._on_grasp_orientation_search_timeout(
+                    seq, i, 'cartesian', t
+                ),
+        )
+
+    def _on_grasp_orientation_cartesian(
+        self,
+        future,
+        expected_seq: int,
+        index: int,
+        request_token: int,
+    ) -> None:
+        search = self._grasp_orientation_search
+        if (
+            search is None
+            or expected_seq != self.sequence_id
+            or search['sequence_id'] != expected_seq
+            or self.sequence_stage != 'optimize_grasp_orientation'
+            or request_token != self._grasp_orientation_search_token
+            or int(search['index']) != index
+            or str(search['phase']) != 'cartesian'
+        ):
+            return
+        self._grasp_orientation_search_token += 1
+        try:
+            result = future.result() if future.done() else None
+        except Exception as exc:
+            search['indeterminate'] += 1
+            self.get_logger().warning(
+                f'Joint-aware Cartesian response failed for candidate '
+                f'{index + 1}/{len(search["candidates"])}: {exc}'
+            )
+            self._advance_grasp_orientation_candidate()
+            return
+
+        if result is None:
+            search['indeterminate'] += 1
+            self._advance_grasp_orientation_candidate()
+            return
+        fraction = float(result.fraction)
+        if fraction < self.cartesian_fraction_min:
+            search['definitive_rejections'] += 1
+            self.get_logger().info(
+                f'Joint-aware grasp rejected azimuth '
+                f'{math.degrees(search["candidates"][index][0]):+.1f}°: '
+                f'pre-grasp IK exists but final Cartesian continuity is only '
+                f'{fraction:.2f}.',
+                throttle_duration_sec=0.5,
+            )
+            self._advance_grasp_orientation_candidate()
+            return
+
+        # Prefer the path's actual final joint state over the separately
+        # queried endpoint IK when MoveIt returned a complete trajectory.
+        trajectory = getattr(result.solution, 'joint_trajectory', None)
+        if trajectory is not None and trajectory.points:
+            end_positions = trajectory.points[-1].positions
+            if len(trajectory.joint_names) == len(end_positions):
+                endpoint = dict(search['grasp_joints'])
+                endpoint.update({
+                    str(name): float(position)
+                    for name, position in zip(
+                        trajectory.joint_names, end_positions
+                    )
+                })
+                search['grasp_joints'] = endpoint
+        self._record_grasp_orientation_candidate()
+
+    def _record_grasp_orientation_candidate(self) -> None:
+        search = self._grasp_orientation_search
+        if search is None:
+            return
+        index = int(search['index'])
+        angle, orientation = search['candidates'][index]
+        try:
+            score, wrist_travel, clearance = wrist_planning.score_joint_path(
+                search['current'],
+                search['pre_joints'],
+                search['grasp_joints'],
+                search['required_names'],
+                wrist_joint_name=self.grasp_wrist_joint_name,
+                wrist_weight=self.grasp_wrist_joint_weight,
+                wrist_limits=(
+                    self.grasp_wrist_joint_lower_rad,
+                    self.grasp_wrist_joint_upper_rad,
+                ),
+                wrist_limit_margin=self.grasp_wrist_joint_limit_margin_rad,
+            )
+        except ValueError:
+            search['indeterminate'] += 1
+            self._advance_grasp_orientation_candidate()
+            return
+
+        candidate = {
+            'score': score,
+            'angle': angle,
+            'orientation': orientation,
+            'pre_joints': search['pre_joints'],
+            'grasp_joints': search['grasp_joints'],
+            'wrist_travel': wrist_travel,
+            'clearance': clearance,
+        }
+        best = search['best']
+        if best is None or candidate['score'] < best['score']:
+            search['best'] = candidate
+        self._advance_grasp_orientation_candidate()
+
+    def _advance_grasp_orientation_candidate(self) -> None:
+        search = self._grasp_orientation_search
+        if search is None:
+            return
+        search['index'] += 1
+        search['phase'] = 'pregrasp'
+        search['pre_solution'] = None
+        search['pre_joints'] = None
+        search['grasp_joints'] = None
+        self._request_grasp_orientation_ik()
+
+    def _finish_grasp_orientation_search(self) -> None:
+        search = self._grasp_orientation_search
+        self._grasp_orientation_search = None
+        if search is None or search['sequence_id'] != self.sequence_id:
+            return
+        best = search['best']
+        if best is None:
+            if (
+                search['indeterminate'] > 0
+                and search['definitive_rejections'] == 0
+            ):
+                self.get_logger().warning(
+                    'Joint-aware grasp search had no complete result because '
+                    f'{search["indeterminate"]} IK queries were unavailable or incomplete; '
+                    'falling back to the original orientation and bounded planner.'
+                )
+                self._commit_grasp_plan_and_open(self.grasp_orientation)
+                return
+            self.reset_sequence(
+                'No collision-aware IK branch reaches both pre-grasp and final '
+                f'grasp with a continuous Cartesian insertion across '
+                f'{len(search["candidates"])} equivalent wrist azimuths '
+                f'({search["definitive_rejections"]} definitive rejections, '
+                f'{search["indeterminate"]} unavailable checks). Rejecting '
+                'this target before spending time on a doomed pre-grasp motion.'
+            )
+            return
+
+        wrist = self.grasp_wrist_joint_name
+        current_q = search['current'][wrist]
+        pre_q = best['pre_joints'][wrist]
+        grasp_q = best['grasp_joints'][wrist]
+        self._grasp_pregrasp_joint_targets = {wrist: pre_q}
+        self.get_logger().info(
+            f'Joint-aware grasp selected azimuth '
+            f'{math.degrees(best["angle"]):+.1f}°: {wrist} '
+            f'{math.degrees(current_q):+.1f}° -> '
+            f'{math.degrees(pre_q):+.1f}° -> '
+            f'{math.degrees(grasp_q):+.1f}°, total wrist travel '
+            f'{math.degrees(best["wrist_travel"]):.1f}°, '
+            f'limit clearance {math.degrees(best["clearance"]):.1f}°.'
+        )
+        self._commit_grasp_plan_and_open(best['orientation'])
+
+    def _commit_grasp_plan_and_open(self, orientation: Quaternion) -> None:
+        """Commit one checked orientation, then begin physical grasp motion."""
+        if self.current_target_point_base is None:
+            self.reset_sequence('Target disappeared before grasp plan commit.')
+            return
+        self.grasp_orientation = orientation
+        target = self.current_target_point_base
+        self.update_contact_poses_from_target(target, orientation)
+
+        # Retain the legacy optional lock for deployments that explicitly use
+        # it. The joint-aware search below independently constrains joint6 to
+        # the selected IK family.
+        if self.lock_wrist_joint:
+            self.sequence_wrist_value = self.current_joint_positions.get(
+                self.lock_wrist_joint_name
+            )
+            if self.sequence_wrist_value is None:
+                self.get_logger().warning(
+                    f'Joint "{self.lock_wrist_joint_name}" not found in '
+                    '/joint_states; legacy wrist lock disabled for this sequence.'
+                )
+
+        pre_grasp_point = self._pose_xyz(self.pre_grasp_pose)
+        grasp_point = self._pose_xyz(self.grasp_pose)
+        self.publish_markers()
+        self.get_logger().info('Grasp plan | target=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f) '
+            'offset_in_link=(%.3f, %.3f, %.3f) use_ori=%s' % (
+                target[0], target[1], target[2],
+                pre_grasp_point[0], pre_grasp_point[1], pre_grasp_point[2],
+                grasp_point[0], grasp_point[1], grasp_point[2],
+                self.target_point_offset_in_link[0], self.target_point_offset_in_link[1], self.target_point_offset_in_link[2],
+                str(self.use_orientation_constraint),
+            ))
+        self.get_logger().info('Effective offset (four-bar compensated): (%.3f, %.3f, %.3f)' % (
+                self.effective_target_point_offset_in_link[0],
+                self.effective_target_point_offset_in_link[1],
+                self.effective_target_point_offset_in_link[2],
+            ))
+        shortfall_mm = self._grasp_reach_shortfall_mm(
+            self.contact_pose_to_link_pose(self.grasp_pose)
+        )
+        if shortfall_mm is not None and shortfall_mm > 0.0:
+            self.reset_sequence(
+                f'Grasp target ({target[0]:.3f}, {target[1]:.3f}, {target[2]:.3f}) is outside the arm '
+                f'workspace: final-descent wrist point is {shortfall_mm:.0f}mm beyond max extension '
+                f'(incl. {self.reach_guard_margin_m * 1000.0:.0f}mm margin). Not starting the sequence. '
+                f'Move the rover closer to the target; acquisition will retry after the cooldown.'
+            )
+            return
+        self.command_gripper_and_then(
+            self.gripper_open,
+            self.send_pre_grasp,
+            stage_name='open_gripper',
+            description='open before approach'
+        )
+
     def start_grasp_sequence(self) -> None:
         if self.current_target_point_base is None:
             self.reset_sequence('No target point available.')
@@ -7259,45 +8678,11 @@ class VisionGraspNode(Node):
             self.reset_sequence('Could not determine tool orientation.')
             return
         self.grasp_orientation = orientation
-        # Capture wrist joint position now; lock it during the free-space pre-grasp move
-        if self.lock_wrist_joint:
-            self.sequence_wrist_value = self.current_joint_positions.get(self.lock_wrist_joint_name)
-            if self.sequence_wrist_value is None:
-                self.get_logger().warning(f'Joint "{self.lock_wrist_joint_name}" not found in /joint_states; wrist lock disabled for this sequence.')
         target = self.current_target_point_base
         self.update_contact_poses_from_target(target, orientation)
-
-        pre_grasp_point = self._pose_xyz(self.pre_grasp_pose)
-        grasp_point = self._pose_xyz(self.grasp_pose)
-        self.publish_markers()
-        self.get_logger().info('Grasp plan | target=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f) '
-            'offset_in_link=(%.3f, %.3f, %.3f) use_ori=%s' % (
-                target[0], target[1], target[2],
-                pre_grasp_point[0], pre_grasp_point[1], pre_grasp_point[2],
-                grasp_point[0], grasp_point[1], grasp_point[2],
-                self.target_point_offset_in_link[0], self.target_point_offset_in_link[1], self.target_point_offset_in_link[2],
-                str(self.use_orientation_constraint),
-            ))
-        self.get_logger().info('Effective offset (four-bar compensated): (%.3f, %.3f, %.3f)' % (
-                self.effective_target_point_offset_in_link[0],
-                self.effective_target_point_offset_in_link[1],
-                self.effective_target_point_offset_in_link[2],
-            ))
-        shortfall_mm = self._grasp_reach_shortfall_mm(self.contact_pose_to_link_pose(self.grasp_pose))
-        if shortfall_mm is not None and shortfall_mm > 0.0:
-            self.reset_sequence(
-                f'Grasp target ({target[0]:.3f}, {target[1]:.3f}, {target[2]:.3f}) is outside the arm '
-                f'workspace: final-descent wrist point is {shortfall_mm:.0f}mm beyond max extension '
-                f'(incl. {self.reach_guard_margin_m * 1000.0:.0f}mm margin). Not starting the sequence. '
-                f'Move the rover closer to the target; acquisition will retry after the cooldown.'
-            )
+        if self._start_joint_aware_grasp_orientation_search(orientation):
             return
-        self.command_gripper_and_then(
-            self.gripper_open,
-            self.send_pre_grasp,
-            stage_name='open_gripper',
-            description='open before approach'
-        )
+        self._commit_grasp_plan_and_open(orientation)
 
     def handle_pregrasp_arrival(self) -> None:
         """Finalize pre-grasp exactly once, then refine/descend.
@@ -7534,7 +8919,9 @@ class VisionGraspNode(Node):
         # already aligned — joint 6 won't spin before the Cartesian approach stroke.
         self.send_pose_goal(self.pre_grasp_pose,
                             pos_tol=self.pre_grasp_position_tol,
-                            with_orientation=True)
+                            with_orientation=True,
+                            preferred_joint_positions=self._grasp_pregrasp_joint_targets,
+                            preferred_joint_tolerance=self.lock_wrist_joint_tolerance)
         self._start_pregrasp_watchdog()
 
     def preclose_before_grasp_then_send_grasp(self) -> None:
@@ -7564,6 +8951,7 @@ class VisionGraspNode(Node):
             self._last_detected_object_rotation_base.copy()
             if self._last_detected_object_rotation_base is not None else None
         )
+        self._grasp_time_tip_resolved = bool(self._object_axis_tip_resolved)
 
         self.get_logger().info('No preclose will be used. Gripper stays open during final approach; '
             'after reaching grasp pose it closes once using the refined four-bar geometry.')
@@ -7657,6 +9045,7 @@ class VisionGraspNode(Node):
         if completed is None:
             return
         snap, results = completed
+        self._probe_track_association_rejected = False
         annotated = self._annotate_yolo_results(snap.color, results)
         self._stamp_debug_status(annotated, 'Refine live view', color=(255, 255, 0))
         self.publish_debug_image(annotated)
@@ -7682,6 +9071,27 @@ class VisionGraspNode(Node):
                         centroid_ref_cam, R_ref,
                         depth_frame=snap.depth_frame, stamp=snap.stamp,
                     )
+                    if self._probe_track_association_rejected:
+                        self.get_logger().warning(
+                            'Refinement ignored a non-matching probe fit; '
+                            'the locked target remains unchanged.',
+                            throttle_duration_sec=0.5,
+                        )
+                        return
+                elif (
+                    self.probe_track_enabled
+                    and self._probe_track is not None
+                    and (
+                        self._now_sec() - self._probe_track.last_update_sec
+                        <= self.probe_track_timeout_sec
+                    )
+                ):
+                    self.get_logger().info(
+                        'Refinement kept the locked shape track because this '
+                        'frame could not resolve a reliable probe pose.',
+                        throttle_duration_sec=0.5,
+                    )
+                    return
 
             if best['mask'] is not None:
                 mask_target = self._mask_depth_target(
@@ -7931,6 +9341,13 @@ class VisionGraspNode(Node):
         self.sequence_stage = 'verify_gripper'
 
         self.get_logger().info('Gripper close phase finished; holding briefly before lift-check.')
+        # Freeze the measured link pose while the probe is still at the grasp
+        # location.  Attachment happens after the visual lift check, but its
+        # object-to-link transform must combine the pre-lift object snapshot
+        # with this pre-lift link pose—not with the link after an 80+ mm lift.
+        self._grasp_close_link_pose = (
+            self.get_current_link_pose_in_planning_frame()
+        )
 
         if self.hold_after_close_no_motion:
             self.holding_object = True
@@ -7978,11 +9395,18 @@ class VisionGraspNode(Node):
         # only contributes scene churn that aborts transport plans.
         if self.octomap_disable_after_grasp_confirmed and self._octomap_collisions_enabled:
             verdict = self._held_probe_verdict()
-            self._set_octomap_collision_checking(
-                False,
-                f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}).',
-            )
-            self._clear_octomap('grasp-confirmed-octomap-retired')
+            if verdict == grasp_verification.HELD:
+                self._set_octomap_collision_checking(
+                    False,
+                    f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}).',
+                )
+                self._clear_octomap('grasp-confirmed-octomap-retired')
+            else:
+                self.get_logger().warning(
+                    f'Keeping octomap collision checking ON after lift success '
+                    f'because held-probe verification is {verdict}, not HELD. '
+                    f'The attached mesh will still model the probe.'
+                )
         if self.post_grasp_lift_then_pick_home:
             self.get_logger().info(f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
             self.send_post_grasp_vertical_lift()
@@ -8199,6 +9623,7 @@ class VisionGraspNode(Node):
                 return
             self._base_box_drop_round = 0
             self._base_box_drop_position_only_active = False
+            self._base_box_tip_fallback_active = False
             self._base_box_drop_start_collision_retry_index = -1
             self._base_box_drop_candidate_index = -1
             # The wrist camera paints the held probe (and near-field gripper)
@@ -8325,15 +9750,76 @@ class VisionGraspNode(Node):
             return 0.0
         return float(quaternion_distance_rad(current, orientation))
 
+    def _attached_probe_tip_geometry(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Return tapered-tip point and centre->tip axis in link coordinates."""
+        if (
+            self._attached_probe_centre_in_link is None
+            or self._attached_probe_R_stl_in_link is None
+        ):
+            raise ValueError(
+                'attached probe centre and signed STL orientation are unavailable'
+            )
+        if not self._attached_probe_tip_resolved:
+            raise ValueError(
+                'the tapered probe end has not been resolved confidently'
+            )
+        tip = box_drop.probe_tip_from_attached_geometry(
+            self._attached_probe_centre_in_link,
+            self._attached_probe_R_stl_in_link[:, 2],
+            float(self._probe_dims()[2]),
+            self._probe_stl_end_sign_or_default(),
+        )
+        return tip, normalize(tip - self._attached_probe_centre_in_link)
+
+    def _tip_leading_orientation_options(
+        self, desired_tip_axis: np.ndarray
+    ) -> List[Tuple[str, Quaternion, float]]:
+        """Orient the asymmetric probe with its tapered tip leading."""
+        if self._attached_probe_grasp_orientation is None:
+            raise ValueError('attached probe link orientation is unavailable')
+        _, tip_axis_in_link = self._attached_probe_tip_geometry()
+        desired_tip_axis = normalize(
+            np.asarray(desired_tip_axis, dtype=np.float64)
+        )
+        reference_R = quat_to_matrix(self._attached_probe_grasp_orientation)
+        reference_tip_axis = normalize(reference_R @ tip_axis_in_link)
+        aligned_R = (
+            box_drop.rotation_aligning_vectors(
+                reference_tip_axis, desired_tip_axis
+            )
+            @ reference_R
+        )
+        x, y, z = desired_tip_axis
+        options: List[Tuple[str, Quaternion, float]] = []
+        orientation_tol = max(
+            self.base_box_drop_orientation_tolerance_rad, 0.16
+        )
+        for roll_deg in (0.0, 90.0, -90.0, 180.0):
+            roll = math.radians(roll_deg)
+            c, s = math.cos(roll), math.sin(roll)
+            one_minus_c = 1.0 - c
+            roll_about_tip = np.array([
+                [c + x*x*one_minus_c, x*y*one_minus_c - z*s, x*z*one_minus_c + y*s],
+                [y*x*one_minus_c + z*s, c + y*y*one_minus_c, y*z*one_minus_c - x*s],
+                [z*x*one_minus_c - y*s, z*y*one_minus_c + x*s, c + z*z*one_minus_c],
+            ], dtype=np.float64)
+            options.append((
+                f'tapered tip leading, wrist roll {roll_deg:+.0f}deg',
+                matrix_to_quat(roll_about_tip @ aligned_R),
+                orientation_tol,
+            ))
+        return options
+
     def _build_base_box_insertion_candidates(self, layout: box_drop.BoxDropLayout) -> List[dict]:
         """Lean the probe into the box with one end below the rim.
 
-        The probe cannot be contained by the box at any angle, so rather than
-        releasing it horizontally above the opening this drives one end inside
-        and lets the rest rest over the rim. Candidates cover both lean
-        directions (which decides which end leads) and a few tilts; they are
-        ordered by wrist travel so the end already closest to leading is tried
-        first, and geometrically impossible ones are dropped up front.
+        The probe does not fit flat through the usable opening, so this drives
+        its tapered end inside at several diagonal tilts. Candidates cover
+        both lean directions but never reverse the asymmetric probe: the fat,
+        grasped end always stays outside. Geometrically impossible poses are
+        dropped before planning.
         """
         target_offset = list(self.base_box_drop_target_point_offset_in_link)
         if self._attached_probe_centre_in_link is not None:
@@ -8353,8 +9839,8 @@ class VisionGraspNode(Node):
                 if not insertion.clears_opening:
                     skipped_no_clearance += 1
                     continue
-                options = self._automatic_base_box_orientation_options(
-                    layout, desired_axis=insertion.axis
+                options = self._tip_leading_orientation_options(
+                    -insertion.axis
                 )
                 for orientation_name, orientation, orientation_tol in options:
                     pose = self._make_base_box_drop_pose(insertion.probe_centre)
@@ -8373,6 +9859,7 @@ class VisionGraspNode(Node):
                                 float(v) for v in layout.release_volume_dimensions
                             ],
                             'insertion': insertion,
+                            'tip_only': False,
                             'label': (
                                 f'insertion tilt {tilt_deg:.0f}deg lean {axis_sign:+.0f} '
                                 f'({orientation_name})'
@@ -8406,6 +9893,136 @@ class VisionGraspNode(Node):
         )
         return candidates
 
+    def _build_base_box_tip_insertion_candidates(
+        self, layout: box_drop.BoxDropLayout
+    ) -> List[dict]:
+        """Build the safe last resort: put only the tapered tip in the box.
+
+        The normal insertion goal constrains the probe centre.  When that pose
+        is unreachable, relaxing it can move the wrist and fingers toward the
+        box interior.  This fallback instead constrains the tapered endpoint
+        just below the rim.  Since the probe extends from that point upward and
+        outward toward its fat, grasped end, the gripper remains outside.
+        """
+        if (
+            self._attached_probe_centre_in_link is None
+            or self._attached_probe_R_stl_in_link is None
+            or self._attached_probe_grasp_orientation is None
+        ):
+            raise ValueError(
+                'attached probe centre, signed STL axis, and link orientation '
+                'are required for a tip-only insertion'
+            )
+
+        tip_in_link, _ = self._attached_probe_tip_geometry()
+
+        # Twenty millimetres is enough to put the endpoint decisively below
+        # the rim while preserving substantially more gripper clearance than
+        # the normal 50 mm centre-insertion target.
+        tip_depth_m = min(0.020, max(0.008, self.base_box_insert_depth_m))
+        scored: List[Tuple[float, dict]] = []
+        skipped_no_clearance = 0
+        for tilt_deg in self.base_box_insert_tilt_options_deg:
+            for axis_sign in (1.0, -1.0):
+                insertion = box_drop.compute_probe_insertion(
+                    layout,
+                    math.radians(float(tilt_deg)),
+                    tip_depth_m,
+                    axis_sign=axis_sign,
+                    entry_offset_m=self.base_box_insert_entry_offset_m,
+                )
+                if not insertion.clears_opening:
+                    skipped_no_clearance += 1
+                    continue
+
+                # ProbeInsertion.axis points from the endpoint in the box
+                # toward the endpoint outside it.  The centre->tip direction
+                # therefore has to point the other way.
+                for orientation_name, orientation, orientation_tol in (
+                    self._tip_leading_orientation_options(-insertion.axis)
+                ):
+                    pose = self._make_base_box_drop_pose(insertion.leading_end)
+                    pose.pose.orientation = orientation
+                    scored.append((
+                        self._wrist_travel_rad(orientation),
+                        {
+                            'pose': pose,
+                            'target_offset': [float(v) for v in tip_in_link],
+                            'applied_yaw': 0.0,
+                            'with_orientation': True,
+                            'orientation_tol': orientation_tol,
+                            'position_region_dimensions': None,
+                            'position_region_orientation': None,
+                            'display_volume_dimensions': None,
+                            'insertion': insertion,
+                            'tip_only': True,
+                            'planning_time_sec': min(
+                                3.0, self.base_box_planning_time_sec
+                            ),
+                            'label': (
+                                f'tip-only insertion tilt {tilt_deg:.0f}deg '
+                                f'lean {axis_sign:+.0f}, {orientation_name}'
+                            ),
+                        },
+                    ))
+
+        if not scored:
+            raise ValueError(
+                'no tip-only insertion pose clears the box opening; check '
+                'base_box_insert_tilt_options_deg / base_box_insert_entry_offset_m'
+            )
+        scored.sort(key=lambda item: item[0])
+        candidates = [item[1] for item in scored]
+        for index, candidate in enumerate(candidates):
+            candidate['label'] = (
+                f'tip fallback {index + 1}/{len(candidates)} — '
+                + candidate['label']
+            )
+        self.get_logger().warning(
+            f'[base-box-tip] Switching to {len(candidates)} tip-only candidates: '
+            f'the tapered endpoint will be {tip_depth_m*1000:.0f} mm below the '
+            f'rim while the probe centre and gripper stay outside'
+            + (
+                f'; {skipped_no_clearance} candidates rejected for wall clearance.'
+                if skipped_no_clearance else '.'
+            )
+        )
+        return candidates
+
+    def _start_base_box_tip_fallback(self, reason: str) -> bool:
+        """Replace failed centre-insertion goals with bounded tip-only goals."""
+        if (
+            not self.base_box_auto_drop_enabled
+            or not self.base_box_insert_enabled
+            or self._base_box_tip_fallback_active
+        ):
+            return False
+        try:
+            candidates = self._build_base_box_tip_insertion_candidates(
+                self._compute_base_box_layout()
+            )
+        except ValueError as exc:
+            self.get_logger().error(
+                f'Cannot build the safe tip-only base-box fallback: {exc}'
+            )
+            return False
+
+        self._base_box_tip_fallback_active = True
+        self._base_box_drop_position_only_active = False
+        self._base_box_drop_candidates = candidates
+        self._base_box_drop_candidate_index = -1
+        self._base_box_drop_start_collision_retry_index = -1
+        self._base_box_ik_screen_exhausted = False
+        self._base_box_drop_ik_skipped = 0
+        self._base_box_ik_reject_codes = {}
+        self.get_logger().warning(
+            f'{reason} Trying the safe tip-only fallback instead of planning '
+            f'known-unreachable probe-centre poses or moving the gripper into the box.'
+        )
+        self._clear_octomap('base-box-tip-fallback')
+        self.call_later(0.2, lambda: self._send_base_box_drop_candidate(0))
+        return True
+
     def _build_base_box_drop_candidates(self) -> List[dict]:
         if self.base_box_auto_drop_enabled:
             layout = self._compute_base_box_layout()
@@ -8418,7 +10035,7 @@ class VisionGraspNode(Node):
                 self.get_logger().warning(
                     f'Probe width {layout.settings.probe_width_m*1000:.0f} mm exceeds the narrow usable '
                     'opening. This is allowed for the overhead drop; no insertion pose is required.')
-            if self.base_box_insert_enabled:
+            if self.base_box_insert_enabled and not layout.probe_length_fits:
                 return self._build_base_box_insertion_candidates(layout)
 
             orientation_options = self._automatic_base_box_orientation_options(layout)
@@ -8458,6 +10075,7 @@ class VisionGraspNode(Node):
                         f'central release solution {index + 1}/{len(orientation_options)} '
                         f'({orientation_name})'
                     ),
+                    'tip_only': False,
                 })
             return candidates
         else:
@@ -8479,6 +10097,7 @@ class VisionGraspNode(Node):
                 'position_region_orientation': None,
                 'display_volume_dimensions': None,
                 'label': f'candidate {index + 1}/{len(points)}',
+                'tip_only': False,
             })
         return candidates
 
@@ -8539,10 +10158,40 @@ class VisionGraspNode(Node):
             req.ik_request.robot_state = seed_state
 
         future = self.compute_ik_client.call_async(req)
+        self._base_box_ik_request_token += 1
+        request_token = self._base_box_ik_request_token
         future.add_done_callback(
-            lambda fut, i=index, seq=self.sequence_id, stage=self.sequence_stage:
-                self._on_base_box_drop_ik(fut, i, seq, stage)
+            lambda fut, i=index, seq=self.sequence_id, stage=self.sequence_stage,
+                token=request_token:
+                self._on_base_box_drop_ik(fut, i, seq, stage, token)
         )
+        self.call_later(
+            self.base_box_ik_prescreen_timeout_sec + 0.35,
+            lambda i=index, seq=self.sequence_id, stage=self.sequence_stage,
+                token=request_token:
+                self._on_base_box_drop_ik_timeout(i, seq, stage, token),
+        )
+
+    def _on_base_box_drop_ik_timeout(
+        self,
+        index: int,
+        expected_seq: int,
+        expected_stage: str,
+        request_token: int,
+    ) -> None:
+        if (
+            request_token != self._base_box_ik_request_token
+            or expected_seq != self.sequence_id
+            or self.sequence_stage != expected_stage
+        ):
+            return
+        self._base_box_ik_request_token += 1
+        self.get_logger().warning(
+            f'Base-box IK pre-screen callback timed out for candidate '
+            f'{index + 1}; handing it to the bounded planner instead of '
+            f'leaving the task stuck.'
+        )
+        self._dispatch_base_box_drop_candidate(index)
 
     def _on_base_box_drop_ik(
         self,
@@ -8550,13 +10199,33 @@ class VisionGraspNode(Node):
         index: int,
         expected_seq: int,
         expected_stage: str,
+        request_token: int,
     ) -> None:
-        if expected_seq != self.sequence_id or self.sequence_stage != expected_stage:
+        if (
+            request_token != self._base_box_ik_request_token
+            or expected_seq != self.sequence_id
+            or self.sequence_stage != expected_stage
+        ):
             return
-        result = future.result() if future.done() else None
+        self._base_box_ik_request_token += 1
+        try:
+            result = future.result() if future.done() else None
+        except Exception as exc:
+            # A service transport failure is not evidence that the pose is
+            # unreachable.  Preserve the documented optimisation-only
+            # semantics and hand this candidate to the planner.
+            self.get_logger().warning(
+                f'Base-box IK pre-screen failed to return a result ({exc}); '
+                f'planning candidate {index + 1} directly.'
+            )
+            self._dispatch_base_box_drop_candidate(index)
+            return
         # Only a definitive "no IK solution" rejects a candidate. A missing or
         # errored response must fall through to planning, never skip.
-        if result is not None and int(result.error_code.val) != MoveItErrorCodes.SUCCESS:
+        if (
+            result is not None
+            and int(result.error_code.val) == MoveItErrorCodes.NO_IK_SOLUTION
+        ):
             code = int(result.error_code.val)
             self._base_box_drop_ik_skipped += 1
             self._base_box_ik_reject_codes[code] = (
@@ -8564,6 +10233,23 @@ class VisionGraspNode(Node):
             )
             next_index = index + 1
             if next_index >= len(self._base_box_drop_candidates):
+                insertion_round = any(
+                    cand.get('insertion') is not None
+                    for cand in self._base_box_drop_candidates
+                )
+                rejection = (
+                    f'IK pre-screen rejected all '
+                    f'{len(self._base_box_drop_candidates)} release candidates '
+                    f'({self._describe_ik_rejections()}).'
+                )
+                if insertion_round and self._start_base_box_tip_fallback(rejection):
+                    return
+                if self._base_box_tip_fallback_active:
+                    self._hold_closed_after_transport_failure(
+                        f'{rejection} No collision-free tip-only box insertion '
+                        f'exists; stopping without moving the gripper into the box.'
+                    )
+                    return
                 # The screen is an optimisation, never a veto. One IK seed
                 # failing does not prove the goal unplannable — MoveIt searches
                 # differently and can reach configurations a single query
@@ -8628,6 +10314,34 @@ class VisionGraspNode(Node):
             return
         self._base_box_drop_candidate_index = index
         candidate = self._base_box_drop_candidates[index]
+        if candidate.get('insertion') is not None:
+            if candidate.get('tip_only', False):
+                if (
+                    self._base_box_tip_plans_attempted
+                    >= self.base_box_max_planned_candidates
+                ):
+                    self._hold_closed_after_transport_failure(
+                        f'The bounded tip-only box fallback used '
+                        f'{self._base_box_tip_plans_attempted} planner attempts '
+                        f'without a solution. Stopping with the gripper closed.'
+                    )
+                    return
+                self._base_box_tip_plans_attempted += 1
+            else:
+                if (
+                    self._base_box_center_plans_attempted
+                    >= self.base_box_max_planned_candidates
+                ):
+                    reason = (
+                        f'The bounded probe-centre insertion search used '
+                        f'{self._base_box_center_plans_attempted} planner attempts '
+                        f'without a solution.'
+                    )
+                    if self._start_base_box_tip_fallback(reason):
+                        return
+                    self._hold_closed_after_transport_failure(reason)
+                    return
+                self._base_box_center_plans_attempted += 1
         pose = candidate['pose']
         pose.header.stamp = self.get_clock().now().to_msg()
         self._active_base_box_drop_pose = pose
@@ -8652,6 +10366,9 @@ class VisionGraspNode(Node):
             detail = 'orientation unconstrained'
         self.get_logger().info(
             f'Moving held probe to base-box {candidate["label"]}: {detail}.')
+        planning_time = float(
+            candidate.get('planning_time_sec', self.base_box_planning_time_sec)
+        )
         self.send_pose_goal(
             pose,
             pos_tol=self.base_box_drop_position_tolerance_m,
@@ -8662,7 +10379,7 @@ class VisionGraspNode(Node):
             position_region_dimensions=candidate['position_region_dimensions'],
             position_region_orientation=candidate['position_region_orientation'],
             arm_joints_only_start_state=True,
-            planning_time_override=self.base_box_planning_time_sec,
+            planning_time_override=planning_time,
             num_attempts_override=max(self.num_planning_attempts, 15),
         )
 
@@ -8708,6 +10425,19 @@ class VisionGraspNode(Node):
         the wrist orientation unconstrained; release verification then applies
         the relaxed axis tolerance before opening.
         """
+        # In insertion mode, a failed probe-centre sweep must never be relaxed
+        # into a centre/position-only goal: that can pull the gripper into the
+        # box.  Switch once to the endpoint-constrained fallback, then stop
+        # closed if even that bounded strategy cannot be planned.
+        insertion_round = any(
+            cand.get('insertion') is not None
+            for cand in self._base_box_drop_candidates
+        )
+        if insertion_round or self._base_box_tip_fallback_active:
+            if not self._base_box_tip_fallback_active:
+                return self._start_base_box_tip_fallback(reason)
+            return False
+
         next_round = self._base_box_drop_round + 1
         if next_round == 1:
             try:
@@ -8815,6 +10545,95 @@ class VisionGraspNode(Node):
         ])
         probe_center = link_xyz + link_R @ self._attached_probe_centre_in_link
         probe_axis = normalize(link_R @ self._attached_probe_axis_in_link)
+        active_candidate = (
+            self._base_box_drop_candidates[self._base_box_drop_candidate_index]
+            if 0 <= self._base_box_drop_candidate_index
+                < len(self._base_box_drop_candidates)
+            else {}
+        )
+        if active_candidate.get('insertion') is not None:
+            insertion = active_candidate['insertion']
+            tip_offset, tip_axis_in_link = self._attached_probe_tip_geometry()
+            tip_world = link_xyz + link_R @ tip_offset
+            tip_axis_world = normalize(link_R @ tip_axis_in_link)
+            desired_tip_axis = -normalize(insertion.axis)
+            tip_axis_error = math.acos(float(np.clip(
+                np.dot(tip_axis_world, desired_tip_axis), -1.0, 1.0
+            )))
+            tip_local = layout.rotation.T @ (tip_world - layout.top_center)
+            centre_local = layout.rotation.T @ (
+                probe_center - layout.top_center
+            )
+            link_local = layout.rotation.T @ (link_xyz - layout.top_center)
+            contact_offset = np.asarray(
+                self.effective_target_point_offset_in_link, dtype=np.float64
+            )
+            contact_world = link_xyz + link_R @ contact_offset
+            contact_local = layout.rotation.T @ (
+                contact_world - layout.top_center
+            )
+            bucket_tip_offset = np.array(
+                [0.0, 0.0, self.fourbar_bucket_tip_z_max_m],
+                dtype=np.float64,
+            )
+            bucket_tip_world = link_xyz + link_R @ bucket_tip_offset
+            bucket_tip_local = layout.rotation.T @ (
+                bucket_tip_world - layout.top_center
+            )
+            usable_half = 0.5 * np.maximum(layout.usable_xy, 0.0)
+            xy_margin = 0.003
+            tip_inside_xy = bool(
+                np.all(np.abs(tip_local[:2]) <= usable_half + xy_margin)
+            )
+            interior_depth = max(
+                0.0,
+                float(layout.dimensions[2])
+                - float(layout.settings.wall_thickness_m),
+            )
+            tip_below_rim = bool(
+                -interior_depth <= tip_local[2] <= -0.002
+            )
+            tip_aligned = bool(
+                tip_axis_error
+                <= max(
+                    float(active_candidate['orientation_tol']),
+                    math.radians(3.0),
+                )
+            )
+            # These checks are the key safety property of insertion: only the
+            # tapered endpoint enters.  The probe centre, grasp contact,
+            # representative furthest-forward bucket point, and planning-link
+            # origin all stay above the rim.  The base-link collision mesh
+            # supplies the full bucket/wall collision check during planning.
+            centre_min_height = (
+                0.005 if active_candidate.get('tip_only', False) else -0.010
+            )
+            centre_outside = bool(centre_local[2] >= centre_min_height)
+            link_outside = bool(link_local[2] >= 0.0)
+            gripper_clearance = 0.005
+            contact_outside = bool(contact_local[2] >= gripper_clearance)
+            bucket_outside = bool(bucket_tip_local[2] >= gripper_clearance)
+            detail = (
+                f'tip_local=({tip_local[0]*1000:.1f},'
+                f'{tip_local[1]*1000:.1f},{tip_local[2]*1000:.1f})mm, '
+                f'allowed_tip_xy=({(usable_half[0]+xy_margin)*1000:.1f},'
+                f'{(usable_half[1]+xy_margin)*1000:.1f})mm, '
+                f'tip_axis_error={math.degrees(tip_axis_error):.1f}deg, '
+                f'probe_centre_above_rim={centre_local[2]*1000:.1f}mm, '
+                f'grasp_contact_above_rim={contact_local[2]*1000:.1f}mm, '
+                f'bucket_tip_above_rim={bucket_tip_local[2]*1000:.1f}mm, '
+                f'planning_link_above_rim={link_local[2]*1000:.1f}mm'
+            )
+            return (
+                tip_inside_xy
+                and tip_below_rim
+                and tip_aligned
+                and centre_outside
+                and contact_outside
+                and bucket_outside
+                and link_outside
+            ), detail
+
         axis_index = 0 if layout.probe_axis_name == 'X' else 1
         desired_axis = normalize(layout.rotation[:, axis_index])
         axis_error = math.acos(float(np.clip(abs(np.dot(probe_axis, desired_axis)), 0.0, 1.0)))
@@ -9748,16 +11567,10 @@ class VisionGraspNode(Node):
         self.sequence_id += 1
         self._cancel_pending_timers()
         self._cancel_final_grasp_pose_check_timer()
+        self._grasp_orientation_search = None
+        self._grasp_orientation_search_token += 1
+        self._grasp_pregrasp_joint_targets = {}
         self._clear_arm_motion_confirmation()
-
-        # Clean up any post-grasp collision objects (floor plane + probe) from
-        # the planning scene so the next grasp attempt starts clean.
-        self._remove_post_grasp_collision_objects()
-        self._remove_world_probe_object('grasp sequence reset')
-        # A new attempt gets the octomap back: it was only retired because THIS
-        # grasp was already confirmed.
-        if not self._octomap_collisions_enabled:
-            self._set_octomap_collision_checking(True, 'grasp sequence reset.')
 
         if getattr(self, '_gripper_wait_timer', None) is not None:
             self._gripper_wait_timer.cancel()
@@ -9783,6 +11596,35 @@ class VisionGraspNode(Node):
                 pass
             self._lift_check_timer = None
 
+        # Never turn a post-close failure into a new idle acquisition. The
+        # next sequence starts by opening the gripper, which would drop a
+        # possibly held probe at an arbitrary failure location. Preserve the
+        # attachment and close state and require explicit operator recovery.
+        if self.holding_object:
+            self.last_failure_reason = reason
+            if reason:
+                self.failure_count += 1
+            self.task_complete = True
+            self.busy = True
+            self.sequence_stage = 'transport_failed_holding'
+            self.success_until_sec = self._now_sec() + self.success_lockout_sec
+            self.get_logger().error(
+                f'{reason} Reset was converted to a safe closed hold because '
+                f'the node may still be carrying the probe. The attached '
+                f'collision object is retained and automatic reacquisition is disabled.'
+            )
+            self.publish_markers()
+            return
+
+        # Clean up any post-grasp collision objects (floor plane + probe) from
+        # the planning scene only when the gripper is known not to be holding.
+        self._remove_post_grasp_collision_objects()
+        self._remove_world_probe_object('grasp sequence reset')
+        # A new empty-gripper attempt gets the octomap back: it was only
+        # retired because the previous grasp was already confirmed.
+        if not self._octomap_collisions_enabled:
+            self._set_octomap_collision_checking(True, 'grasp sequence reset.')
+
         self.last_failure_reason = reason
         if reason:
             self.failure_count += 1
@@ -9796,6 +11638,8 @@ class VisionGraspNode(Node):
         self.grasp_orientation = None
         self._grasp_time_object_pose = None
         self._grasp_time_object_R = None
+        self._grasp_time_tip_resolved = False
+        self._grasp_close_link_pose = None
         self.pre_grasp_pose = None
         self.grasp_pose = None
         self.retreat_pose = None
@@ -9810,7 +11654,7 @@ class VisionGraspNode(Node):
         self.effective_target_point_offset_in_link = list(self.target_point_offset_in_link)
         self.detected_object_yaw_rad = None
         self._last_detected_orientation_cam = None
-        self._clear_detected_object_pose()
+        self._clear_detected_object_pose(clear_fat_dir=True)
         self.locked_target_before_lift = None
         self.retry_target_from_lift_check = None
         self._lift_check_last_nonlifted_target = None
@@ -10106,6 +11950,13 @@ class VisionGraspNode(Node):
         if stage == 'move_grasp':
             self._halt_after_final_pose_check_failure(reason)
             return
+        if stage == 'move_base_box_drop':
+            if self._try_next_base_box_drop_candidate(
+                f'Base-box motion failed measured-state confirmation: {reason}'
+            ):
+                return
+            self._hold_closed_after_transport_failure(reason)
+            return
         if self.holding_object:
             self._hold_closed_after_transport_failure(reason)
             return
@@ -10124,7 +11975,9 @@ class VisionGraspNode(Node):
                         acceleration_scale: Optional[float] = None,
                         arm_joints_only_start_state: bool = False,
                         planning_time_override: Optional[float] = None,
-                        num_attempts_override: Optional[int] = None) -> None:
+                        num_attempts_override: Optional[int] = None,
+                        preferred_joint_positions: Optional[dict] = None,
+                        preferred_joint_tolerance: Optional[float] = None) -> None:
         expected_stage = self.sequence_stage
         expected_seq = self.sequence_id
         if self._arm_motion_forbidden_now(expected_stage):
@@ -10200,6 +12053,23 @@ class VisionGraspNode(Node):
         pos.constraint_region = region
         pos.weight = 1.0
         c.position_constraints.append(pos)
+        if preferred_joint_positions:
+            joint_tol = max(
+                0.01,
+                float(
+                    self.lock_wrist_joint_tolerance
+                    if preferred_joint_tolerance is None
+                    else preferred_joint_tolerance
+                ),
+            )
+            for joint_name, joint_position in preferred_joint_positions.items():
+                jc = JointConstraint()
+                jc.joint_name = str(joint_name)
+                jc.position = float(joint_position)
+                jc.tolerance_above = joint_tol
+                jc.tolerance_below = joint_tol
+                jc.weight = 1.0
+                c.joint_constraints.append(jc)
         orientation_constraint = orientation_override if orientation_override is not None else self.grasp_orientation
         if with_orientation and orientation_constraint is not None:
             ori_tol = self.orientation_tol if orientation_tol is None else float(orientation_tol)

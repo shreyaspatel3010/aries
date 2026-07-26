@@ -24,6 +24,51 @@ import numpy as np
 from ament_index_python.packages import get_package_share_directory
 
 
+# A frame-age magnitude no real session can reach (11.5 days). Past this the
+# frame stamp and the consumer's clock are not on the same timeline at all —
+# sim uptime counts from 0 while wall time is ~1.8e9 — so the age is
+# meaningless rather than merely stale.
+CLOCK_DOMAIN_MISMATCH_AGE_SEC = 1.0e6
+
+
+def classify_frame_age(
+    age_sec: float,
+    using_sim_time: bool,
+    max_age_sec: float,
+    mismatch_age_sec: float = CLOCK_DOMAIN_MISMATCH_AGE_SEC,
+) -> Tuple[str, str]:
+    """Classify a frame age as ``'ok'``, ``'stale'`` or ``'clock_mismatch'``.
+
+    Returns the verdict and, for the two reject verdicts, a human explanation.
+
+    The mismatch check comes first and uses the *magnitude* of the age. Both
+    details matter: an epoch-sized age reported against ``max_age_sec`` sends
+    the reader off tuning a freshness bound that was never the problem, and the
+    reverse mismatch (consumer on ``/clock``, frames stamped with wall time)
+    makes the age hugely *negative*, which slips through a stale-frame test
+    unnoticed and admits a frame whose stamp is meaningless.
+    """
+    if abs(age_sec) > mismatch_age_sec:
+        if using_sim_time:
+            cause = (
+                'this node is on sim time (/clock) but the frames carry '
+                'wall-clock stamps — relaunch with use_sim_time:=false, or '
+                'point the camera topics at the simulator'
+            )
+        else:
+            cause = (
+                'this node is on wall-clock time but the frames carry sim '
+                'stamps — relaunch with use_sim_time:=true'
+            )
+        return 'clock_mismatch', cause
+    if age_sec > max_age_sec:
+        return 'stale', (
+            f'age={age_sec:.2f}s > inference_result_max_age_sec='
+            f'{max_age_sec:.2f}s'
+        )
+    return 'ok', ''
+
+
 def default_model_path() -> str:
     """Return the grasp model installed with this package."""
     return os.path.join(

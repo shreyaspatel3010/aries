@@ -9,9 +9,19 @@ source install/setup.bash
 ros2 launch aries_vision_grasp vision_grasp.launch.py
 ```
 
-The vision launch defaults to simulation time to match
-`aries_bringup my_robot.launch.py`. On the physical rover, launch with
-`use_sim_time:=false`.
+The vision launch defaults to wall-clock time (`use_sim_time:=false`) because
+standalone use means the physical rover, and a `true` default with no `/clock`
+publisher freezes every detector timer. Against Gazebo — including
+`aries_bringup my_robot.launch.py` — pass `use_sim_time:=true` explicitly:
+
+```bash
+ros2 launch aries_vision_grasp vision_grasp.launch.py use_sim_time:=true
+```
+
+Omitting it there leaves the node comparing wall-clock `now()` against
+sim-stamped camera frames, so every inference is dropped with
+`age=1784972829.58s > inference_result_max_age_sec=2.00s` — an age near the Unix
+epoch is always this clock-domain mismatch, never a real delay.
 
 ## Layout
 
@@ -136,8 +146,8 @@ the YOLO26-seg mask through the depth image into the gripper link frame —
 where a rigidly held probe is stationary even while the arm moves — gates the
 points against the currently attached box model (so a second probe on the
 floor is ignored), and refines the pose with a trimmed point-to-box ICP
-(`aries_vision_grasp/probe_alignment.py`; the probe is a 45×45×300 mm box, so
-closest-surface correspondences are analytic). When the fit disagrees with
+(`aries_vision_grasp/probe_alignment.py`; dimensions are read from the active
+probe STL, so closest-surface correspondences are analytic). When the fit disagrees with
 the published mesh, the `AttachedCollisionObject` is republished in place:
 small drifts commit after `attached_probe_realign_confirm_samples` agreeing
 frames, and deviations beyond the `attached_probe_realign_fast_*` thresholds
@@ -165,14 +175,21 @@ covers both ends decisively, the mesh is flipped to point the tip the right
 way — this correction bypasses the deadband (an end flip reads as 0° in the
 symmetric axis metric) and takes the fast commit path.
 
-The base-box release no longer hard-locks when every automatic wrist candidate
-fails: round 2 rebuilds the candidates from the current attached-probe
-geometry (the re-alignment may have corrected the mesh in the meantime) with
-`base_box_drop_relaxed_orientation_tolerance_rad`, and the final round plans
-the probe centre into the release volume with the wrist unconstrained.
-Release verification applies `base_box_release_axis_tolerance_deg` to
-oriented rounds and `base_box_release_axis_tolerance_final_deg` to the
-position-only round.
+For an over-length probe, the base-box release first screens the ordinary
+leaning, probe-centre insertion poses with collision-aware IK. If all are
+unreachable it switches immediately to a tip-only fallback instead of spending
+up to a minute planning those rejected poses: the signed STL geometry locates
+the tapered endpoint, targets only that point 20 mm below the rim, and gives
+each reachable candidate a three-second planning budget. Measured release
+verification requires the tip to be inside the usable opening while both the
+probe centre and planning link remain above the rim. In insertion mode the
+state machine never escalates to the old position-only probe-centre goal, so a
+failed fallback stops safely with the gripper closed.
+
+The relaxed-orientation and position-only rounds remain available for
+non-insertion overhead-drop mode. Their release verification applies
+`base_box_release_axis_tolerance_deg` to oriented rounds and
+`base_box_release_axis_tolerance_final_deg` to the position-only round.
 
 ## Tests
 

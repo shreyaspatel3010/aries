@@ -33,6 +33,8 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   ament_add_pytest_test(test_grasp_verification test/test_grasp_verification.py
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_wrist_planning test/test_wrist_planning.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 ament_package()

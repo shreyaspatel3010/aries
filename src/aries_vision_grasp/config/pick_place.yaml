@@ -65,20 +65,22 @@ vision_grasp_node:
 
     # Transport/release timing.
     post_grasp_planning_time_sec: 10.0
-    base_box_planning_time_sec: 10.0
+    # Box goals are IK-screened first; keep each remaining OMPL attempt
+    # bounded so a failed release strategy advances within seconds.
+    base_box_planning_time_sec: 3.0
+    base_box_max_planned_candidates: 2
     base_box_release_wait_sec: 4.0
     return_pick_home_after_base_box_place: true
 
-    # Escalating release ladder. When every automatic wrist candidate fails
-    # (previously a hard lock with the gripper closed), the drop retries in
-    # rounds: round 2 rebuilds all candidates from the CURRENT attached-probe
-    # geometry — the held-probe mesh re-alignment may have corrected a wrong
-    # mesh while round 1 was failing — with the relaxed orientation tolerance
-    # below; the final round plans the probe centre into the release volume
-    # with the wrist unconstrained. Release verification keeps the normal
-    # axis tolerance for oriented rounds and applies the final tolerance only
-    # to the position-only round (a centred overhead drop with symmetric
-    # overhang still lands in the box).
+    # For a probe that does not fit flat, failed centre-insertion candidates
+    # switch immediately to a bounded tip-only fallback: the tapered endpoint
+    # is targeted 20 mm below the rim while the probe centre and planning link
+    # must remain above it. Known-unreachable centre poses are not handed to
+    # the 10 s planner, and insertion mode never escalates to a position-only
+    # probe-centre goal that could pull the gripper into the box.
+    #
+    # These relaxed rounds remain available only for non-insertion overhead
+    # drop mode.
     base_box_drop_relaxed_orientation_tolerance_rad: 0.35
     base_box_drop_final_round_position_only: true
     base_box_release_axis_tolerance_deg: 12.0

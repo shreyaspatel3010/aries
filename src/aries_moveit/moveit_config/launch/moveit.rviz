@@ -51,7 +51,7 @@ Visualization Manager:
       Enabled: true
       Name: GripperArc
       Namespaces:
-        {}
+        gripper_arc: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -168,16 +168,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        arm_gripper_left_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        arm_gripper_right_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         aux_L_Rocker_Link:
           Alpha: 1
           Show Axes: false
@@ -252,6 +242,26 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+        fourbar_constraint_visual_left:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        fourbar_constraint_visual_right:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_bucket_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_bucket_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         gripper_camera_accel_frame:
           Alpha: 1
           Show Axes: false
@@ -306,6 +316,46 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         gripper_camera_right_ir_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gripper_gear_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_gear_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_gear_tip_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gripper_gear_tip_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gripper_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_link_tip_left_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gripper_link_tip_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gripper_right_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gripper_tcp:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -368,10 +418,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        odom:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
       Name: RobotState
       Robot Alpha: 1
       Robot Description: robot_description
@@ -397,313 +443,10 @@ Visualization Manager:
         Attached Body Color: 150; 50; 150
         Links:
           All Links Enabled: true
-          C_Differential_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           Expand Joint Details: false
           Expand Link Details: false
           Expand Tree: false
-          L_1_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          L_2_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          L_3_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          L_Boggie_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          L_Connecting_Rod_Diff_Joint_BALL_X_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          L_Connecting_Rod_Diff_Joint_BALL_Y_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          L_Connecting_Rod_Diff_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          L_Rocker_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           Link Tree Style: Links in Alphabetic Order
-          R_1_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          R_2_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          R_3_Wheel_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          R_Boggie_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          R_Connecting_Rod_Diff_Joint_BALL_X_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          R_Connecting_Rod_Diff_Joint_BALL_Y_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          R_Connecting_Rod_Diff_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          R_Rocker_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          V1_L_Connecting_Rod_Diff_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          V1_R_Connecting_Rod_Diff_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          arm_base_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          arm_gripper_base_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          arm_gripper_left_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          arm_gripper_right_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          aux_L_Rocker_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          aux_R_Rocker_Link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          base_footprint:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          base_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_bottom_screw_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_color_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_color_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_depth_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_left_ir_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_left_ir_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          camera_right_ir_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_right_ir_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_bottom_screw_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_color_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_color_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_depth_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_left_ir_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_left_ir_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          gripper_camera_right_ir_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_right_ir_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          imu_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          link1:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          link2:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          link3:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          link4:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          link5:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          link6:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          motor1:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          motor2:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          motor3:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          motor4:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          motor5:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          odom:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
         Robot Alpha: 1
         Show Robot Collision: false
         Show Robot Visual: true
@@ -838,16 +581,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          arm_gripper_left_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          arm_gripper_right_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           aux_L_Rocker_Link:
             Alpha: 1
             Show Axes: false
@@ -922,6 +655,26 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          fourbar_constraint_visual_left:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          fourbar_constraint_visual_right:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_bucket_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_bucket_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           gripper_camera_accel_frame:
             Alpha: 1
             Show Axes: false
@@ -976,6 +729,46 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           gripper_camera_right_ir_optical_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_gear_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_gear_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_gear_tip_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_gear_tip_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_link_tip_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_link_tip_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_tcp:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -1038,10 +831,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          odom:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
         Loop Animation: false
         Robot Alpha: 0.5
         Robot Color: 150; 50; 150
@@ -1065,7 +854,7 @@ Visualization Manager:
         Goal State Color: 250; 128; 0
         Interactive Marker Size: 0
         Joint Violation Color: 255; 0; 255
-        Planning Group: igus_rebel_arm
+        Planning Group: arm_with_gripper
         Query Goal State: true
         Query Start State: false
         Show Workspace: false
@@ -1187,16 +976,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          arm_gripper_left_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          arm_gripper_right_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           aux_L_Rocker_Link:
             Alpha: 1
             Show Axes: false
@@ -1271,6 +1050,26 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          fourbar_constraint_visual_left:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          fourbar_constraint_visual_right:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_bucket_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_bucket_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           gripper_camera_accel_frame:
             Alpha: 1
             Show Axes: false
@@ -1325,6 +1124,46 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           gripper_camera_right_ir_optical_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_gear_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_gear_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_gear_tip_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_gear_tip_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_link_tip_left_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_link_tip_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          gripper_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          gripper_tcp:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -1387,10 +1226,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          odom:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
         Robot Alpha: 1
         Show Robot Collision: false
         Show Robot Visual: true
@@ -1408,7 +1243,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best effort
-        Value: /gripper_camera/color/image_raw
+        Value: /vision_grasp/detection_image
       Value: true
   Enabled: true
   Global Options:
@@ -1456,7 +1291,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.8225730657577515
+      Distance: 2.916116952896118
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -1471,10 +1306,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.00539845135062933
+      Pitch: 0.33039847016334534
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 1.2353971004486084
+      Yaw: 0.6103969812393188
     Saved: ~
 Window Geometry:
   Displays:
@@ -1498,5 +1333,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1200
-  X: 155
-  Y: 431
+  X: 753
+  Y: 89

@@ -15,10 +15,11 @@ def generate_launch_description():
     # postures and gripper-completion gating live in config/pick_place.yaml
     # (loaded last, so it stays the authoritative file for those values).
     launch_args = [
-        # aries_bringup/my_robot.launch.py defaults to Gazebo/use_sim_time=true.
-        # Keep action durations and watchdogs on that same clock. Override with
-        # use_sim_time:=false when running the physical rover.
-        DeclareLaunchArgument('use_sim_time', default_value='true'),
+        # Standalone vision_grasp is normally used with physical hardware.
+        # Simulation launchers must explicitly pass use_sim_time:=true; a true
+        # default on hardware freezes every detector timer when no /clock
+        # publisher exists, leaving the node "ready" but producing no image.
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('model_path', default_value=_share_path('models/grasp.pt')),
         DeclareLaunchArgument('target_class', default_value='probe'),
         DeclareLaunchArgument(

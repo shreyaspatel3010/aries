@@ -13,6 +13,7 @@ from aries_vision_grasp.probe_alignment import (
     fit_box_to_points,
     full_model_centre_along_axis,
     long_axis_fat_end_sign,
+    orient_long_axis_from_fat_contact,
 )
 
 # Probe half extents (metres): X width, Y height, Z long axis.
@@ -185,6 +186,41 @@ def test_long_axis_fat_end_sign_abstains_when_not_decisive():
 
     # Too few points to trust either half.
     assert long_axis_fat_end_sign(pts[:20], c, axis) == 0
+
+
+def test_fat_contact_orients_negative_z_fat_end_toward_contact():
+    # Shipped probe.stl has its fat body at -Z. The physical contact is above
+    # the centre, so an initial +Z-up PCA sign puts -Z (fat) below and must flip.
+    axis, flipped = orient_long_axis_from_fat_contact(
+        np.array([0.0, 0.0, 1.0]),
+        centre=np.array([0.0, 0.0, 0.0]),
+        contact=np.array([0.0, 0.0, 0.075]),
+        stl_fat_end_sign=-1,
+    )
+    assert flipped
+    np.testing.assert_allclose(axis, [0.0, 0.0, -1.0])
+
+
+def test_fat_contact_keeps_axis_when_stl_fat_end_is_already_nearest():
+    axis, flipped = orient_long_axis_from_fat_contact(
+        np.array([0.0, 0.0, -2.0]),
+        centre=np.array([0.0, 0.0, 0.0]),
+        contact=np.array([0.0, 0.0, 0.075]),
+        stl_fat_end_sign=-1,
+    )
+    assert not flipped
+    np.testing.assert_allclose(axis, [0.0, 0.0, -1.0])
+
+
+def test_fat_contact_abstains_when_contact_is_axially_ambiguous():
+    axis, flipped = orient_long_axis_from_fat_contact(
+        np.array([1.0, 0.0, 0.0]),
+        centre=np.zeros(3),
+        contact=np.array([0.0, 0.05, 0.0]),
+        stl_fat_end_sign=-1,
+    )
+    assert not flipped
+    np.testing.assert_allclose(axis, [1.0, 0.0, 0.0])
 
 
 LENGTH = 2.0 * HALF[2]
