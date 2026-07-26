@@ -9388,25 +9388,35 @@ class VisionGraspNode(Node):
 
     def _after_lift_verification_success(self, reason: str) -> None:
         self.holding_object = True
-        # The grasp is confirmed here by BOTH sensors -- the camera lift check
-        # above and the held-probe verdict from the octomap-input cloud. That
-        # is the last thing the octomap is needed for in this task, so retire
-        # it: from here the probe rides as an attached mesh and the octomap
-        # only contributes scene churn that aborts transport plans.
+        # The camera lift check has confirmed the grasp, and that is the last
+        # thing the octomap is needed for in this task: from here the probe rides
+        # as an attached mesh and the octomap only contributes scene churn that
+        # aborts transport plans.
+        #
+        # This used to additionally require a HELD held-probe verdict, i.e.
+        # confirmation by BOTH sensors. That gate was unsatisfiable: the
+        # octomap-input cloud cannot see the jaw volume at all (the padded
+        # self-filter blanks the whole near field -- see
+        # grasp_verification.self_filter_blinds_jaw_volume), so HELD only ever
+        # arrives from a ProbeRealign fit, and any run where that fit missed left
+        # the verdict UNKNOWN and the octomap ON. The wrist camera then repainted
+        # voxels onto the probe it was carrying and the transport died on
+        # -10 START_STATE_IN_COLLISION, measured as exactly one contact:
+        # <octomap> vs post_grasp_probe at 2.6 mm. Requiring corroboration from a
+        # blind sensor is not a safety margin, it is a guaranteed stall.
+        #
+        # The pairwise "gripper links and <octomap> may overlap the probe"
+        # allowance does not cover this on its own -- that contact was reported
+        # with the allowance already applied. The ACM DEFAULT entry set here does.
         if self.octomap_disable_after_grasp_confirmed and self._octomap_collisions_enabled:
             verdict = self._held_probe_verdict()
-            if verdict == grasp_verification.HELD:
-                self._set_octomap_collision_checking(
-                    False,
-                    f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}).',
-                )
-                self._clear_octomap('grasp-confirmed-octomap-retired')
-            else:
-                self.get_logger().warning(
-                    f'Keeping octomap collision checking ON after lift success '
-                    f'because held-probe verification is {verdict}, not HELD. '
-                    f'The attached mesh will still model the probe.'
-                )
+            self._set_octomap_collision_checking(
+                False,
+                f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}). '
+                'Octomap collision checking stays off for the rest of this task; '
+                'only a grasp-sequence reset restores it.',
+            )
+            self._clear_octomap('grasp-confirmed-octomap-retired')
         if self.post_grasp_lift_then_pick_home:
             self.get_logger().info(f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
             self.send_post_grasp_vertical_lift()

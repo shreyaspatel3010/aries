@@ -26,6 +26,16 @@ def opaque_func(context, *args, **kwargs):
     
     namespace = LaunchConfiguration("namespace")
     hardware_protocol = LaunchConfiguration('hardware_protocol')
+    # The fingertip and gripper MUST reach the xacro below. Without them this
+    # launch built its robot_description from the xacro DEFAULTS
+    # (finger_type=probe), while my_robot.launch.py built Gazebo's from the
+    # requested finger. Because move_group runs with publish_robot_description,
+    # its model then overwrote the correct one on /robot_description -- so
+    # `finger_type:=bucket` showed probe fingers in RViz and, worse, MoveIt
+    # planned and collision-checked against a fingertip the robot did not have
+    # (the contact point differs by up to 23 mm between the three jaws).
+    gripper_type = LaunchConfiguration('gripper_type')
+    finger_type = LaunchConfiguration('finger_type')
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_joystick = LaunchConfiguration("use_joystick")
     joy_driver = LaunchConfiguration("joy_driver")
@@ -64,6 +74,10 @@ def opaque_func(context, *args, **kwargs):
             robot_description_file,
             " hardware_protocol:=",
             hardware_protocol,
+            " gripper_type:=",
+            gripper_type,
+            " finger_type:=",
+            finger_type,
         ]
     )
     
@@ -400,8 +414,29 @@ def generate_launch_description():
         description="Which hardware protocol or mock hardware should be used",
     )
 
+    # Defaults match my_robot.urdf.xacro's own gripper default and the fingertip
+    # the rover actually carries, so a bare `ros2 launch move_group.launch.py`
+    # builds the bucket rather than silently falling back to the probe.
+    gripper_type_arg = DeclareLaunchArgument(
+        "gripper_type",
+        default_value="new",
+        description="Gripper type: 'new' or 'old'. Must match the model Gazebo "
+                    "and robot_state_publisher were launched with.",
+    )
+    finger_type_arg = DeclareLaunchArgument(
+        "finger_type",
+        default_value="bucket",
+        choices=["bucket", "maintenance", "probe"],
+        description="Swappable fingertip. MUST match the finger the rest of the "
+                    "stack was launched with: MoveIt plans and collision-checks "
+                    "with this, and the four-bar contact point differs by up to "
+                    "23 mm between the three jaws.",
+    )
+
     ld = LaunchDescription()
     ld.add_action(use_sim_time_arg)
+    ld.add_action(gripper_type_arg)
+    ld.add_action(finger_type_arg)
     ld.add_action(namespace_arg)
     ld.add_action(use_gui_arg)
     ld.add_action(use_joystick_arg)

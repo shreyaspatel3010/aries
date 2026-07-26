@@ -36,8 +36,11 @@ def generate_launch_description():
     gz_gui_config_path = PathJoinSubstitution(
         [FindPackageShare('aries'), 'config', 'gz_gui_config.config']
     )
+    # Selectable so the soil-sampling world can be launched without editing this
+    # file: world:=soil_world.sdf. Both worlds are named 'empty' internally
+    # because gazebo_bridge.yaml hardcodes /world/empty/* topics.
     world_path = PathJoinSubstitution(
-        [FindPackageShare('aries'), 'worlds', 'sandbox_world.sdf']
+        [FindPackageShare('aries'), 'worlds', LaunchConfiguration('world')]
     )
     virtual_diff_config_path = PathJoinSubstitution(
         [FindPackageShare('aries'), 'config', 'virtual_differential.yaml']
@@ -48,6 +51,15 @@ def generate_launch_description():
         'gripper_type',
         default_value='new',
         description='Gripper type: "new" or "old"'
+    )
+
+    world_arg = DeclareLaunchArgument(
+        'world',
+        default_value='sandbox_world.sdf',
+        choices=['sandbox_world.sdf', 'soil_world.sdf'],
+        description='World file in aries/worlds. sandbox_world.sdf has the '
+                    'planted probe; soil_world.sdf replaces it with a bed of '
+                    'loose soil grains and a deposit box for bucket sampling.'
     )
 
     finger_type_arg = DeclareLaunchArgument(
@@ -236,6 +248,12 @@ def generate_launch_description():
         ),
         launch_arguments={
             'hardware_protocol': hardware_protocol,
+            # Forwarded so MoveIt builds the SAME robot as Gazebo and
+            # robot_state_publisher. Omitting these let move_group fall back to
+            # the xacro default (finger_type=probe) and, because it publishes its
+            # own robot_description, overwrite the correct model on that topic.
+            'gripper_type': gripper_type,
+            'finger_type': finger_type,
             'use_sim_time': use_sim_time,
             'use_gui': 'true',
             'use_joystick': use_joystick,
@@ -267,6 +285,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         gripper_type_arg,
+        world_arg,
         finger_type_arg,
         hardware_protocol_arg,
         use_sim_time_arg,

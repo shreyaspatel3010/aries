@@ -521,9 +521,14 @@ vision_grasp_node:
     # carrying, and the arm sweeping reveals new space every second. The
     # environment really is dynamic, so replan from the new scene rather than
     # giving up on the first change.
-    # Retire the octomap once the grasp is confirmed by BOTH sensors (the
-    # camera lift check and the held-probe verdict from the octomap-input
-    # cloud). From that point everything the octomap describes is described
+    # Retire the octomap once the camera lift check confirms the grasp, and keep
+    # it retired for the rest of the task (only a grasp-sequence reset restores
+    # it). This deliberately does NOT also require a HELD held-probe verdict:
+    # that sensor cannot see the jaw volume (the padded self-filter blanks the
+    # near field), so the extra condition was unsatisfiable and left the octomap
+    # ON, which killed transport with -10 START_STATE_IN_COLLISION on exactly one
+    # contact -- <octomap> vs post_grasp_probe, voxels painted on the carried
+    # probe. From that point everything the octomap describes is described
     # better elsewhere -- the probe is an attached mesh, the floor is covered by
     # the height guards, the rover is in the robot model -- and all it still
     # does is churn: the wrist camera repaints it at 5 Hz while staring at the

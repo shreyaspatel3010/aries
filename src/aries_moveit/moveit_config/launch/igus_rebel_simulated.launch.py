@@ -49,10 +49,25 @@ def generate_launch_description():
         choices=["mock_hardware", "gazebo", "rebel"],
         description="Which hardware protocol or mock hardware should be used",)
     use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time', 
-        default_value='true', 
+        'use_sim_time',
+        default_value='true',
         description='Use sim time if true')
+    # Same omission that made `finger_type:=bucket` show probe fingers from
+    # my_robot.launch.py: without these the xacro falls back to its own defaults
+    # (finger_type=probe) and MoveIt plans against a fingertip the robot does not
+    # have. The contact point differs by up to 23 mm between the three jaws.
+    gripper_type_arg = DeclareLaunchArgument(
+        'gripper_type',
+        default_value='new',
+        description="Gripper type: 'new' or 'old'")
+    finger_type_arg = DeclareLaunchArgument(
+        'finger_type',
+        default_value='bucket',
+        choices=['bucket', 'maintenance', 'probe'],
+        description='Swappable fingertip; must match the mounted jaw')
     hardware_protocol = LaunchConfiguration('hardware_protocol')
+    gripper_type = LaunchConfiguration('gripper_type')
+    finger_type = LaunchConfiguration('finger_type')
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_gui = LaunchConfiguration('use_gui')
     use_joystick = LaunchConfiguration('use_joystick')
@@ -70,6 +85,10 @@ def generate_launch_description():
             robot_description_file,
             " hardware_protocol:=",
             hardware_protocol,
+            " gripper_type:=",
+            gripper_type,
+            " finger_type:=",
+            finger_type,
         ]
     )
     # Launch gazebo simulator and spwan the robot
@@ -132,6 +151,8 @@ def generate_launch_description():
         gazebo_gui_arg,
         paused_arg,
         hardware_protocol_arg,
+        gripper_type_arg,
+        finger_type_arg,
         use_sim_time_arg,
         gazebo_launch,
         robot_state_pub_node,
