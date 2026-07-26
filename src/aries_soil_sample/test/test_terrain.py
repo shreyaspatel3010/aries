@@ -205,3 +205,56 @@ def test_mismatched_grids_are_refused():
     b = _map_from_grid(np.zeros((10, 10)))
     with pytest.raises(ValueError):
         divot_volume(a, b, [0.5, 0.0], 0.05)
+
+
+# --- operator-configured sampling point -------------------------------------
+
+def test_configured_point_takes_its_z_from_the_measured_surface():
+    """The point says WHERE; perception still says how deep."""
+    from aries_soil_sample.terrain import site_at_xy
+    hmap = height_map(flat_cloud(z=-0.175), REGION, CELL)
+    site, why = site_at_xy(hmap, [0.50, 0.0], 0.060)
+    assert site is not None, why
+    assert site.centre[0] == pytest.approx(0.50)
+    assert site.centre[1] == pytest.approx(0.0)
+    assert site.centre[2] == pytest.approx(-0.175, abs=0.002)
+    assert site.slope_deg < 3.0
+
+
+def test_configured_point_outside_the_region_is_rejected_with_a_reason():
+    from aries_soil_sample.terrain import site_at_xy
+    hmap = height_map(flat_cloud(), REGION, CELL)
+    site, why = site_at_xy(hmap, [1.20, 0.0], 0.060)
+    assert site is None
+    assert 'outside the surveyed work region' in why
+
+
+def test_configured_point_too_close_to_the_edge_is_rejected():
+    from aries_soil_sample.terrain import site_at_xy
+    hmap = height_map(flat_cloud(), REGION, CELL)
+    site, why = site_at_xy(hmap, [REGION.x_min + 0.005, 0.0], 0.060)
+    assert site is None
+    assert 'edge' in why or 'outside' in why
+
+
+def test_configured_point_on_a_rock_is_rejected_for_roughness():
+    """Choosing a patch by hand does not make it safe to cut."""
+    from aries_soil_sample.terrain import site_at_xy
+    cloud = flat_cloud(z=-0.175, n=12000)
+    rock = np.column_stack([
+        np.random.default_rng(21).uniform(0.495, 0.515, 500),
+        np.random.default_rng(22).uniform(-0.010, 0.010, 500),
+        np.full(500, -0.130),
+    ])
+    hmap = height_map(np.vstack([cloud, rock]), REGION, CELL)
+    site, why = site_at_xy(hmap, [0.505, 0.0], 0.060)
+    assert site is None
+    assert 'too rough' in why
+
+
+def test_configured_point_on_unobserved_ground_is_rejected_for_coverage():
+    from aries_soil_sample.terrain import site_at_xy
+    hmap = height_map(flat_cloud(n=40), REGION, CELL)
+    site, why = site_at_xy(hmap, [0.50, 0.0], 0.060)
+    assert site is None
+    assert 'observed' in why

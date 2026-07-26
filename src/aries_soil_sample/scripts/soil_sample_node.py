@@ -30,6 +30,8 @@ import threading
 import time
 from typing import List, Optional, Sequence, Tuple
 
+from dataclasses import replace
+
 import numpy as np
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -40,6 +42,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 import tf2_ros
+from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
@@ -52,7 +55,13 @@ from moveit_msgs.msg import (
     RobotState,
 )
 from moveit_msgs.msg import PlanningScene, PlanningSceneComponents
-from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPlanningScene, GetPositionIK
+from moveit_msgs.srv import (
+    ApplyPlanningScene,
+    GetCartesianPath,
+    GetPlanningScene,
+    GetPositionFK,
+    GetPositionIK,
+)
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -65,6 +74,7 @@ from aries_vision_grasp import fourbar
 from aries_vision_grasp.grasp_verification import backproject_depth
 from aries_vision_grasp.image_bridge import NumpyImageBridge
 
+from aries_soil_sample import deposit as deposit_lib
 from aries_soil_sample import scoop as scoop_lib
 from aries_soil_sample import terrain
 
@@ -111,6 +121,18 @@ class SoilSampleNode(Node):
         self.bridge = NumpyImageBridge()
         self._abort = threading.Event()
         self._busy = threading.Lock()
+        # Goal handles we own, so Ctrl-C can cancel them instead of abandoning
+        # them. An abandoned MoveIt goal leaves trajectory_execution_manager
+        # believing a trajectory is still in flight, and every later plan then
+        # dies instantly with CONTROL_FAILED (-4). Nothing can clear that from
+        # outside -- cancel-all returns zero goals at both MoveIt action servers
+        # AND both controllers, because no goal is live; the manager's own state
+        # is stuck. There is no stop-execution service, so the only cure is
+        # restarting move_group. Hence: never abandon a goal.
+        # A list, not a set: rclpy's ClientGoalHandle defines __eq__ without
+        # __hash__, so it is unhashable and set.add() raises.
+        self._active_goals = []
+        self._active_goals_lock = threading.Lock()
 
         p = self.declare_parameter
         p('planning_frame', 'base_link')
@@ -119,6 +141,11 @@ class SoilSampleNode(Node):
         p('finger_type', 'bucket')
         p('use_aligned_depth', True)
         p('auto_start', False)
+        # How long to wait for the rest of the stack before the first motion.
+        # 5 s of ActionClient discovery is not enough right after a sim launch:
+        # the symptom is `MoveGroup action unavailable` while move_group is in
+        # fact running perfectly well.
+        p('startup_wait_sec', 40.0)
 
         p('work_region_x', [0.40, 0.65])
         p('work_region_y', [-0.18, 0.18])
@@ -130,6 +157,12 @@ class SoilSampleNode(Node):
         p('height_map_min_points_per_cell', 2)
         p('height_map_min_valid_fraction', 0.35)
         p('depth_stride', 2)
+        # Pool several depth frames into one height map. One frame is a noisy
+        # sample; the surveyed ground has moved tens of mm between runs, which is
+        # enough to push the penetrate pose out of the envelope.
+        p('ground_accumulate_frames', True)
+        p('ground_frames_to_accumulate', 5)
+        p('ground_frame_interval_sec', 0.15)
 
         p('scoop_footprint_m', 0.060)
         p('scoop_max_roughness_m', 0.006)
@@ -137,16 +170,44 @@ class SoilSampleNode(Node):
         p('scoop_min_coverage', 0.70)
         p('scoop_max_candidate_sites', 8)
 
-        p('scoop_standoff_m', 0.060)
+        # Height ABOVE the soil surface at which the scoop stroke begins. With a
+        # straight-down entry this is literally vertical height; with a tilted
+        # entry it is measured along the entry axis.
+        p('scoop_start_above_ground_m', 0.030)
         p('scoop_depth_m', 0.030)
         # Non-zero by necessity: a vertical bucket cannot reach ground level with
         # a 214 mm gripper. See the config for the measurement.
         p('scoop_attack_deg', 30.0)
         p('scoop_attack_azimuth_ref', [1.0, 0.0, 0.0])
         p('scoop_max_depth_m', 0.060)
+        # Floor for the automatic depth reduction below. A scoop shallower than
+        # this is not worth taking.
+        p('scoop_min_depth_m', 0.012)
+        # Cartesian for the whole stroke: one straight-line path through
+        # approach -> entry -> penetrate, then (after the close) extract. The
+        # only split is at the close, which is a gripper command, not a motion.
+        # The alternative (joint-space hop to the approach, then Cartesian from
+        # there) leaves the arm at a pose MoveIt reached by its own route, and the
+        # descend then had to start from wherever that put it -- which is how
+        # `Cartesian path solved only 0.00` happened.
+        p('scoop_all_cartesian', True)
         p('scoop_depth_margin_m', 0.010)
         p('scoop_retrace_extraction', True)
 
+        # Collect with the bucket FULLY open, then fully closed. Full open also
+        # helps reach: the four-bar contact sits 134 mm from the link at q=-1.57
+        # versus 214 mm at q=-0.34, so the wrist is 80 mm lower for the same
+        # ground contact.
+        p('bucket_use_full_open', True)
+        p('bucket_full_open_q', -1.57)
+        p('bucket_use_full_close', True)
+        p('bucket_full_close_q', 0.07)
+        # Start closing DURING the descent, this far above the surveyed surface,
+        # so the shells sweep material as they shut instead of closing after the
+        # bucket has already stopped. 0 closes at the surface; negative closes
+        # below it.
+        p('close_during_descent', True)
+        p('close_start_above_ground_m', 0.020)
         p('bucket_entry_q', -0.34)
         p('bucket_close_q', 0.07)
         p('bucket_open_q', -1.30)
@@ -180,9 +241,55 @@ class SoilSampleNode(Node):
         p('octomap_disable_during_scoop', True)
 
         p('arm_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
-        p('survey_joint_positions', [0.0, 1.074, 0.639, 0.0349066, 1.394, 1.50098])
-        p('transport_joint_positions', [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098])
+        # pick_home is the START posture, the posture the loaded bucket RETURNS
+        # to, and the posture it leaves from to reach the box -- one posture, as
+        # requested, matching aries_vision_grasp's pick_home.
+        p('home_joint_positions', [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098])
+        # Return to home along a straight Cartesian line with the sample aboard.
+        # Falls back to a joint move if the straight line cannot be solved --
+        # better a curved return than a bucket stranded in the hole.
+        p('cartesian_return_home', True)
         p('return_to_transport_after_scoop', True)
+        # Deposit the sample into the box carried ON THE ROVER, same target the
+        # probe task uses (base_box_center_xyz in aries_vision_grasp), so the
+        # sample ends up where the mission wants it rather than back on the
+        # ground. Contact point, not link origin, in the planning frame.
+        # Sampling point (config/sample_points.yaml, loaded last).
+        p('use_fixed_sample_point', False)
+        p('sample_point_xyz', [0.520, 0.010, -0.175])
+        p('sample_point_use_measured_z', True)
+        p('sample_point_strict', False)
+
+        p('deposit_enabled', True)
+        # Describe the box ONCE, the way the probe task does, and derive every
+        # pose from it. Move the box and the dump pose follows.
+        p('deposit_box_center_xyz', [0.003, 0.215, 0.287])
+        p('deposit_box_dimensions_xyz', [0.14, 0.20, 0.15])
+        p('deposit_box_rpy', [0.0, 0.0, 0.0])
+        p('deposit_box_wall_thickness_m', 0.006)
+        # Height above the box RIM at which the jaws open. 38 mm is the measured
+        # 4/4 collision-free sweet spot over the rover box.
+        p('deposit_rim_clearance_m', 0.038)
+        # Shift of the dump point within the opening, in the BOX frame.
+        p('deposit_offset_xy', [0.0, 0.0])
+        # Keep the dump point this far inside the opening, so a mis-set offset
+        # cannot tip the sample onto the rim.
+        p('deposit_edge_margin_m', 0.015)
+        # A known-good dump POSTURE beats a computed pose: joint values verified
+        # over the box are immune to the box moving out of the arm's comfortable
+        # band. Defaults are the posture demonstrated in RViz, which FK puts at
+        # bucket contact (0.137,0.205,0.412) with the mouth 2 deg off straight
+        # down -- over the opening, 113 mm above the rim.
+        p('deposit_use_joint_posture', True)
+        p('deposit_joint_positions', [1.3090, -0.3665, 1.7977, -0.0175, 1.6755, 2.8099])
+        # If the posture is off, the derived pose is searched upward from
+        # deposit_rim_clearance_m: tipping from higher still lands in the box,
+        # and height is what the arm's envelope actually cares about. The old
+        # single fixed clearance failed the moment the box moved down.
+        p('deposit_max_rim_clearance_m', 0.150)
+        p('deposit_dump_open_q', -1.30)
+        p('deposit_settle_sec', 2.0)
+        p('publish_deposit_box_marker', True)
         p('joint_goal_tolerance', 0.03)
 
         p('gripper_joint_name', 'gripper_gear_left_joint')
@@ -197,6 +304,7 @@ class SoilSampleNode(Node):
         self.planning_link = str(g('planning_link').value)
         self.planning_group = str(g('planning_group').value)
         self.auto_start = bool(g('auto_start').value)
+        self.startup_wait_sec = max(0.0, float(g('startup_wait_sec').value))
 
         xr = [float(v) for v in g('work_region_x').value]
         yr = [float(v) for v in g('work_region_y').value]
@@ -211,6 +319,10 @@ class SoilSampleNode(Node):
         self.min_pts_cell = max(1, int(g('height_map_min_points_per_cell').value))
         self.min_valid_fraction = float(g('height_map_min_valid_fraction').value)
         self.depth_stride = max(1, int(g('depth_stride').value))
+        self.ground_accumulate = bool(g('ground_accumulate_frames').value)
+        self.ground_frames = max(1, int(g('ground_frames_to_accumulate').value))
+        self.ground_frame_interval_sec = max(
+            0.0, float(g('ground_frame_interval_sec').value))
 
         self.footprint_m = max(0.01, float(g('scoop_footprint_m').value))
         self.max_roughness_m = float(g('scoop_max_roughness_m').value)
@@ -219,7 +331,7 @@ class SoilSampleNode(Node):
         self.max_sites = max(1, int(g('scoop_max_candidate_sites').value))
 
         self.scoop_params = scoop_lib.ScoopParams(
-            standoff_m=float(g('scoop_standoff_m').value),
+            standoff_m=float(g('scoop_start_above_ground_m').value),
             depth_m=float(g('scoop_depth_m').value),
             attack_deg=float(g('scoop_attack_deg').value),
             max_depth_m=float(g('scoop_max_depth_m').value),
@@ -229,7 +341,13 @@ class SoilSampleNode(Node):
             [float(v) for v in g('scoop_attack_azimuth_ref').value], dtype=np.float64)
 
         self.entry_q = float(g('bucket_entry_q').value)
+        if bool(g('bucket_use_full_open').value):
+            self.entry_q = float(g('bucket_full_open_q').value)
+        self.close_during_descent = bool(g('close_during_descent').value)
+        self.close_start_above_ground_m = float(g('close_start_above_ground_m').value)
         self.close_q = float(g('bucket_close_q').value)
+        if bool(g('bucket_use_full_close').value):
+            self.close_q = float(g('bucket_full_close_q').value)
         self.open_q = float(g('bucket_open_q').value)
         self.grip_duration = float(g('gripper_command_duration_sec').value)
         self.grip_settle = float(g('gripper_settle_sec').value)
@@ -253,12 +371,59 @@ class SoilSampleNode(Node):
         self.roll_candidates = max(1, int(g('scoop_wrist_roll_candidates').value))
         self.ik_timeout_sec = max(0.05, float(g('ik_prescreen_timeout_sec').value))
         self.max_attempts = max(1, int(g('max_scoop_attempts').value))
+        self.scoop_min_depth_m = max(0.002, float(g('scoop_min_depth_m').value))
+        self.scoop_all_cartesian = bool(g('scoop_all_cartesian').value)
         self.octomap_off_during_scoop = bool(g('octomap_disable_during_scoop').value)
 
         self.arm_joints = [str(v) for v in g('arm_joint_names').value]
-        self.survey_q = [float(v) for v in g('survey_joint_positions').value]
-        self.transport_q = [float(v) for v in g('transport_joint_positions').value]
+        self.home_q = [float(v) for v in g('home_joint_positions').value]
+        self.survey_q = self.home_q
+        self.transport_q = self.home_q
+        self.cartesian_return_home = bool(g('cartesian_return_home').value)
         self.return_transport = bool(g('return_to_transport_after_scoop').value)
+        self.use_fixed_sample_point = bool(g('use_fixed_sample_point').value)
+        self.sample_point = np.array(
+            [float(v) for v in g('sample_point_xyz').value], dtype=np.float64)
+        self.sample_point_measured_z = bool(g('sample_point_use_measured_z').value)
+        self.sample_point_strict = bool(g('sample_point_strict').value)
+        if self.use_fixed_sample_point:
+            self.get_logger().info(
+                f'[sample] fixed sampling point '
+                f'({self.sample_point[0]:.3f},{self.sample_point[1]:.3f},'
+                f'{self.sample_point[2]:.3f})'
+                + (' with the Z taken from the survey.' if self.sample_point_measured_z
+                   else ' using the CONFIGURED Z (not measured) -- verify it.'))
+
+        self.deposit_enabled = bool(g('deposit_enabled').value)
+        self.deposit_box = deposit_lib.DepositBox(
+            centre=[float(v) for v in g('deposit_box_center_xyz').value],
+            dimensions=[float(v) for v in g('deposit_box_dimensions_xyz').value],
+            rpy=[float(v) for v in g('deposit_box_rpy').value],
+            wall_thickness_m=float(g('deposit_box_wall_thickness_m').value),
+        )
+        self.deposit_rim_clearance_m = float(g('deposit_rim_clearance_m').value)
+        self.deposit_offset_xy = [float(v) for v in g('deposit_offset_xy').value]
+        self.deposit_edge_margin_m = float(g('deposit_edge_margin_m').value)
+        self.deposit_use_joint_posture = bool(g('deposit_use_joint_posture').value)
+        self.deposit_joint_positions = [
+            float(v) for v in g('deposit_joint_positions').value]
+        self.deposit_max_rim_clearance_m = float(g('deposit_max_rim_clearance_m').value)
+        self.deposit_dump_open_q = float(g('deposit_dump_open_q').value)
+        self.deposit_settle_sec = float(g('deposit_settle_sec').value)
+        self.publish_box_marker = bool(g('publish_deposit_box_marker').value)
+
+        # Fail loudly at startup rather than mid-cycle with the sample in the
+        # bucket: a box you cannot dump into is a configuration error.
+        ok, why = self.deposit_box.validate(
+            self.deposit_rim_clearance_m, self.deposit_offset_xy,
+            self.deposit_edge_margin_m)
+        if self.deposit_enabled and not ok:
+            self.get_logger().error(
+                f'[deposit] deposit box is misconfigured: {why}. Deposit is DISABLED '
+                'for this run; the cycle will keep the sample in the bucket.')
+            self.deposit_enabled = False
+        elif self.deposit_enabled:
+            self.get_logger().info(f'[deposit] box {self.deposit_box.summary}; {why}')
         self.joint_tol = float(g('joint_goal_tolerance').value)
         self.gripper_joint = str(g('gripper_joint_name').value)
         self.publish_markers = bool(g('publish_debug_markers').value)
@@ -297,10 +462,12 @@ class SoilSampleNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.move_client = ActionClient(self, MoveGroup, str(g('move_action_name').value),
+        self.move_action_name = str(g('move_action_name').value)
+        self.execute_action_name = str(g('execute_action_name').value)
+        self.move_client = ActionClient(self, MoveGroup, self.move_action_name,
                                         callback_group=self._cb)
         self.exec_client = ActionClient(self, ExecuteTrajectory,
-                                        str(g('execute_action_name').value),
+                                        self.execute_action_name,
                                         callback_group=self._cb)
         self.grip_client = ActionClient(self, FollowJointTrajectory,
                                         str(g('gripper_action_name').value),
@@ -308,6 +475,8 @@ class SoilSampleNode(Node):
         self.cart_client = self.create_client(GetCartesianPath, '/compute_cartesian_path',
                                              callback_group=self._cb)
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik',
+                                           callback_group=self._cb)
+        self.fk_client = self.create_client(GetPositionFK, '/compute_fk',
                                            callback_group=self._cb)
         self.get_scene_client = self.create_client(
             GetPlanningScene, '/get_planning_scene', callback_group=self._cb)
@@ -389,29 +558,30 @@ class SoilSampleNode(Node):
 
     # ------------------------------------------------------------- perception
 
-    def survey(self) -> Optional[terrain.HeightMap]:
-        """Build a height map of the work region from the current depth frame."""
-        if self.latest_depth is None or self.camera_info is None:
-            self.get_logger().error('no depth frame or camera_info yet; cannot survey.')
-            return None
+    def _points_from_latest_depth(self) -> Optional[Tuple[np.ndarray, float]]:
+        """Back-project the newest depth frame into the planning frame.
+
+        Returns ``(points, stamp_sec)`` or None. Each frame carries its OWN TF,
+        so accumulating frames stays correct even if the arm drifts slightly
+        between them.
+        """
         depth = self.latest_depth
         info = self.camera_info
+        if depth is None or info is None:
+            return None
         fx, fy = float(info.k[0]), float(info.k[4])
         cx, cy = float(info.k[2]), float(info.k[5])
         if fx <= 0.0 or fy <= 0.0:
-            self.get_logger().error('camera_info has no usable intrinsics.')
             return None
         if info.width and depth.shape[1] != info.width:
-            s = depth.shape[1] / float(info.width)
-            fx, cx, fy, cy = fx * s, cx * s, fy * s, cy * s
-
+            sc = depth.shape[1] / float(info.width)
+            fx, cx, fy, cy = fx * sc, cx * sc, fy * sc, cy * sc
         try:
             pts_cam = backproject_depth(depth, fx, fy, cx, cy, self.depth_stride)
         except ValueError as exc:
             self.get_logger().error(f'cannot back-project depth: {exc}')
             return None
         if len(pts_cam) == 0:
-            self.get_logger().error('depth frame carries no valid pixels.')
             return None
 
         stamp = self.latest_depth_stamp or rclpy.time.Time()
@@ -425,7 +595,8 @@ class SoilSampleNode(Node):
                 if note != 'image stamp':
                     self.get_logger().warning(
                         f'TF at the image stamp unavailable for {frame} -> '
-                        f'{self.planning_frame}; used the latest transform.')
+                        f'{self.planning_frame}; used the latest transform.',
+                        throttle_duration_sec=10.0)
                 break
             except Exception:  # noqa: BLE001
                 continue
@@ -433,16 +604,66 @@ class SoilSampleNode(Node):
             self.get_logger().error(
                 f'no TF {frame} -> {self.planning_frame}; cannot place the survey.')
             return None
-
         R = quat_to_matrix(tfm.transform.rotation)
         t = np.array([tfm.transform.translation.x, tfm.transform.translation.y,
                       tfm.transform.translation.z], dtype=np.float64)
-        pts = pts_cam @ R.T + t
+        return pts_cam @ R.T + t, float(stamp.nanoseconds) * 1e-9
 
+    def survey(self) -> Optional[terrain.HeightMap]:
+        """Height map of the work region, built from ACCUMULATED depth frames.
+
+        One depth frame is a noisy sample of the ground: the surveyed height has
+        moved by tens of millimetres between runs, which is enough to push the
+        penetrate pose out of the arm's envelope. Several frames pooled into one
+        height map fix that cheaply -- the per-cell percentile in
+        ``terrain.height_map`` already does the averaging, so accumulating is
+        just a matter of feeding it more points, each transformed with its own TF.
+
+        The per-frame spread is logged: if it is large the drift is sensor noise,
+        if it is small the drift is real geometry moving between runs. That
+        distinction is worth having, so it is measured rather than assumed.
+        """
+        if self.latest_depth is None or self.camera_info is None:
+            self.get_logger().error('no depth frame or camera_info yet; cannot survey.')
+            return None
+
+        wanted = self.ground_frames if self.ground_accumulate else 1
+        clouds: List[np.ndarray] = []
+        per_frame_median: List[float] = []
+        last_stamp = -1.0
+        deadline = time.monotonic() + max(2.0, wanted * self.ground_frame_interval_sec * 4)
+        while len(clouds) < wanted and time.monotonic() < deadline:
+            got = self._points_from_latest_depth()
+            if got is None:
+                time.sleep(0.05)
+                continue
+            pts, stamp_sec = got
+            if stamp_sec <= last_stamp:      # wait for a genuinely new frame
+                time.sleep(0.02)
+                continue
+            last_stamp = stamp_sec
+            clouds.append(pts)
+            inside = pts[self.region.contains(pts)]
+            if len(inside):
+                per_frame_median.append(float(np.median(inside[:, 2])))
+            if len(clouds) < wanted:
+                time.sleep(self.ground_frame_interval_sec)
+
+        if not clouds:
+            self.get_logger().error('no usable depth frame for the survey.')
+            return None
+
+        pts = np.vstack(clouds)
         hmap = terrain.height_map(pts, self.region, self.cell_m, self.percentile)
+        spread = ''
+        if len(per_frame_median) > 1:
+            lo, hi = min(per_frame_median), max(per_frame_median)
+            spread = (f', per-frame ground median {lo:.3f}..{hi:.3f} '
+                      f'(spread {(hi-lo)*1000:.1f}mm)')
         self.get_logger().info(
-            f'Survey: {len(pts)} pts -> grid {hmap.shape[0]}x{hmap.shape[1]} @ '
-            f'{self.cell_m*1000:.0f}mm, {hmap.valid_fraction*100:.0f}% of cells observed.')
+            f'Survey: {len(clouds)} frame(s), {len(pts)} pts -> grid '
+            f'{hmap.shape[0]}x{hmap.shape[1]} @ {self.cell_m*1000:.0f}mm, '
+            f'{hmap.valid_fraction*100:.0f}% of cells observed{spread}.')
         if hmap.valid_fraction < self.min_valid_fraction:
             self.get_logger().error(
                 f'survey too sparse ({hmap.valid_fraction*100:.0f}% < '
@@ -452,6 +673,35 @@ class SoilSampleNode(Node):
         return hmap
 
     def select_site(self, hmap: terrain.HeightMap) -> List[terrain.ScoopSite]:
+        if self.use_fixed_sample_point:
+            site, why = terrain.site_at_xy(
+                hmap, self.sample_point[:2], self.footprint_m,
+                max_roughness_m=self.max_roughness_m,
+                max_slope_deg=self.max_slope_deg,
+                min_coverage=self.min_coverage,
+                min_points_per_cell=self.min_pts_cell,
+            )
+            if site is not None:
+                if not self.sample_point_measured_z:
+                    site = terrain.ScoopSite(
+                        centre=np.array([self.sample_point[0], self.sample_point[1],
+                                         float(self.sample_point[2])]),
+                        normal=site.normal, roughness_m=site.roughness_m,
+                        slope_deg=site.slope_deg, coverage=site.coverage,
+                        score=site.score)
+                self.get_logger().info(
+                    f'[sample] using the configured point: {site.summary}')
+                self._publish_site_markers([site])
+                return [site]
+            if self.sample_point_strict:
+                self.get_logger().error(
+                    f'[sample] configured point rejected: {why}. sample_point_strict '
+                    'is set, so no scoop will be attempted.')
+                return []
+            self.get_logger().warning(
+                f'[sample] configured point rejected: {why}. Falling back to '
+                'automatic site selection.')
+
         sites = terrain.select_scoop_site(
             hmap, self.footprint_m,
             max_roughness_m=self.max_roughness_m,
@@ -478,11 +728,40 @@ class SoilSampleNode(Node):
         self, site: terrain.ScoopSite
     ) -> Optional[Tuple[List[Tuple[str, Pose]], float, np.ndarray]]:
         """Turn a site into gripper-link poses for each scoop waypoint."""
-        waypoints, depth, note = scoop_lib.plan_scoop(
-            site.centre, site.normal, self.scoop_params,
-            azimuth_ref=self.attack_azimuth_ref)
-        if note:
-            self.get_logger().warning(f'[scoop] penetration depth {note}.')
+        # Depth ladder. The DEEPEST waypoint is the binding constraint, and how
+        # deep the arm can go depends on where the ground actually is -- surveyed
+        # ground has read -0.167, -0.175 and -0.185 across runs depending on the
+        # survey posture, and 10 mm of that moves the penetrate pose past the
+        # envelope. Rather than fail (the symptom was `penetratex12` with every
+        # approach and entry solving), ask for the configured depth and settle for
+        # a shallower real scoop if that is what the arm can reach.
+        requested = float(self.scoop_params.depth_m)
+        ladder = [requested]
+        while ladder[-1] > self.scoop_min_depth_m * 1.5:
+            ladder.append(max(self.scoop_min_depth_m, ladder[-1] * 0.66))
+        for attempt_depth in ladder:
+            params = replace(self.scoop_params, depth_m=attempt_depth)
+            waypoints, depth, note = scoop_lib.plan_scoop(
+                site.centre, site.normal, params,
+                azimuth_ref=self.attack_azimuth_ref)
+            if note:
+                self.get_logger().warning(f'[scoop] penetration depth {note}.')
+            built = self._poses_for_depth(site, waypoints, depth)
+            if built is not None:
+                if attempt_depth < requested - 1e-6:
+                    self.get_logger().warning(
+                        f'[scoop] reduced the scoop from {requested*1000:.0f}mm to '
+                        f'{depth*1000:.0f}mm: the deeper penetrate pose had no IK '
+                        'solution at any wrist roll. Still a real sample, just a '
+                        'smaller one.')
+                return built
+        self.get_logger().error(
+            f'[scoop] no depth from {requested*1000:.0f}mm down to '
+            f'{self.scoop_min_depth_m*1000:.0f}mm gives a solvable scoop at this site.')
+        return None
+
+    def _poses_for_depth(self, site, waypoints, depth):
+        """Roll search for one candidate depth; None if no roll solves."""
 
         # The hard Z floor depends only on the contact positions, not on the wrist
         # roll, so it is checked once before any IK work.
@@ -502,7 +781,7 @@ class SoilSampleNode(Node):
         axis = waypoints[0].tool_axis
 
         self.get_logger().info(
-            f'[scoop] site z={site.centre[2]:.3f}, penetrating {depth*1000:.0f}mm along '
+            f'[scoop] site z={site.centre[2]:.3f}, trying {depth*1000:.0f}mm along '
             f'the surface normal (slope {site.slope_deg:.1f}deg); entry axis '
             f'[{axis[0]:+.2f},{axis[1]:+.2f},{axis[2]:+.2f}].')
 
@@ -528,12 +807,9 @@ class SoilSampleNode(Node):
             failures[bad] = failures.get(bad, 0) + 1
 
         summary = ', '.join(f'{k}x{v}' for k, v in sorted(failures.items()))
-        self.get_logger().error(
-            f'[scoop] no wrist roll out of {len(frames)} gives IK for the whole scoop '
-            f'(first failing waypoint per roll: {summary}). The site is out of the arm\'s '
-            'reach at this depth and attack angle, not merely awkwardly oriented. Try a '
-            'shallower scoop_depth_m, a different scoop_attack_deg, or a work region '
-            'closer in.')
+        self.get_logger().warning(
+            f'[scoop] no wrist roll out of {len(frames)} solves the whole scoop at '
+            f'{depth*1000:.0f}mm (first failing waypoint per roll: {summary}).')
         return None
 
     def _poses_for_frame(
@@ -554,6 +830,23 @@ class SoilSampleNode(Node):
             pose.orientation = orientation
             poses.append((wp.label, pose))
         return poses
+
+    def _pose_like(self, ref_pose: Pose, contact: np.ndarray,
+                   _unused: Pose) -> Pose:
+        """A link pose at ``contact``, holding ``ref_pose``'s orientation.
+
+        The whole stroke keeps one wrist orientation, so an intermediate
+        waypoint only needs its position recomputed from the contact point.
+        """
+        R = quat_to_matrix(ref_pose.orientation)
+        offset = fourbar.contact_offset(self.entry_q, fourbar.CONTACT_Y_OFFSET_M)
+        link = scoop_lib.link_position_for_contact(contact, R, offset)
+        pose = Pose()
+        pose.position.x = float(link[0])
+        pose.position.y = float(link[1])
+        pose.position.z = float(link[2])
+        pose.orientation = ref_pose.orientation
+        return pose
 
     def _ik_exists(self, pose: Pose) -> bool:
         """Quiet single-pose IK check used by the wrist-roll search."""
@@ -576,7 +869,78 @@ class SoilSampleNode(Node):
 
     # --------------------------------------------------------------- motion
 
-    def move_to_posture(self, positions: Sequence[float], label: str) -> bool:
+    def _track(self, goal_handle):
+        if goal_handle is not None:
+            with self._active_goals_lock:
+                if not any(h is goal_handle for h in self._active_goals):
+                    self._active_goals.append(goal_handle)
+        return goal_handle
+
+    def _untrack(self, goal_handle) -> None:
+        if goal_handle is None:
+            return
+        with self._active_goals_lock:
+            # Identity, not equality: ClientGoalHandle.__eq__ compares goal ids
+            # and list.remove() would use it, but identity is what we mean here.
+            self._active_goals = [h for h in self._active_goals if h is not goal_handle]
+
+    def cancel_active_goals_on_shutdown(self) -> None:
+        """Cancel every goal we still own, spinning by hand.
+
+        Called from main() AFTER the executor has stopped, so it cannot rely on
+        the background executor and spins the node itself. Best effort: on
+        shutdown a failure here is not worth raising, but skipping it wedges
+        MoveIt for the next run.
+        """
+        with self._active_goals_lock:
+            handles = list(self._active_goals)
+            self._active_goals.clear()
+        if not handles:
+            return
+        self.get_logger().warning(
+            f'shutting down with {len(handles)} goal(s) in flight; cancelling so '
+            'MoveIt does not stay wedged for the next run.')
+        for gh in handles:
+            try:
+                fut = gh.cancel_goal_async()
+                rclpy.spin_until_future_complete(self, fut, timeout_sec=3.0)
+            except Exception:  # noqa: BLE001 - shutdown path
+                pass
+
+    def cancel_stale_execution(self) -> bool:
+        """Clear a trajectory MoveIt still believes is executing.
+
+        A Ctrl-C'd run abandons its action goals without cancelling them, so
+        MoveIt's trajectory_execution_manager keeps the old trajectory in flight.
+        Every later plan then dies instantly with CONTROL_FAILED (-4) and
+        `Cannot push a new trajectory while another is being executed` -- planning
+        succeeded, execution was refused. There is no stop service to call, and
+        the stale goal belongs to a dead process so we hold no handle to it.
+
+        The ROS 2 action spec covers exactly this: a CancelGoal request with a
+        zeroed goal id AND a zero stamp means "cancel all goals", whoever owns
+        them. That is what this sends, to both MoveIt action servers.
+        """
+        cleared = False
+        for action in (self.move_action_name, self.execute_action_name):
+            srv = f'{action.rstrip("/")}/_action/cancel_goal'
+            cli = self.create_client(CancelGoal, srv, callback_group=self._cb)
+            if not cli.wait_for_service(timeout_sec=3.0):
+                self.get_logger().warning(f'[recover] {srv} unavailable.')
+                continue
+            req = CancelGoal.Request()          # zero uuid + zero stamp = cancel all
+            res = self._wait(cli.call_async(req), 8.0)
+            n = len(res.goals_canceling) if res is not None else 0
+            if n:
+                cleared = True
+            self.get_logger().warning(
+                f'[recover] cancel-all on {action}: {n} goal(s) cancelling.')
+        if cleared:
+            self._sleep(1.0)
+        return cleared
+
+    def move_to_posture(self, positions: Sequence[float], label: str,
+                        allow_recovery: bool = True) -> bool:
         if not self.move_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f'[{label}] MoveGroup action unavailable.')
             return False
@@ -606,15 +970,27 @@ class SoilSampleNode(Node):
         goal.planning_options.replan_attempts = 3
 
         self.get_logger().info(f'[{label}] moving to posture.')
-        gh = self._wait(self.move_client.send_goal_async(goal), 10.0)
+        gh = self._track(self._wait(self.move_client.send_goal_async(goal), 10.0))
         if gh is None or not gh.accepted:
             self.get_logger().error(f'[{label}] MoveGroup rejected the goal.')
             return False
         result = self._wait(gh.get_result_async(), self.planning_time + 40.0)
+        self._untrack(gh)
         if result is None:
             self.get_logger().error(f'[{label}] MoveGroup did not return a result.')
             return False
         code = result.result.error_code.val
+        if code == -4 and allow_recovery:
+            # CONTROL_FAILED. Planning worked; execution was refused. Overwhelmingly
+            # this is a trajectory left in flight by a previous run, so clear it
+            # and try once more rather than reporting a dead end.
+            self.get_logger().warning(
+                f'[{label}] CONTROL_FAILED (-4): MoveIt refused to execute. This is '
+                'almost always a trajectory still in flight from an earlier run '
+                '("Cannot push a new trajectory while another is being executed"). '
+                'Cancelling all MoveIt goals and retrying once.')
+            self.cancel_stale_execution()
+            return self.move_to_posture(positions, label, allow_recovery=False)
         if code != 1:
             self.get_logger().error(f'[{label}] MoveGroup failed, moveit_error_code={code}.')
             return False
@@ -655,11 +1031,12 @@ class SoilSampleNode(Node):
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = traj
         self.get_logger().info(f'[{label}] Cartesian path {fraction:.2f}; executing.')
-        gh = self._wait(self.exec_client.send_goal_async(goal), 10.0)
+        gh = self._track(self._wait(self.exec_client.send_goal_async(goal), 10.0))
         if gh is None or not gh.accepted:
             self.get_logger().error(f'[{label}] execute_trajectory rejected the goal.')
             return False
         result = self._wait(gh.get_result_async(), 60.0)
+        self._untrack(gh)
         if result is None:
             self.get_logger().error(f'[{label}] execute_trajectory returned no result.')
             return False
@@ -667,6 +1044,41 @@ class SoilSampleNode(Node):
         if code != 1:
             self.get_logger().error(f'[{label}] execution failed, error_code={code}.')
             return False
+        return True
+
+    def command_bucket_async(self, q: float, label: str) -> bool:
+        """Start closing and return immediately, so the arm keeps descending.
+
+        Closing only after the bucket has stopped scrapes rather than scoops:
+        the shells need to be shutting while they are still moving through the
+        material. Fire-and-forget is deliberate -- the descent leg that follows
+        is what gives the close time to happen.
+        """
+        if not self.grip_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(f'[{label}] gripper action unavailable.')
+            return False
+        traj = JointTrajectory()
+        traj.joint_names = [self.gripper_joint]
+        current = self.joint_positions.get(self.gripper_joint)
+        if current is not None:
+            start = JointTrajectoryPoint()
+            start.positions = [float(current)]
+            start.velocities = [0.0]
+            start.time_from_start = Duration(sec=0, nanosec=0)
+            traj.points.append(start)
+        end = JointTrajectoryPoint()
+        end.positions = [float(q)]
+        end.velocities = [0.0]
+        ns = int(self.grip_duration * 1e9)
+        end.time_from_start = Duration(sec=ns // 1_000_000_000,
+                                       nanosec=ns % 1_000_000_000)
+        traj.points.append(end)
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory = traj
+        self.get_logger().info(
+            f'[{label}] bucket -> q={q:+.3f} (gap {fourbar.gap_from_q(q)*1000:.0f}mm), '
+            'closing while the bucket keeps moving.')
+        self._track(self._wait(self.grip_client.send_goal_async(goal), 10.0))
         return True
 
     def command_bucket(self, q: float, label: str) -> bool:
@@ -702,11 +1114,12 @@ class SoilSampleNode(Node):
         goal.trajectory = traj
         self.get_logger().info(
             f'[{label}] bucket -> q={q:+.3f} (gap {fourbar.gap_from_q(q)*1000:.0f}mm).')
-        gh = self._wait(self.grip_client.send_goal_async(goal), 10.0)
+        gh = self._track(self._wait(self.grip_client.send_goal_async(goal), 10.0))
         if gh is None or not gh.accepted:
             self.get_logger().error(f'[{label}] gripper controller rejected the goal.')
             return False
         self._wait(gh.get_result_async(), self.grip_duration + 15.0)
+        self._untrack(gh)
         self._sleep(self.grip_settle)
         return True
 
@@ -807,13 +1220,176 @@ class SoilSampleNode(Node):
             f'over {cells} shared cells -> {verdict.upper()}: {reason}')
         return verdict, reason
 
+    def deposit_sample(self) -> Tuple[bool, str]:
+        """Tip the sample into the rover-mounted box.
+
+        Measured over the base-box column (contact at the box centre, bucket
+        mouth pointing straight DOWN, 4 wrist rolls):
+
+            contact z   vs rim   link z   reach   collision-free
+              0.380     +18mm    0.594     4/4        3/4
+              0.400     +38mm    0.614     4/4        4/4
+              0.420     +58mm    0.634     4/4        2/4
+              0.450     +88mm    0.664     1/4        0/4
+
+        So 0.400 is the sweet spot and the default. Two things this proves:
+
+        * The bucket CAN use the rover box even though the probe could not. The
+          probe needed the gripper link at z=0.787 (200 mm of probe hanging below
+          a 270 mm contact); the bucket needs 0.614 -- 173 mm less -- because
+          nothing protrudes past the jaws.
+        * The dump must be VERTICAL. At a 30 deg tilt reach is still fine but
+          collisions reject it (0/4 at every height): leaning over the box puts
+          the arm back into the fold that blocked the probe. This is the opposite
+          of the scoop, which cannot be vertical.
+
+        Dumping only needs to be ABOVE the rim, not inside the box, so the bucket
+        never enters it.
+        """
+        if not self.deposit_enabled:
+            return False, 'deposit disabled'
+        self._publish_box_marker()
+
+        # 1) The configured posture first: it is a pose someone has actually seen
+        #    the bucket hold over the box, so it cannot be argued out of reach.
+        if self.deposit_use_joint_posture and self.deposit_joint_positions:
+            if self._posture_is_over_box() and self.move_to_posture(
+                    self.deposit_joint_positions, 'deposit-posture'):
+                self._sleep(self.deposit_settle_sec)
+                if not self.command_bucket(self.deposit_dump_open_q, 'dump'):
+                    return False, 'reached the box but the bucket would not open'
+                self._sleep(self.deposit_settle_sec)
+                self.get_logger().info('[deposit] sample tipped in from the configured '
+                                       'dump posture.')
+                return True, 'deposited in the box (configured posture)'
+            self.get_logger().warning(
+                '[deposit] configured dump posture unusable; falling back to a pose '
+                'derived from the box geometry.')
+
+        # 2) Otherwise derive it, searching UPWARD: a higher tip still lands in
+        #    the box, and height is what the envelope cares about.
+        clearances = [self.deposit_rim_clearance_m]
+        while clearances[-1] < self.deposit_max_rim_clearance_m - 1e-6:
+            clearances.append(min(self.deposit_max_rim_clearance_m,
+                                  clearances[-1] + 0.025))
+        for clearance in clearances:
+            if self._try_dump_at(clearance):
+                return True, (f'deposited in the box '
+                              f'({clearance*1000:.0f}mm above the rim)')
+        self.get_logger().error(
+            f'[deposit] no wrist roll reaches a dump pose from '
+            f'{self.deposit_rim_clearance_m*1000:.0f}mm to '
+            f'{self.deposit_max_rim_clearance_m*1000:.0f}mm above the rim. The bucket '
+            'is still closed and still holding the sample; nothing was released.')
+        return False, 'dump pose unreachable at any clearance'
+
+    def _posture_is_over_box(self) -> bool:
+        """Does the configured dump posture actually put the bucket over the box?"""
+        pose = self.link_pose_for_joints(self.deposit_joint_positions)
+        if pose is None:
+            self.get_logger().warning('[deposit] could not FK the dump posture.')
+            return False
+        R = quat_to_matrix(pose.orientation)
+        link = np.array([pose.position.x, pose.position.y, pose.position.z])
+        contact = link + R @ fourbar.contact_offset(
+            self.close_q, fourbar.CONTACT_Y_OFFSET_M)
+        over = self.deposit_box.over_opening(contact, self.deposit_edge_margin_m)
+        down_deg = math.degrees(math.acos(max(-1.0, min(1.0, -float(R[2, 2])))))
+        self.get_logger().info(
+            f'[deposit] dump posture puts the bucket at '
+            f'({contact[0]:.3f},{contact[1]:.3f},{contact[2]:.3f}), '
+            f'{(contact[2]-self.deposit_box.rim_z)*1000:+.0f}mm vs the rim, mouth '
+            f'{down_deg:.0f} deg off straight down, over the opening={over}.')
+        if not over:
+            self.get_logger().warning(
+                '[deposit] that posture is NOT over the box opening -- the sample '
+                'would miss. Check deposit_joint_positions against the box.')
+        if down_deg > 35.0:
+            self.get_logger().warning(
+                '[deposit] the bucket mouth is far from vertical in that posture; '
+                'soil may not tip out cleanly.')
+        return over
+
+    def _try_dump_at(self, clearance: float) -> bool:
+        """Move to a derived dump pose at this clearance and open the jaws."""
+        contact = self.deposit_box.dump_contact(clearance, self.deposit_offset_xy)
+        axis = np.array([0.0, 0.0, -1.0])          # mouth down; must not tilt
+        offset = fourbar.contact_offset(self.close_q, fourbar.CONTACT_Y_OFFSET_M)
+        R_now = self._current_tool_rotation()
+        prefer = R_now[:, 0] if R_now is not None else None
+
+        self.get_logger().info(
+            f'[deposit] trying a dump pose at ({contact[0]:.3f},{contact[1]:.3f},'
+            f'{contact[2]:.3f}) = {clearance*1000:.0f}mm above the rim, mouth down.')
+        for i, R in enumerate(scoop_lib.roll_frames(axis, prefer, self.roll_candidates)):
+            link_pos = scoop_lib.link_position_for_contact(contact, R, offset)
+            pose = Pose()
+            pose.position.x = float(link_pos[0])
+            pose.position.y = float(link_pos[1])
+            pose.position.z = float(link_pos[2])
+            pose.orientation = matrix_to_quat(R)
+            if not self._ik_exists(pose):
+                continue
+            if not self.move_to_posture_pose(pose, 'deposit'):
+                continue
+            self._sleep(self.deposit_settle_sec)
+            # Opening the jaws over the box IS the dump; there is nothing to
+            # release-and-regrasp, so a single open is the whole operation.
+            if not self.command_bucket(self.deposit_dump_open_q, 'dump'):
+                self.get_logger().error('[deposit] reached the box but the bucket '
+                                        'would not open.')
+                return False
+            self._sleep(self.deposit_settle_sec)
+            self.get_logger().info(
+                f'[deposit] sample tipped into the box (wrist roll '
+                f'{i + 1}/{self.roll_candidates}).')
+            return True
+
+        return False
+
     # ------------------------------------------------------------- sequence
+
+    def wait_for_stack(self) -> Tuple[bool, str]:
+        """Block until MoveIt, the gripper controller and the camera are live.
+
+        Discovery is not instant after a sim launch, and a cycle that starts
+        before the stack is up fails on the first motion for a reason that looks
+        like a real fault (`MoveGroup action unavailable`) but is only impatience.
+        Waits for what the FIRST stage actually needs, and names whatever is
+        missing rather than timing out silently.
+        """
+        deadline = time.monotonic() + self.startup_wait_sec
+        checks = (
+            ('MoveGroup action', lambda: self.move_client.server_is_ready()),
+            ('execute_trajectory action', lambda: self.exec_client.server_is_ready()),
+            ('gripper action', lambda: self.grip_client.server_is_ready()),
+            ('compute_ik service', lambda: self.ik_client.service_is_ready()),
+            ('cartesian path service', lambda: self.cart_client.service_is_ready()),
+            ('depth frame', lambda: self.latest_depth is not None),
+            ('camera_info', lambda: self.camera_info is not None),
+        )
+        announced = False
+        while time.monotonic() < deadline:
+            missing = [name for name, ready in checks if not ready()]
+            if not missing:
+                return True, 'stack ready'
+            if not announced:
+                self.get_logger().info(
+                    f'waiting up to {self.startup_wait_sec:.0f}s for: {", ".join(missing)}')
+                announced = True
+            time.sleep(0.5)
+        missing = [name for name, ready in checks if not ready()]
+        return False, f'still missing after {self.startup_wait_sec:.0f}s: {", ".join(missing)}'
 
     def run_scoop_cycle(self) -> Tuple[bool, str]:
         if not self._busy.acquire(blocking=False):
             return False, 'a cycle is already running'
         self._abort.clear()
         try:
+            ready, why = self.wait_for_stack()
+            if not ready:
+                self.get_logger().error(f'not starting a cycle: {why}')
+                return False, why
             return self._run_scoop_cycle_locked()
         except Exception as exc:  # noqa: BLE001 - never leave the node wedged
             self.get_logger().error(f'scoop cycle raised: {exc}')
@@ -828,8 +1404,9 @@ class SoilSampleNode(Node):
         return False
 
     def _run_scoop_cycle_locked(self) -> Tuple[bool, str]:
-        if not self.move_to_posture(self.survey_q, 'survey-posture'):
-            return False, 'could not reach the survey posture'
+        # Start from pick_home, as the sequence specifies.
+        if not self.move_to_posture(self.home_q, 'pick_home-start'):
+            return False, 'could not reach the pick_home start posture'
         self._sleep(1.0)
 
         for attempt in range(1, self.max_attempts + 1):
@@ -869,16 +1446,53 @@ class SoilSampleNode(Node):
                     return False, 'bucket would not open'
                 if self._aborted('approach'):
                     return False, 'aborted'
-                if not self.move_to_posture_pose(by_label['approach'], 'approach'):
-                    continue
-                if not self.move_cartesian([by_label['entry'], by_label['penetrate']],
-                                           'descend'):
-                    # Nothing is buried yet: the stroke never started.
-                    continue
+
+                # Where, along the descent, the jaws start shutting.
+                trigger = None
+                if self.close_during_descent:
+                    axis = np.asarray(_axis, dtype=np.float64)
+                    trig_contact = (np.asarray(site.centre, dtype=np.float64)
+                                    - axis * float(self.close_start_above_ground_m))
+                    trigger = self._pose_like(by_label['entry'], trig_contact,
+                                              by_label['approach'])
+
+                if self.scoop_all_cartesian:
+                    # One Cartesian stroke: approach -> entry -> penetrate. The
+                    # arm follows a straight line the whole way in, so the tool
+                    # never takes a joint-space detour through the soil, and the
+                    # descend no longer has to start from wherever a joint move
+                    # happened to leave it.
+                    if trigger is not None:
+                        # Descend to the trigger height, START closing, then keep
+                        # going: the shells sweep material as they shut.
+                        if not self.move_cartesian(
+                                [by_label['approach'], trigger], 'descend-to-close'):
+                            continue
+                        self.command_bucket_async(self.close_q, 'close-while-descending')
+                        if not self.move_cartesian([by_label['penetrate']],
+                                                   'descend-through-soil'):
+                            continue
+                    elif not self.move_cartesian(
+                            [by_label['approach'], by_label['entry'],
+                             by_label['penetrate']], 'approach+descend'):
+                        # Nothing is buried yet: the stroke never started.
+                        continue
+                else:
+                    if not self.move_to_posture_pose(by_label['approach'], 'approach'):
+                        continue
+                    if not self.move_cartesian(
+                            [by_label['entry'], by_label['penetrate']], 'descend'):
+                        continue
 
                 # Past this point the bucket is IN the soil. Extraction must run
                 # even if the close fails, or the gripper is left buried.
-                closed = self.command_bucket(self.close_q, 'close-bucket')
+                if trigger is not None:
+                    # Already commanded on the way down; just let it finish
+                    # loading against the soil.
+                    closed = True
+                    self._sleep(self.grip_settle)
+                else:
+                    closed = self.command_bucket(self.close_q, 'close-bucket')
                 self._sleep(self.close_hold)
                 extracted = self.move_cartesian([by_label['extract']], 'extract')
                 if not extracted:
@@ -899,10 +1513,21 @@ class SoilSampleNode(Node):
 
             verdict, reason = self.verify_capture(site, before)
             if verdict == scoop_lib.CAPTURED:
-                if self.return_transport and not self._aborted('transport'):
-                    self.move_to_posture(self.transport_q, 'transport')
-                self.get_logger().info(f'SOIL SAMPLE COLLECTED ({reason}). '
-                                       'Bucket stays closed.')
+                self.get_logger().info(f'SOIL SAMPLE COLLECTED ({reason}).')
+                # Back to pick_home with the sample aboard, bucket still closed,
+                # BEFORE going anywhere near the box.
+                if not self._aborted('return-home'):
+                    self.move_home_cartesian('pick_home-return')
+                if self.deposit_enabled and not self._aborted('deposit'):
+                    ok, dmsg = self.deposit_sample()
+                    if self.return_transport and not self._aborted('transport'):
+                        self.move_home_cartesian('pick_home-final')
+                    if ok:
+                        return True, f'captured and {dmsg}'
+                    # The sample is still in the bucket, so this is a partial
+                    # success, not a failed scoop: say which half worked.
+                    return False, f'captured ({reason}) but NOT deposited: {dmsg}'
+                self.get_logger().info('Bucket stays closed (deposit disabled).')
                 return True, f'captured: {reason}'
             if verdict == scoop_lib.EMPTY:
                 self.get_logger().warning(
@@ -912,6 +1537,38 @@ class SoilSampleNode(Node):
                     f'capture unconfirmed ({reason}); treating as a miss and retrying.')
 
         return False, f'no sample after {self.max_attempts} attempts'
+
+    def link_pose_for_joints(self, positions: Sequence[float]) -> Optional[Pose]:
+        """Forward kinematics for a joint posture, so it can be a Cartesian goal."""
+        if not self.fk_client.wait_for_service(timeout_sec=3.0):
+            return None
+        req = GetPositionFK.Request()
+        req.header.frame_id = self.planning_frame
+        req.fk_link_names = [self.planning_link]
+        req.robot_state.joint_state.name = list(self.arm_joints)
+        req.robot_state.joint_state.position = [float(v) for v in positions]
+        res = self._wait(self.fk_client.call_async(req), 8.0)
+        if res is None or res.error_code.val != 1 or not res.pose_stamped:
+            return None
+        return res.pose_stamped[0].pose
+
+    def move_home_cartesian(self, label: str) -> bool:
+        """Return to pick_home along a straight line, gripper untouched.
+
+        The sample rides in a closed bucket, so the return is a transport move:
+        keep it straight and predictable rather than letting the planner pick an
+        arbitrary joint-space arc through the scene. If the straight line cannot
+        be solved the joint move still runs -- a curved return beats leaving the
+        bucket in the hole.
+        """
+        if self.cartesian_return_home:
+            pose = self.link_pose_for_joints(self.home_q)
+            if pose is not None and self.move_cartesian([pose], f'{label}-cartesian'):
+                return True
+            self.get_logger().warning(
+                f'[{label}] straight-line return to pick_home not solvable; '
+                'falling back to a joint-space move.')
+        return self.move_to_posture(self.home_q, label)
 
     def move_to_posture_pose(self, pose: Pose, label: str) -> bool:
         """MoveGroup to a Cartesian link pose via an IK'd joint goal.
@@ -969,6 +1626,80 @@ class SoilSampleNode(Node):
             m.color.b = 0.2 if best else 0.8
             m.color.a = 0.9 if best else 0.35
             arr.markers.append(m)
+            if best:
+                # The surface normal at the chosen point, so the entry direction
+                # is visible rather than inferred from the disc alone.
+                arrow = Marker()
+                arrow.header.frame_id = self.planning_frame
+                arrow.header.stamp = m.header.stamp
+                arrow.ns = 'scoop_sites'
+                arrow.id = 1000
+                arrow.type = Marker.ARROW
+                arrow.action = Marker.ADD
+                arrow.scale.x, arrow.scale.y, arrow.scale.z = 0.006, 0.012, 0.0
+                arrow.color.r, arrow.color.g, arrow.color.b, arrow.color.a = (
+                    0.0, 0.9, 0.2, 0.9)
+                tip = s.centre + np.asarray(s.normal, dtype=np.float64) * 0.08
+                arrow.points.append(Point(x=float(s.centre[0]), y=float(s.centre[1]),
+                                          z=float(s.centre[2])))
+                arrow.points.append(Point(x=float(tip[0]), y=float(tip[1]),
+                                          z=float(tip[2])))
+                arr.markers.append(arrow)
+        self.marker_pub.publish(arr)
+        self._publish_box_marker()
+
+    def _publish_box_marker(self) -> None:
+        """Draw the configured box and its dump point, for tuning it by eye.
+
+        The box outline is a wireframe rather than a solid cube so the opening
+        stays visible, and the dump point is drawn separately: if the sphere is
+        not floating just above the opening, the configuration is wrong and this
+        shows it before a scoop puts soil on the deck.
+        """
+        if not (self.publish_box_marker and self.publish_markers):
+            return
+        b = self.deposit_box
+        stamp = self.get_clock().now().to_msg()
+        arr = MarkerArray()
+
+        outline = Marker()
+        outline.header.frame_id = self.planning_frame
+        outline.header.stamp = stamp
+        outline.ns = 'deposit_box'
+        outline.id = 0
+        outline.type = Marker.LINE_LIST
+        outline.action = Marker.ADD
+        outline.pose.orientation.w = 1.0
+        outline.scale.x = 0.004
+        outline.color.r, outline.color.g, outline.color.b, outline.color.a = (
+            0.2, 0.6, 1.0, 0.9)
+        corners = b.corners
+        # Pairs of corner indices that share exactly two sign components.
+        for i in range(8):
+            for j in range(i + 1, 8):
+                same = sum(1 for k in range(3)
+                           if abs(corners[i][k] - corners[j][k]) < 1e-9)
+                if same >= 1 and np.count_nonzero(
+                        np.abs(corners[i] - corners[j]) > 1e-9) == 1:
+                    for c in (corners[i], corners[j]):
+                        outline.points.append(
+                            Point(x=float(c[0]), y=float(c[1]), z=float(c[2])))
+        arr.markers.append(outline)
+
+        contact = b.dump_contact(self.deposit_rim_clearance_m, self.deposit_offset_xy)
+        dot = Marker()
+        dot.header.frame_id = self.planning_frame
+        dot.header.stamp = stamp
+        dot.ns = 'deposit_box'
+        dot.id = 1
+        dot.type = Marker.SPHERE
+        dot.action = Marker.ADD
+        dot.pose.position = Point(x=float(contact[0]), y=float(contact[1]),
+                                  z=float(contact[2]))
+        dot.pose.orientation.w = 1.0
+        dot.scale.x = dot.scale.y = dot.scale.z = 0.018
+        dot.color.r, dot.color.g, dot.color.b, dot.color.a = (1.0, 0.7, 0.1, 0.95)
+        arr.markers.append(dot)
         self.marker_pub.publish(arr)
 
     # ------------------------------------------------------------- services
@@ -980,6 +1711,7 @@ class SoilSampleNode(Node):
         return res
 
     def _srv_survey(self, _req, res):
+        self._publish_box_marker()
         hmap = self.survey()
         if hmap is None:
             res.success = False
@@ -1001,6 +1733,7 @@ class SoilSampleNode(Node):
         is -- a floor set above the surveyed ground silently rejects every
         attempt, which this surfaces without putting the bucket in the soil.
         """
+        self._publish_box_marker()
         hmap = self.survey()
         if hmap is None:
             res.success, res.message = False, 'survey failed; see the log'
@@ -1054,6 +1787,7 @@ def main() -> None:
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.cancel_active_goals_on_shutdown()
         executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():

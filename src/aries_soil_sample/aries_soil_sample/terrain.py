@@ -294,6 +294,71 @@ def _spread_out(sites: List[ScoopSite], min_separation_m: float,
     return kept
 
 
+def site_at_xy(
+    hmap: HeightMap,
+    xy: Sequence[float],
+    footprint_m: float,
+    *,
+    max_roughness_m: float = 0.006,
+    max_slope_deg: float = 12.0,
+    min_coverage: float = 0.70,
+    min_points_per_cell: int = 1,
+) -> Tuple[Optional[ScoopSite], str]:
+    """Evaluate ONE operator-chosen XY instead of searching for the best patch.
+
+    Returns ``(site, reason)``. The site carries the MEASURED surface height and
+    normal at that location, so a configured point says *where* to sample while
+    perception still decides how deep and at what angle -- a hand-typed Z would
+    otherwise either scoop air or drive the bucket into the ground.
+
+    The same roughness/slope/coverage gates apply as for an automatic site: being
+    chosen by hand does not make a patch safe to cut, and ``reason`` says which
+    gate rejected it so a bad coordinate is obvious rather than mysterious.
+    """
+    target = np.asarray(xy, dtype=np.float64).reshape(2,)
+    win = max(1, int(math.ceil(float(footprint_m) / hmap.cell_m)))
+    nx, ny = hmap.shape
+    # Centre the footprint window on the requested XY.
+    cx = int(round((target[0] - hmap.x_min) / hmap.cell_m - 0.5))
+    cy = int(round((target[1] - hmap.y_min) / hmap.cell_m - 0.5))
+    ix = cx - win // 2
+    iy = cy - win // 2
+    if ix < 0 or iy < 0 or ix + win > nx or iy + win > ny:
+        return None, (f'requested point ({target[0]:.3f},{target[1]:.3f}) is outside the '
+                      'surveyed work region, or too close to its edge to fit the '
+                      f'{footprint_m*1000:.0f}mm bucket footprint')
+
+    sub = hmap.grid[ix:ix + win, iy:iy + win]
+    sub_counts = hmap.counts[ix:ix + win, iy:iy + win]
+    observed = np.isfinite(sub) & (sub_counts >= int(min_points_per_cell))
+    coverage = float(np.count_nonzero(observed)) / float(win * win)
+    if coverage < float(min_coverage):
+        return None, (f'only {coverage*100:.0f}% of the footprint at that point was '
+                      f'observed (need {float(min_coverage)*100:.0f}%)')
+    gx, gy = np.nonzero(observed)
+    pts = np.column_stack([
+        hmap.x_min + (ix + gx + 0.5) * hmap.cell_m,
+        hmap.y_min + (iy + gy + 0.5) * hmap.cell_m,
+        sub[gx, gy],
+    ])
+    fit = fit_plane(pts)
+    if fit is None:
+        return None, 'could not fit a surface plane at that point'
+    normal, centroid, rms = fit
+    tilt = slope_deg(normal)
+    if rms > float(max_roughness_m):
+        return None, (f'ground there is too rough: {rms*1000:.1f}mm rms vs '
+                      f'{float(max_roughness_m)*1000:.1f}mm limit (something is buried '
+                      'or protruding)')
+    if tilt > float(max_slope_deg):
+        return None, (f'ground there is too sloped: {tilt:.1f}deg vs '
+                      f'{float(max_slope_deg):.1f}deg limit')
+    # Keep the operator's XY; take Z and the normal from the measured surface.
+    centre = np.array([target[0], target[1], float(centroid[2])], dtype=np.float64)
+    return ScoopSite(centre=centre, normal=normal, roughness_m=rms, slope_deg=tilt,
+                     coverage=coverage, score=0.0), 'configured point accepted'
+
+
 def divot_volume(
     before: HeightMap,
     after: HeightMap,

@@ -22,6 +22,13 @@ def generate_launch_description():
             description='YAML with the full terrain/scoop parameter set.',
         ),
         DeclareLaunchArgument(
+            'sample_points_config',
+            default_value=_share_path('config/sample_points.yaml'),
+            description='YAML holding the sampling point and the deposit box, all '
+                        'in XYZ. Loaded LAST so it stays the authoritative file '
+                        'for those coordinates.',
+        ),
+        DeclareLaunchArgument(
             'finger_type',
             default_value='bucket',
             choices=['bucket'],
@@ -47,6 +54,8 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 LaunchConfiguration('params_file'),
+                # Last, so the sampling point and box live in one file.
+                LaunchConfiguration('sample_points_config'),
                 {
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'finger_type': LaunchConfiguration('finger_type'),
