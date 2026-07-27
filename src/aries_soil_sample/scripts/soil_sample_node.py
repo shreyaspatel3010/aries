@@ -194,22 +194,22 @@ class SoilSampleNode(Node):
         p('scoop_depth_margin_m', 0.010)
         p('scoop_retrace_extraction', True)
 
-        # Collect with the bucket FULLY open, then fully closed. Full open also
-        # helps reach: the four-bar contact sits 134 mm from the link at q=-1.57
-        # versus 214 mm at q=-0.34, so the wrist is 80 mm lower for the same
-        # ground contact.
-        p('bucket_use_full_open', True)
+        # FULL OPEN to descend, FULL CLOSE to collect. No partial angles.
         p('bucket_full_open_q', -1.57)
-        p('bucket_use_full_close', True)
         p('bucket_full_close_q', 0.07)
+        # Reference point the scoop geometry is measured to. 0 = derive it from
+        # the CLOSED jaw angle, which is the right choice and worth stating:
+        # the four-bar "contact" is where the two jaw faces would MEET, and wide
+        # open that is a virtual point 134 mm from the link, high between the
+        # splayed shells. It is not what touches the soil. Referencing the scoop
+        # to it drove the link to 134 mm above the ground -- unreachable, and it
+        # would have buried the shells. The sample ends up where the CLOSED
+        # bucket is, so the closed contact (219.5 mm) is the meaningful datum.
+        p('scoop_reference_offset_m', 0.0)
         # Start closing DURING the descent, this far above the surveyed surface,
-        # so the shells sweep material as they shut instead of closing after the
-        # bucket has already stopped. 0 closes at the surface; negative closes
-        # below it.
+        # so the shells sweep material as they shut.
         p('close_during_descent', True)
         p('close_start_above_ground_m', 0.020)
-        p('bucket_entry_q', -0.34)
-        p('bucket_close_q', 0.07)
         p('bucket_open_q', -1.30)
         p('gripper_command_duration_sec', 3.0)
         p('gripper_settle_sec', 1.0)
@@ -228,7 +228,16 @@ class SoilSampleNode(Node):
         p('allowed_planning_time', 8.0)
         p('cartesian_eef_step', 0.005)
         p('cartesian_min_fraction', 0.90)
-        p('absolute_min_contact_z', -0.16)
+        # Hard depth limit, expressed RELATIVE to the ground the camera detected.
+        # An absolute Z floor is unusable in deployment: you do not know the
+        # terrain height in advance, and a floor set from one site silently
+        # rejects every scoop at a site 40 mm lower. This one travels with the
+        # measured surface.
+        p('max_depth_below_ground_m', 0.060)
+        # Optional SECOND floor in absolute planning-frame Z, for a known fixed
+        # workspace. Leave at the default to disable it -- in the field the
+        # relative limit above is the one that means anything.
+        p('absolute_min_contact_z', -9.0)
         p('prescreen_ik_all_waypoints', True)
         # Wrist rolls to try about the entry axis before giving up on a site.
         # Roll is free for the bucket but NOT for the arm: near the envelope edge
@@ -256,8 +265,21 @@ class SoilSampleNode(Node):
         # ground. Contact point, not link origin, in the planning frame.
         # Sampling point (config/sample_points.yaml, loaded last).
         p('use_fixed_sample_point', False)
-        p('sample_point_xyz', [0.520, 0.010, -0.175])
-        p('sample_point_use_measured_z', True)
+        # XY ONLY. The height always comes from the depth camera: in deployment
+        # the terrain height is unknown, so a configured Z would be a guess that
+        # either scoops air or drives the bucket into the ground.
+        p('sample_point_xy', [0.470, 0.110])
+        # Sample DIRECTLY BELOW the pick_home posture. This is the deployment
+        # default because it needs no map, no survey region and no coordinate at
+        # all: the arm goes home, the camera looks at whatever ground is under
+        # it, and the bucket goes straight down into it. The XY is computed from
+        # pick_home's forward kinematics at run time, so it follows the posture
+        # rather than being copied out of it.
+        p('sample_below_home', True)
+        # Half-width of the survey window centred on that column. Big enough to
+        # fit the bucket footprint and judge the ground around it, small enough
+        # that the site scorer cannot wander off to some other patch.
+        p('sample_below_home_halfwidth_m', 0.070)
         p('sample_point_strict', False)
 
         p('deposit_enabled', True)
@@ -340,14 +362,20 @@ class SoilSampleNode(Node):
         self.attack_azimuth_ref = np.array(
             [float(v) for v in g('scoop_attack_azimuth_ref').value], dtype=np.float64)
 
-        self.entry_q = float(g('bucket_entry_q').value)
-        if bool(g('bucket_use_full_open').value):
-            self.entry_q = float(g('bucket_full_open_q').value)
+        self.entry_q = float(g('bucket_full_open_q').value)
         self.close_during_descent = bool(g('close_during_descent').value)
         self.close_start_above_ground_m = float(g('close_start_above_ground_m').value)
-        self.close_q = float(g('bucket_close_q').value)
-        if bool(g('bucket_use_full_close').value):
-            self.close_q = float(g('bucket_full_close_q').value)
+        self.close_q = float(g('bucket_full_close_q').value)
+        ref = float(g('scoop_reference_offset_m').value)
+        self.scoop_ref_offset = (
+            fourbar.contact_offset(self.close_q, fourbar.CONTACT_Y_OFFSET_M)
+            if ref <= 0.0 else
+            np.array([0.0, fourbar.CONTACT_Y_OFFSET_M, ref], dtype=np.float64))
+        self.get_logger().info(
+            f'Scoop referenced to {self.scoop_ref_offset[2]*1000:.0f}mm from the link '
+            f'(closed-jaw datum); descends fully open (q={self.entry_q:+.2f}, gap '
+            f'{fourbar.gap_from_q(self.entry_q)*1000:.0f}mm) and collects fully closed '
+            f'(q={self.close_q:+.2f}).')
         self.open_q = float(g('bucket_open_q').value)
         self.grip_duration = float(g('gripper_command_duration_sec').value)
         self.grip_settle = float(g('gripper_settle_sec').value)
@@ -367,6 +395,8 @@ class SoilSampleNode(Node):
         self.eef_step = float(g('cartesian_eef_step').value)
         self.min_fraction = float(g('cartesian_min_fraction').value)
         self.abs_min_z = float(g('absolute_min_contact_z').value)
+        self.max_depth_below_ground_m = max(
+            0.0, float(g('max_depth_below_ground_m').value))
         self.prescreen = bool(g('prescreen_ik_all_waypoints').value)
         self.roll_candidates = max(1, int(g('scoop_wrist_roll_candidates').value))
         self.ik_timeout_sec = max(0.05, float(g('ik_prescreen_timeout_sec').value))
@@ -383,16 +413,16 @@ class SoilSampleNode(Node):
         self.return_transport = bool(g('return_to_transport_after_scoop').value)
         self.use_fixed_sample_point = bool(g('use_fixed_sample_point').value)
         self.sample_point = np.array(
-            [float(v) for v in g('sample_point_xyz').value], dtype=np.float64)
-        self.sample_point_measured_z = bool(g('sample_point_use_measured_z').value)
+            [float(v) for v in g('sample_point_xy').value], dtype=np.float64).reshape(2,)
+        self.sample_below_home = bool(g('sample_below_home').value)
+        self.sample_below_home_halfwidth_m = max(
+            0.03, float(g('sample_below_home_halfwidth_m').value))
         self.sample_point_strict = bool(g('sample_point_strict').value)
         if self.use_fixed_sample_point:
             self.get_logger().info(
-                f'[sample] fixed sampling point '
-                f'({self.sample_point[0]:.3f},{self.sample_point[1]:.3f},'
-                f'{self.sample_point[2]:.3f})'
-                + (' with the Z taken from the survey.' if self.sample_point_measured_z
-                   else ' using the CONFIGURED Z (not measured) -- verify it.'))
+                f'[sample] fixed sampling point XY '
+                f'({self.sample_point[0]:.3f},{self.sample_point[1]:.3f}); the height '
+                'always comes from the depth camera.')
 
         self.deposit_enabled = bool(g('deposit_enabled').value)
         self.deposit_box = deposit_lib.DepositBox(
@@ -675,20 +705,13 @@ class SoilSampleNode(Node):
     def select_site(self, hmap: terrain.HeightMap) -> List[terrain.ScoopSite]:
         if self.use_fixed_sample_point:
             site, why = terrain.site_at_xy(
-                hmap, self.sample_point[:2], self.footprint_m,
+                hmap, self.sample_point, self.footprint_m,
                 max_roughness_m=self.max_roughness_m,
                 max_slope_deg=self.max_slope_deg,
                 min_coverage=self.min_coverage,
                 min_points_per_cell=self.min_pts_cell,
             )
             if site is not None:
-                if not self.sample_point_measured_z:
-                    site = terrain.ScoopSite(
-                        centre=np.array([self.sample_point[0], self.sample_point[1],
-                                         float(self.sample_point[2])]),
-                        normal=site.normal, roughness_m=site.roughness_m,
-                        slope_deg=site.slope_deg, coverage=site.coverage,
-                        score=site.score)
                 self.get_logger().info(
                     f'[sample] using the configured point: {site.summary}')
                 self._publish_site_markers([site])
@@ -736,9 +759,13 @@ class SoilSampleNode(Node):
         # approach and entry solving), ask for the configured depth and settle for
         # a shallower real scoop if that is what the arm can reach.
         requested = float(self.scoop_params.depth_m)
+        # depth 0 is a legitimate setting (skim the surface, do not penetrate),
+        # and there is nothing to reduce -- do not build a ladder that reads as
+        # "no depth from 0mm down to 12mm", which says nothing useful.
         ladder = [requested]
-        while ladder[-1] > self.scoop_min_depth_m * 1.5:
-            ladder.append(max(self.scoop_min_depth_m, ladder[-1] * 0.66))
+        if requested > self.scoop_min_depth_m:
+            while ladder[-1] > self.scoop_min_depth_m * 1.5:
+                ladder.append(max(self.scoop_min_depth_m, ladder[-1] * 0.66))
         for attempt_depth in ladder:
             params = replace(self.scoop_params, depth_m=attempt_depth)
             waypoints, depth, note = scoop_lib.plan_scoop(
@@ -755,9 +782,20 @@ class SoilSampleNode(Node):
                         'solution at any wrist roll. Still a real sample, just a '
                         'smaller one.')
                 return built
-        self.get_logger().error(
-            f'[scoop] no depth from {requested*1000:.0f}mm down to '
-            f'{self.scoop_min_depth_m*1000:.0f}mm gives a solvable scoop at this site.')
+        if len(ladder) > 1:
+            self.get_logger().error(
+                f'[scoop] no depth from {requested*1000:.0f}mm down to '
+                f'{ladder[-1]*1000:.0f}mm gives a solvable scoop at this site.')
+        else:
+            self.get_logger().error(
+                f'[scoop] the scoop is unsolvable at this site even at '
+                f'{requested*1000:.0f}mm depth. With the bucket datum '
+                f'{self.scoop_ref_offset[2]*1000:.0f}mm from the link, reaching ground '
+                f'z={site.centre[2]:.3f} needs the wrist at z='
+                f'{site.centre[2]+self.scoop_ref_offset[2]:.3f}; if that is below the '
+                'arm\'s limit no wrist roll or depth can help. Either the datum is too '
+                'small (measure the real bucket tip and set scoop_reference_offset_m) '
+                'or the ground is out of reach from this posture.')
         return None
 
     def _poses_for_depth(self, site, waypoints, depth):
@@ -765,17 +803,28 @@ class SoilSampleNode(Node):
 
         # The hard Z floor depends only on the contact positions, not on the wrist
         # roll, so it is checked once before any IK work.
+        # Floor derived from the DETECTED ground at this site, plus the optional
+        # absolute one. Relative is what protects a real deployment: it moves
+        # with the terrain instead of encoding one site's height.
+        ground_z = float(site.centre[2])
+        relative_floor = ground_z - self.max_depth_below_ground_m
+        floor = max(relative_floor, self.abs_min_z)
         for wp in waypoints:
-            if float(wp.position[2]) < self.abs_min_z:
+            if float(wp.position[2]) < floor:
+                which = ('max_depth_below_ground_m='
+                         f'{self.max_depth_below_ground_m*1000:.0f}mm below the detected '
+                         f'ground at z={ground_z:.3f}'
+                         if relative_floor >= self.abs_min_z
+                         else f'absolute_min_contact_z={self.abs_min_z:.3f}')
                 self.get_logger().error(
-                    f'[safety] waypoint {wp.label} at z={wp.position[2]:.3f} is below '
-                    f'absolute_min_contact_z={self.abs_min_z:.3f}. Refusing the scoop: a '
-                    'bad depth frame must not drive the bucket into the ground.')
+                    f'[safety] waypoint {wp.label} at z={wp.position[2]:.3f} is below the '
+                    f'floor z={floor:.3f} ({which}). Refusing the scoop: a bad depth frame '
+                    'must not drive the bucket into the ground.')
                 return None
 
         # The bucket's contact point swings a long way with the linkage, so take
         # the offset at the angle the jaws will actually be holding during entry.
-        offset = fourbar.contact_offset(self.entry_q, fourbar.CONTACT_Y_OFFSET_M)
+        offset = self.scoop_ref_offset
         R_now = self._current_tool_rotation()
         prefer_pinch = R_now[:, 0] if R_now is not None else None
         axis = waypoints[0].tool_axis
@@ -839,8 +888,7 @@ class SoilSampleNode(Node):
         waypoint only needs its position recomputed from the contact point.
         """
         R = quat_to_matrix(ref_pose.orientation)
-        offset = fourbar.contact_offset(self.entry_q, fourbar.CONTACT_Y_OFFSET_M)
-        link = scoop_lib.link_position_for_contact(contact, R, offset)
+        link = scoop_lib.link_position_for_contact(contact, R, self.scoop_ref_offset)
         pose = Pose()
         pose.position.x = float(link[0])
         pose.position.y = float(link[1])
@@ -1349,6 +1397,34 @@ class SoilSampleNode(Node):
 
     # ------------------------------------------------------------- sequence
 
+    def _aim_below_home(self) -> bool:
+        """Point the survey and the scoop straight down from pick_home.
+
+        Deployment reality: there is no tray, no prepared bed and no map. The
+        only place the robot can be sure about is the ground directly beneath the
+        posture it is already holding. So the sampling column is pick_home's own
+        XY, taken from forward kinematics rather than copied into a config file
+        where it would silently rot the moment the posture changed.
+        """
+        pose = self.link_pose_for_joints(self.home_q)
+        if pose is None:
+            self.get_logger().error(
+                '[sample] could not FK pick_home; cannot aim below it.')
+            return False
+        x, y = float(pose.position.x), float(pose.position.y)
+        half = self.sample_below_home_halfwidth_m
+        self.sample_point = np.array([x, y], dtype=np.float64)
+        self.use_fixed_sample_point = True
+        self.prefer_xy = self.sample_point.copy()
+        self.region = terrain.WorkRegion(
+            x - half, x + half, y - half, y + half,
+            self.region.z_min, self.region.z_max)
+        self.get_logger().info(
+            f'[sample] aiming straight down from pick_home: column '
+            f'({x:.3f}, {y:.3f}), survey window +/-{half*1000:.0f}mm. Ground height '
+            'comes from the depth camera.')
+        return True
+
     def wait_for_stack(self) -> Tuple[bool, str]:
         """Block until MoveIt, the gripper controller and the camera are live.
 
@@ -1407,6 +1483,14 @@ class SoilSampleNode(Node):
         # Start from pick_home, as the sequence specifies.
         if not self.move_to_posture(self.home_q, 'pick_home-start'):
             return False, 'could not reach the pick_home start posture'
+        if self.sample_below_home and not self._aim_below_home():
+            return False, 'could not work out where pick_home is pointing'
+        # Open the bucket BEFORE surveying. The camera looks straight down its
+        # own column, and a closed bucket sits in that view: with the jaws shut
+        # the survey collapsed to 22% coverage, against 87% with them open.
+        # Opening first is also free -- the descent needs them open anyway.
+        if not self.command_bucket(self.entry_q, 'open-bucket-for-survey'):
+            return False, 'bucket would not open before the survey'
         self._sleep(1.0)
 
         for attempt in range(1, self.max_attempts + 1):
@@ -1442,8 +1526,12 @@ class SoilSampleNode(Node):
 
                 # scoop_link_poses already picked a wrist roll with IK for every
                 # waypoint, so there is no separate pre-screen step here.
-                if not self.command_bucket(self.entry_q, 'open-bucket'):
-                    return False, 'bucket would not open'
+                # Already open from before the survey; re-assert only if a
+                # previous attempt closed it.
+                if abs(self.joint_positions.get(self.gripper_joint, self.entry_q)
+                       - self.entry_q) > 0.15:
+                    if not self.command_bucket(self.entry_q, 'open-bucket'):
+                        return False, 'bucket would not open'
                 if self._aborted('approach'):
                     return False, 'aborted'
 
@@ -1627,6 +1715,62 @@ class SoilSampleNode(Node):
             m.color.a = 0.9 if best else 0.35
             arr.markers.append(m)
             if best:
+                # THE POINT WHERE THE JAWS START CLOSING. This is the number
+                # close_start_above_ground_m sets, drawn where it actually lands
+                # so it can be checked by eye instead of trusted.
+                n_hat = np.asarray(s.normal, dtype=np.float64)
+                closing = s.centre + n_hat * self.close_start_above_ground_m
+                start = s.centre + n_hat * self.scoop_params.standoff_m
+                bottom = s.centre - n_hat * self.scoop_params.depth_m
+
+                dot = Marker()
+                dot.header.frame_id = self.planning_frame
+                dot.header.stamp = m.header.stamp
+                dot.ns = 'scoop_sites'
+                dot.id = 1001
+                dot.type = Marker.SPHERE
+                dot.action = Marker.ADD
+                dot.pose.position = Point(x=float(closing[0]), y=float(closing[1]),
+                                          z=float(closing[2]))
+                dot.pose.orientation.w = 1.0
+                dot.scale.x = dot.scale.y = dot.scale.z = 0.022
+                dot.color.r, dot.color.g, dot.color.b, dot.color.a = (1.0, 0.2, 0.1, 0.95)
+                arr.markers.append(dot)
+
+                label = Marker()
+                label.header.frame_id = self.planning_frame
+                label.header.stamp = m.header.stamp
+                label.ns = 'scoop_sites'
+                label.id = 1002
+                label.type = Marker.TEXT_VIEW_FACING
+                label.action = Marker.ADD
+                label.pose.position = Point(x=float(closing[0]), y=float(closing[1]),
+                                            z=float(closing[2]) + 0.045)
+                label.pose.orientation.w = 1.0
+                label.scale.z = 0.022
+                label.color.r, label.color.g, label.color.b, label.color.a = (
+                    1.0, 0.35, 0.1, 0.95)
+                label.text = (f'close +{self.close_start_above_ground_m*1000:.0f}mm\n'
+                              f'ground {s.centre[2]:.3f}')
+                arr.markers.append(label)
+
+                # The whole stroke: start height -> closing point -> scoop depth.
+                stroke = Marker()
+                stroke.header.frame_id = self.planning_frame
+                stroke.header.stamp = m.header.stamp
+                stroke.ns = 'scoop_sites'
+                stroke.id = 1003
+                stroke.type = Marker.LINE_STRIP
+                stroke.action = Marker.ADD
+                stroke.pose.orientation.w = 1.0
+                stroke.scale.x = 0.005
+                stroke.color.r, stroke.color.g, stroke.color.b, stroke.color.a = (
+                    1.0, 0.6, 0.0, 0.85)
+                for pt in (start, closing, bottom):
+                    stroke.points.append(Point(x=float(pt[0]), y=float(pt[1]),
+                                               z=float(pt[2])))
+                arr.markers.append(stroke)
+
                 # The surface normal at the chosen point, so the entry direction
                 # is visible rather than inferred from the disc alone.
                 arrow = Marker()
@@ -1757,7 +1901,7 @@ class SoilSampleNode(Node):
         if built is None:
             res.success, res.message = False, (
                 'rejected by the safety floor or no wrist roll has IK for the whole '
-                f'scoop (absolute_min_contact_z={self.abs_min_z:.3f}); see the log')
+                'scoop; see the log')
             return res
         poses, depth, _ = built
         zs = ', '.join(f'{label}={pose.position.z:.3f}' for label, pose in poses)

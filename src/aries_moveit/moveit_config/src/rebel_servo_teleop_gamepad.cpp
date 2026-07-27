@@ -2,6 +2,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +44,12 @@ public:
     nh_ = std::make_shared<rclcpp::Node>("rebel_servo_teleop_gamepad");
 
     loadParams();
+
+    // Before initMoveItModel(): it reports load failures through publishStatus(),
+    // which dereferences status_pub_.
+    status_pub_ = nh_->create_publisher<std_msgs::msg::String>(
+      status_topic_, ROS_QUEUE_SIZE);
+
     initMoveItModel();
 
     arm_pub_ = nh_->create_publisher<trajectory_msgs::msg::JointTrajectory>(
@@ -50,9 +57,6 @@ public:
 
     gripper_pub_ = nh_->create_publisher<trajectory_msgs::msg::JointTrajectory>(
       gripper_command_topic_, ROS_QUEUE_SIZE);
-
-    status_pub_ = nh_->create_publisher<std_msgs::msg::String>(
-      status_topic_, ROS_QUEUE_SIZE);
 
     joy_sub_ = nh_->create_subscription<sensor_msgs::msg::Joy>(
       joy_topic_, ROS_QUEUE_SIZE,
@@ -350,10 +354,12 @@ private:
 
     if (!selfCollisionSafe(qdot))
     {
-      if (!scaleToSafeVelocity(qdot))
+      std::string reason;
+
+      if (!scaleToSafeVelocity(qdot, reason))
       {
         hardZeroStop();
-        publishStatus("MoveIt self-collision guard: motion blocked");
+        publishStatus("MoveIt self-collision guard: motion blocked (" + reason + ")");
         return;
       }
     }
@@ -548,21 +554,58 @@ private:
     last_output_vel_ = target;
   }
 
-  bool selfCollisionSafe(const std::array<double, 6> &qdot)
+  struct GuardVerdict
   {
+    bool checked = false;      // false when the guard could not run at all
+    bool in_bounds = true;
+    bool collision = false;
+    double penetration = 0.0;  // summed contact depth, for "is it getting worse"
+    std::string reason;
+
+    bool safe() const
+    {
+      return in_bounds && !collision;
+    }
+  };
+
+  // Evaluates the pose reached by holding qdot for collision_preview_sec_.
+  // want_details fills in the contact pair and penetration depth; it costs a
+  // full contact enumeration, so the 80 Hz happy path leaves it off and lets
+  // the collision check bail out at the first contact.
+  GuardVerdict evaluateGuard(const std::array<double, 6> &qdot, bool want_details = false)
+  {
+    GuardVerdict verdict;
+
     if (!moveit_ready_ || !planning_scene_)
     {
-      return true;
+      return verdict;
     }
 
     std::array<double, 6> pos{};
+    std::map<std::string, double> external;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!have_joint_state_)
       {
-        return false;
+        // Not a contact, so the "already touching" escape below cannot fire.
+        verdict.reason = "no joint_states yet";
+        verdict.in_bounds = false;
+        verdict.checked = true;
+        return verdict;
       }
       pos = joint_pos_;
+      external = external_joint_pos_;
+    }
+
+    // Non-arm joints first (gripper opening, rover suspension), then the arm
+    // preview on top. Mimic joints are driven by their master, never directly.
+    for (const auto &entry : external)
+    {
+      const auto *jm = robot_model_->getJointModel(entry.first);
+      if (jm && jm->getVariableCount() == 1 && !jm->getMimic())
+      {
+        robot_state_->setJointPositions(jm, &entry.second);
+      }
     }
 
     for (size_t i = 0; i < 6; ++i)
@@ -573,25 +616,67 @@ private:
     }
 
     robot_state_->update(true);
+    verdict.checked = true;
 
     if (!robot_state_->satisfiesBounds(joint_model_group_))
     {
-      return false;
+      verdict.in_bounds = false;
+
+      for (size_t i = 0; i < 6; ++i)
+      {
+        const auto *jm = robot_model_->getJointModel(arm_joint_names_[i]);
+        const double value = robot_state_->getVariablePosition(arm_joint_names_[i]);
+
+        if (jm && !jm->satisfiesPositionBounds(&value))
+        {
+          verdict.reason += (verdict.reason.empty() ? "out of bounds: " : ", ") +
+                            arm_joint_names_[i] + "=" + std::to_string(value);
+        }
+      }
+
+      return verdict;
     }
 
     collision_detection::CollisionRequest req;
     collision_detection::CollisionResult res;
     req.group_name = planning_group_;
-    req.contacts = false;
-    req.max_contacts = 1;
+    req.contacts = want_details;
+    req.max_contacts = want_details ? 4 : 1;
+    req.max_contacts_per_pair = 1;
 
     planning_scene_->checkSelfCollision(req, res, *robot_state_);
-    return !res.collision;
+    verdict.collision = res.collision;
+
+    for (const auto &contact : res.contacts)
+    {
+      if (verdict.reason.empty())
+      {
+        verdict.reason = contact.first.first + " vs " + contact.first.second;
+      }
+
+      for (const auto &point : contact.second)
+      {
+        verdict.penetration += std::abs(point.depth);
+      }
+    }
+
+    if (verdict.collision && verdict.reason.empty())
+    {
+      verdict.reason = "self-collision";
+    }
+
+    return verdict;
   }
 
-  bool scaleToSafeVelocity(std::array<double, 6> &qdot)
+  bool selfCollisionSafe(const std::array<double, 6> &qdot)
   {
-    const std::array<double, 5> scales = {0.75, 0.50, 0.30, 0.15, 0.0};
+    const GuardVerdict verdict = evaluateGuard(qdot);
+    return !verdict.checked || verdict.safe();
+  }
+
+  bool scaleToSafeVelocity(std::array<double, 6> &qdot, std::string &reason)
+  {
+    const std::array<double, 4> scales = {0.75, 0.50, 0.30, 0.15};
 
     for (double scale : scales)
     {
@@ -601,17 +686,40 @@ private:
         test[i] = qdot[i] * scale;
       }
 
-      if (scale == 0.0 || selfCollisionSafe(test))
+      const GuardVerdict verdict = evaluateGuard(test);
+
+      if (!verdict.checked || verdict.safe())
       {
         qdot = test;
-        if (scale < 1.0 && scale > 0.0)
-        {
-          publishStatus("MoveIt self-collision guard: velocity scaled");
-        }
-        return scale > 0.0;
+        publishStatus("MoveIt self-collision guard: velocity scaled");
+        return true;
       }
     }
 
+    // Nothing was safe. If the arm is already standing in the collision, every
+    // preview inherits it and blocking would trap the operator with no way to
+    // jog out - the escape has to come from the joystick, not only from RViz.
+    // Allow the slowest step that does not push deeper into the contact.
+    std::array<double, 6> slowest{};
+    for (size_t i = 0; i < 6; ++i)
+    {
+      slowest[i] = qdot[i] * scales.back();
+    }
+
+    const GuardVerdict last = evaluateGuard(slowest, true);
+    const GuardVerdict current = evaluateGuard({0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, true);
+
+    if (current.checked && current.collision && last.checked && last.collision &&
+        last.penetration <= current.penetration + 1e-6)
+    {
+      qdot = slowest;
+
+      publishStatus("MoveIt self-collision guard: already touching (" + current.reason +
+                    "), allowing slow motion away");
+      return true;
+    }
+
+    reason = last.checked ? last.reason : std::string("guard unavailable");
     qdot.fill(0.0);
     return false;
   }
@@ -838,6 +946,21 @@ private:
       have_joint_state_ = true;
     }
 
+    // Mirror every joint the model knows so the collision guard sees the real
+    // gripper opening and rover suspension, not the RobotState defaults.
+    // /joint_states arrives split across publishers (arm + gripper from the
+    // broadcaster, wheels from the rover), so accumulate instead of replacing.
+    if (robot_model_)
+    {
+      for (size_t i = 0; i < msg->name.size() && i < msg->position.size(); ++i)
+      {
+        if (std::isfinite(msg->position[i]) && robot_model_->hasJointModel(msg->name[i]))
+        {
+          external_joint_pos_[msg->name[i]] = msg->position[i];
+        }
+      }
+    }
+
     for (size_t i = 0; i < msg->name.size() && i < msg->position.size(); ++i)
     {
       if (msg->name[i] == gripper_joint_name_)
@@ -905,9 +1028,12 @@ private:
     last_status_ = text;
     last_status_time_ = now;
 
-    std_msgs::msg::String msg;
-    msg.data = text;
-    status_pub_->publish(msg);
+    if (status_pub_)
+    {
+      std_msgs::msg::String msg;
+      msg.data = text;
+      status_pub_->publish(msg);
+    }
 
     RCLCPP_INFO_THROTTLE(
       nh_->get_logger(), *nh_->get_clock(), 1000, "%s", text.c_str());
@@ -939,6 +1065,12 @@ private:
   std::array<double, 6> joint_pos_{};
   std::array<double, 6> joint_vel_{};
   bool have_joint_state_ = false;
+
+  // Every joint_states entry the robot model knows about, arm joints included.
+  // The collision guard needs the gripper and rover joints too: with them left
+  // at the RobotState defaults the guard checks a closed gripper on a robot
+  // whose gripper is actually open, and blocks poses that are really clear.
+  std::map<std::string, double> external_joint_pos_;
 
   std::array<std::string, 6> arm_joint_names_ = DEFAULT_ARM_JOINTS;
   std::array<double, 6> joint_min_ = {-3.1241, -1.4835, -1.39626, -3.12414, -1.65806, -3.12414};

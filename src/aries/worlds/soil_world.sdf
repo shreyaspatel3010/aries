@@ -2,8 +2,9 @@
   <!-- Soil-sampling test world for aries_soil_sample.
        Derived from sandbox_world.sdf: same physics, plugins, lighting and ground
        plane, but the probe and its socketed sand block are GONE. In their place:
-         * soil_tray   - a low-rimmed bed of loose grains to scoop from
-         * soil_grain_NN - the granular material itself
+         * soil_grain_NN - loose grains lying directly on the ground plane.
+           NO tray and NO plinth: real deployment has neither, and a raised bed
+           made the sim easier in a way the field never will be.
          * deposit_box - an open box on the GROUND to tip the sample into
        Task this supports: scoop soil with the bucket fingertip, carry it, drop it
        in the box.
@@ -74,135 +75,13 @@
       <pose>0 0 0 0 0 0</pose>
       <self_collide>false</self_collide>
     </model>
-    <!-- Soil bed RAISED on a 60 mm plinth: 150 mm square, soil surface ~70 mm above ground, 20 mm rim above the soil -->
-    <model name='soil_tray'>
-      <static>true</static>
-      <pose>0.42 -0.11 0 0 0 0</pose>
-      <link name='tray_link'>
-        <inertial>
-          <mass>5</mass>
-          <inertia><ixx>0.05</ixx><ixy>0</ixy><ixz>0</ixz>
-                   <iyy>0.05</iyy><iyz>0</iyz><izz>0.05</izz></inertia>
-        </inertial>
-        <collision name='tray_link_plinth_collision'>
-          <pose>0 0 0.03 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.16999999999999998 0.06</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_plinth_visual'>
-          <pose>0 0 0.03 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.16999999999999998 0.06</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <collision name='tray_link_floor_collision'>
-          <pose>0 0 0.065 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.16999999999999998 0.01</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_floor_visual'>
-          <pose>0 0 0.065 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.16999999999999998 0.01</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <collision name='tray_link_north_collision'>
-          <pose>0.0 0.08 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.01 0.02</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_north_visual'>
-          <pose>0.0 0.08 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.01 0.02</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <collision name='tray_link_south_collision'>
-          <pose>0.0 -0.08 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.01 0.02</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_south_visual'>
-          <pose>0.0 -0.08 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.16999999999999998 0.01 0.02</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <collision name='tray_link_east_collision'>
-          <pose>0.08 0.0 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.01 0.15 0.02</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_east_visual'>
-          <pose>0.08 0.0 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.01 0.15 0.02</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <collision name='tray_link_west_collision'>
-          <pose>-0.08 0.0 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.01 0.15 0.02</size></box></geometry>
-          <surface>
-            <friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction>
-            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
-            <contact/>
-          </surface>
-        </collision>
-        <visual name='tray_link_west_visual'>
-          <pose>-0.08 0.0 0.07999999999999999 0 0 0</pose>
-          <geometry><box><size>0.01 0.15 0.02</size></box></geometry>
-          <material>
-            <ambient>0.45 0.36 0.24 1</ambient>
-            <diffuse>0.45 0.36 0.24 1</diffuse>
-            <specular>0.1 0.1 0.1 1</specular>
-          </material>
-        </visual>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
     <!-- Soil: 36 loose 12 mm grains in the tray.
          Granular rather than one solid block on purpose: a scoop has to displace
          and carry individual grains, and grains are what visibly end up in the
          deposit box. Regenerate with a different GRID/PARTICLE size if you need
          finer material. Every grain is a dynamic body, so RTF pays for it. -->
     <model name='soil_grain_00'>
-      <pose>0.3700 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.3700 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -230,7 +109,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_01'>
-      <pose>0.3700 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.3700 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -258,7 +137,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_02'>
-      <pose>0.3700 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.3700 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -286,7 +165,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_03'>
-      <pose>0.3700 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.3700 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -314,7 +193,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_04'>
-      <pose>0.3700 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.3700 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -342,7 +221,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_05'>
-      <pose>0.3700 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.3700 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -370,7 +249,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_06'>
-      <pose>0.3900 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.3900 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -398,7 +277,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_07'>
-      <pose>0.3900 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.3900 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -426,7 +305,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_08'>
-      <pose>0.3900 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.3900 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -454,7 +333,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_09'>
-      <pose>0.3900 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.3900 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -482,7 +361,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_10'>
-      <pose>0.3900 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.3900 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -510,7 +389,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_11'>
-      <pose>0.3900 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.3900 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -538,7 +417,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_12'>
-      <pose>0.4100 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.4100 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -566,7 +445,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_13'>
-      <pose>0.4100 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.4100 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -594,7 +473,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_14'>
-      <pose>0.4100 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.4100 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -622,7 +501,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_15'>
-      <pose>0.4100 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.4100 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -650,7 +529,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_16'>
-      <pose>0.4100 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.4100 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -678,7 +557,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_17'>
-      <pose>0.4100 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.4100 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -706,7 +585,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_18'>
-      <pose>0.4300 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.4300 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -734,7 +613,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_19'>
-      <pose>0.4300 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.4300 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -762,7 +641,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_20'>
-      <pose>0.4300 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.4300 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -790,7 +669,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_21'>
-      <pose>0.4300 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.4300 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -818,7 +697,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_22'>
-      <pose>0.4300 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.4300 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -846,7 +725,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_23'>
-      <pose>0.4300 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.4300 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -874,7 +753,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_24'>
-      <pose>0.4500 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.4500 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -902,7 +781,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_25'>
-      <pose>0.4500 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.4500 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -930,7 +809,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_26'>
-      <pose>0.4500 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.4500 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -958,7 +837,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_27'>
-      <pose>0.4500 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.4500 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -986,7 +865,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_28'>
-      <pose>0.4500 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.4500 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1014,7 +893,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_29'>
-      <pose>0.4500 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.4500 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1042,7 +921,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_30'>
-      <pose>0.4700 -0.1600 0.0770 0 0 0</pose>
+      <pose>0.4700 0.0600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1070,7 +949,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_31'>
-      <pose>0.4700 -0.1400 0.0770 0 0 0</pose>
+      <pose>0.4700 0.0800 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1098,7 +977,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_32'>
-      <pose>0.4700 -0.1200 0.0770 0 0 0</pose>
+      <pose>0.4700 0.1000 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1126,7 +1005,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_33'>
-      <pose>0.4700 -0.1000 0.0770 0 0 0</pose>
+      <pose>0.4700 0.1200 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1154,7 +1033,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_34'>
-      <pose>0.4700 -0.0800 0.0770 0 0 0</pose>
+      <pose>0.4700 0.1400 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1182,7 +1061,7 @@
       <self_collide>true</self_collide>
     </model>
     <model name='soil_grain_35'>
-      <pose>0.4700 -0.0600 0.0770 0 0 0</pose>
+      <pose>0.4700 0.1600 0.0070 0 0 0</pose>
       <link name='grain'>
         <inertial>
           <mass>0.003</mass>
@@ -1212,7 +1091,7 @@
     <!-- Deposit target: open box on the ground, 120 mm square, 55 mm rim -->
     <model name='deposit_box'>
       <static>true</static>
-      <pose>0.42 0.16 0 0 0 0</pose>
+      <pose>0.42 -0.3 0 0 0 0</pose>
       <link name='box_link'>
         <inertial>
           <mass>5</mass>
