@@ -11,10 +11,17 @@
 #   START  = button 7
 #
 # Final mapping:
-#   Hold LB = rover drive
-#   Hold RB = arm/gripper enable
-#   Hold Y  = real-arm physical hand guiding (ZeroTorque)
+#   Hold LB      = rover drive
+#   Hold RB      = arm/gripper enable
+#   Hold RB + Y  = real-arm physical hand guiding (ZeroTorque)
+#   Press LB + Y = re-initialise the ODrives (clear errors, re-arm CLOSED_LOOP)
+#   Y alone      = sound
 #   New RB press = toggle arm Cartesian <-> chain/joint mode
+#
+# Y is shared three ways, disambiguated by which shoulder button is held: bare
+# Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand
+# guiding. Hand guiding used to be a bare Y, which fired even while the rover
+# had the stick and clashed with the LB+Y combo added here.
 
 rover_joystick_controller:
   ros__parameters:
@@ -34,6 +41,15 @@ rover_joystick_controller:
 
     trigger_button: 4
     sound_button: 3
+
+    # LB + Y re-initialises every ODrive axis: clear_errors on all six, then
+    # request CLOSED_LOOP_CONTROL. Edge-triggered, so holding the pair fires
+    # once. Output is pinned to zero for reinit_hold_sec afterwards because LB
+    # (drive enable) is held by definition during the combo.
+    reinit_button: 3
+    reinit_modifier_button: 4
+    clear_errors_on_reinit: true
+    reinit_hold_sec: 1.0
 
     num_axes: 6
     right_wheels: [0, 1, 2]

@@ -14,12 +14,13 @@ because controller_manager expects the multi-node YAML layout
 import os
 import socket
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction, RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -110,7 +111,34 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
                     "stopped_velocity_tolerance": 0.01,
                     "goal_time": 30.0,
                     "gripper_gear_left_joint": {
-                        "trajectory": 0.05,
+                        # trajectory (path) tolerance MUST stay 0.0 = disabled on
+                        # this backend, because this joint has no encoder and so
+                        # the "error" it measures is never a physical quantity.
+                        #
+                        # Two ways it fires spuriously:
+                        #  1. Teensy present. read() sets state_pos_ = servo_pos_
+                        #     and write() sets servo_pos_ = cmd_pos_ afterwards in
+                        #     the same cycle, so measured trails desired by
+                        #     exactly one control cycle by construction. At
+                        #     update_rate 80 Hz that is 12.5 ms, and
+                        #     joint_limits.yaml lets MoveIt plan this joint at
+                        #     10 rad/s, so the structural lag alone reads as up
+                        #     to 10 * 0.0125 = 0.125 rad, well past 0.05.
+                        #  2. Teensy absent. read() only assigns state_pos_ when
+                        #     state_received_ is true, so with no agent session
+                        #     the reported position stays pinned at the
+                        #     on_activate() default (min_pos, -1.57) while the
+                        #     command moves. The error is then just "how far the
+                        #     command has left fully-open" and grows without
+                        #     bound - observed 0.053 rad at the first abort and
+                        #     0.846 rad later in the same run.
+                        #
+                        # Case 2 is a disconnected gripper, NOT a tolerance
+                        # problem; it must be diagnosed from the TeensyGripperSystem
+                        # "Teensy not connected" warning and micro_ros_agent, not
+                        # from a JTC abort. Contact and stall belong to the grasp
+                        # node's watchdog.
+                        "trajectory": 0.0,
                         "goal": 0.01,
                     },
                 },
@@ -180,7 +208,28 @@ def launch_setup(context, *args, **kwargs):
             arm_hardware_protocol = "mock_hardware"
 
     if gripper_hardware_protocol == "auto":
+        # Wait for the device rather than probing once. A Teensy reset re-enumerates
+        # over USB, which takes 1-2 s, so relaunching straight after a reset loses
+        # the race: observed this probe at 17:10:58 with
+        # /dev/serial/by-id/... appearing at 17:10:59.2. The one-shot check
+        # resolved to mock_hardware and the whole session ran a simulated gripper
+        # against real hardware, with no message saying so — the arm and rover
+        # log their auto-detect result, this one was silent.
+        detect_timeout = float(
+            LaunchConfiguration("gripper_detect_timeout").perform(context)
+        )
+        deadline = time.monotonic() + detect_timeout
+        while not Path(serial_port).exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
         gripper_hardware_protocol = "rebel" if Path(serial_port).exists() else "mock_hardware"
+
+    # Always say which backend won. Silent fallback to mock is indistinguishable
+    # from a dead gripper from the outside.
+    gripper_detect_note = LogInfo(
+        msg=f"[gripper auto] serial_port={serial_port} resolved={gripper_hardware_protocol}"
+        + ("" if gripper_hardware_protocol == "rebel"
+           else "  -- SIMULATED gripper: no command will reach the servo")
+    )
 
     urdf_file = PathJoinSubstitution([FindPackageShare("aries"), "urdf", "my_robot.urdf.xacro"])
     robot_description_raw = Command(
@@ -312,7 +361,18 @@ def launch_setup(context, *args, **kwargs):
         micro_ros_agent = ExecuteProcess(
             cmd=[
                 "ros2", "run", "micro_ros_agent", "micro_ros_agent",
-                "serial", "--dev", serial_port, "-b", "6000000",
+                # 115200, NOT 6000000. Linux speed_t values are encodings, not
+                # literal bit rates: the largest valid one is B4000000 == 4111.
+                # 6000000 is not in the agent's baud table
+                # (xrceagent/.../baud_rate_table_linux.h), so it falls through to
+                # a raw (speed_t)atoi() cast, and cfsetispeed/cfsetospeed then
+                # reject it with EINVAL and leave c_ispeed/c_ospeed at 0. The
+                # agent does not check either return value, so it proceeds to
+                # tcsetattr with the line speed unset -- which is why the agent
+                # came up most of the time and intermittently did not.
+                # The Teensy is USB CDC (Tools > USB Type > Serial), where baud
+                # is ignored by the device entirely, so nothing is lost here.
+                "serial", "--dev", serial_port, "-b", "115200",
             ],
             additional_env={
                 # Unicast-only participant + synchronous publish mode + zero latency budget.
@@ -321,6 +381,19 @@ def launch_setup(context, *args, **kwargs):
                 "FASTRTPS_DEFAULT_PROFILES_FILE": _fastdds_xml,
             },
             output="screen",
+            # The agent is the ONLY path between /gripper/cmd and the servo, and
+            # it does die on its own: observed exit code 254 roughly 6 minutes
+            # into a session, with /dev/ttyACM0 never re-enumerating (so not a
+            # USB drop). Without respawn nothing restarts it, the Teensy falls
+            # back to WAITING_AGENT and pings a closed port forever, and the
+            # gripper stops responding mid-run with no error anywhere: the
+            # hardware plugin keeps state_received_ latched true, so read()
+            # still echoes servo_pos_ and the JTC still sees perfect tracking
+            # while no command reaches the servo. The firmware already handles
+            # its side of the reconnect, so restarting the agent is enough to
+            # re-establish the session.
+            respawn=True,
+            respawn_delay=2.0,
         )
 
     gripper_controller_spawner = None
@@ -526,6 +599,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     nodes = [
+        gripper_detect_note,
         ros2_control_node,
         robot_state_pub,
         wheel_joint_publisher_node,
@@ -566,6 +640,7 @@ def generate_launch_description():
             DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0", description="Joystick device used by joy_node and the layout normalizer"),
             DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"], description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps"),
             DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00", description="USB-serial port for the Teensy gripper controller"),
+            DeclareLaunchArgument("gripper_detect_timeout", default_value="8.0", description="Seconds to wait for the Teensy serial device before falling back to mock_hardware. Covers USB re-enumeration after a board reset."),
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),
             DeclareLaunchArgument("enable_depth_sensor", default_value="true", description="Populate MoveIt's Octomap from the gripper depth camera"),

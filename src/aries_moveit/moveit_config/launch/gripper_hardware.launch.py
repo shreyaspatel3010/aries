@@ -263,7 +263,11 @@ def generate_launch_description():
         package='micro_ros_agent',
         executable='micro_ros_agent',
         name='micro_ros_agent',
-        arguments=['serial', '--dev', micro_ros_device, '-b', '6000000'],
+        # 115200, not 6000000 — see the note in aries_hardware.launch.py. Linux
+        # tops out at B4000000 (== 4111); 6000000 is rejected by cfsetospeed
+        # with EINVAL and the agent ignores the error, leaving the port speed
+        # unset. Baud is ignored by the Teensy's USB CDC link regardless.
+        arguments=['serial', '--dev', micro_ros_device, '-b', '115200'],
         output='screen',
     )
 

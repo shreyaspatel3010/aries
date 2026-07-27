@@ -1019,8 +1019,9 @@ private:
   void publishStatus(const std::string &text)
   {
     const rclcpp::Time now = nh_->now();
+    const bool changed = (text != last_status_);
 
-    if (text == last_status_ && (now - last_status_time_).seconds() < 1.0)
+    if (!changed && (now - last_status_time_).seconds() < 1.0)
     {
       return;
     }
@@ -1028,6 +1029,10 @@ private:
     last_status_ = text;
     last_status_time_ = now;
 
+    // The topic keeps its 1 Hz repeat even when the text is unchanged:
+    // full_hardware_checker subscribes to /arm_joystick/status and treats it as
+    // a liveness heartbeat, so going edge-triggered here would read as the
+    // teleop node having died.
     if (status_pub_)
     {
       std_msgs::msg::String msg;
@@ -1035,8 +1040,15 @@ private:
       status_pub_->publish(msg);
     }
 
-    RCLCPP_INFO_THROTTLE(
-      nh_->get_logger(), *nh_->get_clock(), 1000, "%s", text.c_str());
+    // The LOG, however, is edge-triggered: emit only on a real state change.
+    // This was RCLCPP_INFO_THROTTLE(..., 1000), which rate-limits but does not
+    // deduplicate, so simply holding LB reprinted the identical
+    // "LB rover mode active: arm blocked" line once a second for as long as the
+    // button was down and buried every other message in the console.
+    if (changed)
+    {
+      RCLCPP_INFO(nh_->get_logger(), "%s", text.c_str());
+    }
   }
 
   rclcpp::Node::SharedPtr nh_;

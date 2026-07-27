@@ -10,6 +10,7 @@ from rclpy.node import Node
 from odrive_can.msg import ControlMessage
 from odrive_can.srv import AxisState
 from sensor_msgs.msg import Joy
+from std_srvs.srv import Empty
 
 
 class RoverJoystickController(Node):
@@ -34,6 +35,20 @@ class RoverJoystickController(Node):
         self.declare_parameter("trigger_button", 4)
         self.declare_parameter("sound_button", 3)
 
+        # LB + Y re-initialises every ODrive axis. The modifier defaults to the
+        # same LB that already gates drive output, so the combo cannot be hit
+        # while the arm has the stick (RB) and cannot be hit by accident with a
+        # bare button press.
+        self.declare_parameter("reinit_button", 3)
+        self.declare_parameter("reinit_modifier_button", 4)
+        # A faulted axis rejects CLOSED_LOOP_CONTROL until its errors are
+        # cleared, which is the usual reason a re-arm is needed at all.
+        self.declare_parameter("clear_errors_on_reinit", True)
+        # Arming closes the loop on all six motors at once. Hold output at zero
+        # for this long afterwards so a deflected stick cannot lurch the rover
+        # the instant the axes engage — LB is by definition already held.
+        self.declare_parameter("reinit_hold_sec", 1.0)
+
         self.declare_parameter("num_axes", 6)
         self.declare_parameter("right_wheels", [0, 1, 2])
         self.declare_parameter("left_wheels", [3, 4, 5])
@@ -57,6 +72,11 @@ class RoverJoystickController(Node):
         self.trigger_button = int(self.get_parameter("trigger_button").value)
         self.sound_button = int(self.get_parameter("sound_button").value)
 
+        self.reinit_button = int(self.get_parameter("reinit_button").value)
+        self.reinit_modifier_button = int(self.get_parameter("reinit_modifier_button").value)
+        self.clear_errors_on_reinit = bool(self.get_parameter("clear_errors_on_reinit").value)
+        self.reinit_hold_sec = float(self.get_parameter("reinit_hold_sec").value)
+
         self.num_axes = int(self.get_parameter("num_axes").value)
         self.right_wheels = list(self.get_parameter("right_wheels").value)
         self.left_wheels = list(self.get_parameter("left_wheels").value)
@@ -74,6 +94,7 @@ class RoverJoystickController(Node):
 
         self.axis_publishers = []
         self.axis_clients = []
+        self.clear_error_clients = []
         self.pending_axes = []
 
         for i in range(self.num_axes):
@@ -83,18 +104,27 @@ class RoverJoystickController(Node):
             self.axis_clients.append(
                 self.create_client(AxisState, f"/odrive_axis{i}/request_axis_state")
             )
+            self.clear_error_clients.append(
+                self.create_client(Empty, f"/odrive_axis{i}/clear_errors")
+            )
             self.pending_axes.append(i)
+
+        # Initialised before the callbacks that read them are registered; a timer
+        # or subscription firing first would otherwise raise AttributeError.
+        self._retry_in_progress = False
+        self._last_arm_status_log = 0.0
+        self._prev_reinit_combo = False
+        self._reinit_hold_until = 0.0
 
         self.create_subscription(Joy, joy_topic, self._joy_callback, 10)
         self.create_timer(self.period, self._publish_loop)
         self.create_timer(self.arm_retry_period, self._retry_arm)
 
-        self._retry_in_progress = False
-        self._last_arm_status_log = 0.0
-
         self.get_logger().info(
             f"Rover hardware joystick ready. Hold LB/button {self.trigger_button}. "
-            f"vertical_axis={self.vertical_axis}, horizontal_axis={self.horizontal_axis}"
+            f"vertical_axis={self.vertical_axis}, horizontal_axis={self.horizontal_axis}. "
+            f"Press button {self.reinit_modifier_button}+{self.reinit_button} (LB+Y) "
+            f"to re-initialise all {self.num_axes} ODrive axes."
         )
 
     def _axis(self, msg, index):
@@ -139,9 +169,70 @@ class RoverJoystickController(Node):
             self.target_right_vel = -(vertical - horizontal) * self.max_velocity
             self.target_left_vel = (vertical + horizontal) * self.max_velocity
 
-        if sound_button == 1 and self.prev_sound_button == 0 and self.sound_file:
+        # LB + Y, edge-triggered so holding the pair re-arms exactly once.
+        reinit_combo = bool(
+            self._button(msg, self.reinit_modifier_button)
+            and self._button(msg, self.reinit_button)
+        )
+        if reinit_combo and not self._prev_reinit_combo:
+            self._request_reinit()
+        self._prev_reinit_combo = reinit_combo
+
+        # Y alone still plays the sound. Suppressed while the modifier is held,
+        # otherwise LB+Y would re-arm the ODrives AND fire the clip, and the
+        # sound is the louder of the two signals.
+        if (
+            sound_button == 1
+            and self.prev_sound_button == 0
+            and self.sound_file
+            and not self._button(msg, self.reinit_modifier_button)
+        ):
             subprocess.Popen(["aplay", self.sound_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.prev_sound_button = sound_button
+
+    def _request_reinit(self):
+        """LB + Y: clear errors on every ODrive axis, then re-arm CLOSED_LOOP."""
+        if self._retry_in_progress:
+            self.get_logger().warn("ODrive re-init already running — ignoring LB+Y")
+            return
+
+        # Drop the command and hold zero before anything engages.
+        self.target_right_vel = 0.0
+        self.target_left_vel = 0.0
+        self.current_right_vel = 0.0
+        self.current_left_vel = 0.0
+        self._reinit_hold_until = time.monotonic() + self.reinit_hold_sec
+
+        self.pending_axes = list(range(self.num_axes))
+        self.get_logger().warn(
+            f"LB+Y: re-initialising all {self.num_axes} ODrive axes "
+            f"(clear_errors={self.clear_errors_on_reinit})"
+        )
+        self._retry_in_progress = True
+        threading.Thread(target=self._reinit_thread, daemon=True).start()
+
+    def _reinit_thread(self):
+        if self.clear_errors_on_reinit:
+            futures = {}
+            for i in range(self.num_axes):
+                client = self.clear_error_clients[i]
+                if not client.wait_for_service(timeout_sec=0.1):
+                    self.get_logger().warn(f"odrive_axis{i}: clear_errors unavailable")
+                    continue
+                futures[i] = client.call_async(Empty.Request())
+
+            deadline = time.monotonic() + self.axis_state_request_timeout
+            while futures and time.monotonic() < deadline:
+                for i in [i for i, f in futures.items() if f.done()]:
+                    futures.pop(i)
+                if futures:
+                    time.sleep(0.05)
+            for i in sorted(futures):
+                self.get_logger().warn(f"odrive_axis{i}: clear_errors timed out")
+
+        # Re-arm through the same path the periodic retry uses; it also clears
+        # _retry_in_progress on the way out.
+        self._retry_arm_thread()
 
     def _retry_arm(self):
         if not self.pending_axes or self._retry_in_progress:
@@ -205,7 +296,11 @@ class RoverJoystickController(Node):
         self._retry_in_progress = False
 
     def _publish_loop(self):
-        if self.trigger == 1:
+        # LB is held throughout an LB+Y re-init, so without this the rover would
+        # accelerate the moment the axes armed if the stick were off centre.
+        holding_after_reinit = time.monotonic() < self._reinit_hold_until
+
+        if self.trigger == 1 and not holding_after_reinit:
             target_right = self.target_right_vel
             target_left = self.target_left_vel
         else:

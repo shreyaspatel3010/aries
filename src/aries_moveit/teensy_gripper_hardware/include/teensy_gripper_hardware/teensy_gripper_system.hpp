@@ -71,5 +71,12 @@ private:
   std::atomic<std::chrono::steady_clock::time_point::rep> last_resend_check_ns_{0};
   // Timestamp of last publish (keepalive — prevents servo idle-detach)
   std::atomic<std::chrono::steady_clock::time_point::rep> last_publish_ns_{0};
+  // Timestamp of the last "Teensy session down" warning. Only write() touches
+  // this, so unlike the members above it needs no atomicity.
+  std::chrono::steady_clock::time_point::rep last_disconnect_warn_ns_{0};
+  // Anti-backtrack filter. Off by default: it cannot distinguish a bad replan
+  // from a legitimate full open, and when it misfires it silently pins the
+  // servo. Re-enable with the enable_anti_backtrack hardware param.
+  bool anti_backtrack_enabled_{false};
 };
 }  // namespace teensy_gripper_hardware

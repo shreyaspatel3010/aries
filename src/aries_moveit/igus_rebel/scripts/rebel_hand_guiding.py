@@ -33,6 +33,11 @@ class RebelHandGuiding(Node):
         self.declare_parameter('motor_settle_time', 0.5)
         self.declare_parameter('joy_topic', '/joy')
         self.declare_parameter('hand_guiding_button', 3)
+        # Hand guiding is an ARM action, so it must be held behind the same
+        # RB/button 5 arm-enable as the rest of the arm teleop. On a bare Y it
+        # also fired while the rover had the stick, and it collided with the
+        # rover's LB+Y ODrive re-init. Set to -1 to go back to a bare Y.
+        self.declare_parameter('hand_guiding_modifier_button', 5)
         self.declare_parameter('joy_timeout', 2.0)
 
         self._arm_controller = str(self.get_parameter('arm_controller').value)
@@ -40,6 +45,9 @@ class RebelHandGuiding(Node):
         self._motor_settle_time = float(self.get_parameter('motor_settle_time').value)
         self._hand_guiding_button = int(
             self.get_parameter('hand_guiding_button').value
+        )
+        self._hand_guiding_modifier_button = int(
+            self.get_parameter('hand_guiding_modifier_button').value
         )
         self._joy_timeout = float(self.get_parameter('joy_timeout').value)
         callback_group = ReentrantCallbackGroup()
@@ -80,9 +88,13 @@ class RebelHandGuiding(Node):
         )
         self._joy_watchdog = self.create_timer(0.1, self._check_joy_timeout)
         self._publish_status()
+        combo = (
+            f'button {self._hand_guiding_modifier_button}+{self._hand_guiding_button} (RB+Y)'
+            if self._hand_guiding_modifier_button >= 0
+            else f'Y/button {self._hand_guiding_button}'
+        )
         self.get_logger().info(
-            'Hand guiding ready: hold Y/button '
-            f'{self._hand_guiding_button}, or use /arm/set_hand_guiding'
+            f'Hand guiding ready: hold {combo}, or use /arm/set_hand_guiding'
         )
 
     def _publish_status(self) -> None:
@@ -200,11 +212,13 @@ class RebelHandGuiding(Node):
         response.success, response.message = self._transition(request.data)
         return response
 
+    def _held(self, msg: Joy, index: int) -> bool:
+        return 0 <= index < len(msg.buttons) and bool(msg.buttons[index])
+
     def _joy_callback(self, msg: Joy) -> None:
-        pressed = (
-            0 <= self._hand_guiding_button < len(msg.buttons)
-            and bool(msg.buttons[self._hand_guiding_button])
-        )
+        pressed = self._held(msg, self._hand_guiding_button)
+        if pressed and self._hand_guiding_modifier_button >= 0:
+            pressed = self._held(msg, self._hand_guiding_modifier_button)
         start_worker = False
         with self._joy_lock:
             self._last_joy_message = time.monotonic()
@@ -238,7 +252,7 @@ class RebelHandGuiding(Node):
                 start_worker = True
 
         self.get_logger().error(
-            'Joystick messages timed out while Y was held; restoring arm torque'
+            'Joystick messages timed out while RB+Y was held; restoring arm torque'
         )
         if start_worker:
             threading.Thread(target=self._joy_worker, daemon=True).start()
@@ -250,9 +264,9 @@ class RebelHandGuiding(Node):
                 requested_state = self._joy_pressed
 
             self.get_logger().info(
-                'Y pressed: requesting ZeroTorque'
+                'RB+Y pressed: requesting ZeroTorque'
                 if requested_state
-                else 'Y released: restoring normal arm control'
+                else 'RB+Y released: restoring normal arm control'
             )
             success, message = self._transition(requested_state)
             if not success:

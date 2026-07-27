@@ -27,6 +27,12 @@ hardware_interface::CallbackReturn TeensyGripperSystem::on_init(const hardware_i
   if (p.count("max_pos"))     max_pos_     = std::stod(p.at("max_pos"));
   if (p.count("cmd_topic"))   cmd_topic_   = p.at("cmd_topic");
   if (p.count("state_topic")) state_topic_ = p.at("state_topic");
+  if (p.count("enable_anti_backtrack")) {
+    const std::string v = p.at("enable_anti_backtrack");
+    anti_backtrack_enabled_ = (v == "true" || v == "True" || v == "1");
+  }
+  RCLCPP_INFO(logger_, "Anti-backtrack filter %s",
+              anti_backtrack_enabled_ ? "ENABLED" : "disabled");
 
   cmd_pos_   = min_pos_;
   state_pos_ = min_pos_;
@@ -62,9 +68,14 @@ hardware_interface::CallbackReturn TeensyGripperSystem::on_activate(const rclcpp
   auto cmd_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   cmd_pub_ = comm_node_->create_publisher<std_msgs::msg::Float32>(cmd_topic_, cmd_qos);
 
-  // Subscriber: receives normalized position state from Teensy
+  // Subscriber: receives normalized position state from Teensy.
+  // BEST EFFORT to match the firmware's publisher, which had to leave the
+  // reliable stream because acknowledging 100 Hz over serial stalled it. This
+  // is not a free choice on either side: a BEST_EFFORT publisher and a
+  // RELIABLE subscriber are incompatible and never match, so changing one end
+  // without the other silences the topic completely.
   state_sub_ = comm_node_->create_subscription<std_msgs::msg::Float32>(
-    state_topic_, 10,
+    state_topic_, rclcpp::QoS(rclcpp::KeepLast(10)).best_effort(),
     [this](const std_msgs::msg::Float32::SharedPtr msg) {
       latest_state_.store(msg->data);
       last_state_ns_.store(
@@ -165,25 +176,58 @@ hardware_interface::return_type TeensyGripperSystem::write(const rclcpp::Time &,
   // Anti-backtrack filter ────────────────────────────────────────────────────
   // A sudden large decrease in cmd_pos_ indicates MoveIt re-planned a
   // trajectory from a stale (near-open) planning-scene state while the gripper
-  // was already closed.  Threshold 0.05 m is ~56 % of full range — far above
-  // normal trajectory step (~0.001 m/cycle at 100 Hz) but catches the observed
-  // 0.998 → 0.021 snap.  During hold the servo stays closed; once cmd climbs
-  // back within kResyncThreshold of the hold position we resume normal tracking.
-  constexpr double kBacktrackThreshold = 0.05;   // m
-  constexpr double kResyncThreshold    = 0.01;   // m
+  // was already closed.  During hold the servo stays closed; once cmd climbs
+  // back within the resync threshold of the hold position we resume normal
+  // tracking.
+  //
+  // Both thresholds MUST be fractions of the joint range, not absolute numbers.
+  // They were hardcoded 0.05 and 0.01 when this axis was 0.09 wide (56 % and
+  // 11 % of stroke, hence the old "~56 %" comment).  The joint is now revolute,
+  // min_pos -1.57 to max_pos 0.07 = 1.64 rad, which silently reduced them to
+  // 3 % and 0.6 % and turned the guard into the failure it was meant to
+  // prevent: joint_limits.yaml permits 10 rad/s and the loop runs at 80 Hz, so
+  // one ordinary trajectory step is up to 0.125 rad — past 0.05 — and every
+  // brisk OPEN trips the filter.  It then pins servo_pos_ at the closed
+  // position and waits for cmd to come back within 0.01 rad of it, which an
+  // opening trajectory never does, so the gripper stays shut for the rest of
+  // the session with a single WARN as the only trace.  Observed in the field as
+  // "cmd jumped 0.0700 -> 0.0200".  The units in the old messages said "m" for
+  // what have always been radians here, which hid it further.
+  //
+  // DISABLED BY DEFAULT, and re-tuning it is not the answer. The signal it
+  // keys on — a large negative step in cmd_pos_ — is exactly what a
+  // legitimate full OPEN looks like: closed to open IS 0.07 -> -1.57, the
+  // entire 1.64 rad stroke, in whatever step the trajectory happens to
+  // produce. A bad replan and a good open are the same measurement, so no
+  // threshold separates them; raising it from 3 % to 56 % of stroke only
+  // moved which opens got swallowed. And the misfire is expensive: the servo
+  // is pinned until cmd returns within the resync band, which an opening
+  // trajectory need never do, so the gripper silently stops obeying.
+  //
+  // The stale-planning-scene snap this was built for was already fixed at
+  // source — read() now reports servo_pos_ with zero lag (see the note
+  // there), so MoveIt no longer replans from a near-open stale state. This is
+  // a workaround for a bug that is gone. Set the hardware param
+  // enable_anti_backtrack="true" in the URDF to bring it back.
+  const double range = max_pos_ - min_pos_;
+  const double backtrack_threshold = 0.56 * range;
+  const double resync_threshold    = 0.11 * range;
 
-  if (!backtrack_detected_ && (servo_pos_ - cmd_pos_) > kBacktrackThreshold) {
+  if (!anti_backtrack_enabled_) {
+    backtrack_detected_ = false;   // falls through to plain tracking below
+  } else if (!backtrack_detected_ && (servo_pos_ - cmd_pos_) > backtrack_threshold) {
     backtrack_detected_  = true;
     backtrack_hold_pos_  = servo_pos_;
     RCLCPP_WARN(logger_,
-      "Anti-backtrack: cmd jumped %.4f → %.4f m; holding servo at %.4f m until cmd resynchronises",
-      servo_pos_, cmd_pos_, servo_pos_);
+      "Anti-backtrack: cmd jumped %.4f -> %.4f rad (> %.4f rad); holding servo at %.4f rad "
+      "until cmd resynchronises",
+      servo_pos_, cmd_pos_, backtrack_threshold, servo_pos_);
   }
 
   if (backtrack_detected_) {
-    if (std::abs(cmd_pos_ - backtrack_hold_pos_) < kResyncThreshold) {
+    if (std::abs(cmd_pos_ - backtrack_hold_pos_) < resync_threshold) {
       RCLCPP_INFO(logger_,
-        "Anti-backtrack: cmd resynchronised at %.4f m — resuming normal tracking", cmd_pos_);
+        "Anti-backtrack: cmd resynchronised at %.4f rad — resuming normal tracking", cmd_pos_);
       backtrack_detected_ = false;
       servo_pos_ = backtrack_hold_pos_;
     } else {
@@ -201,14 +245,43 @@ hardware_interface::return_type TeensyGripperSystem::write(const rclcpp::Time &,
   // so that the first connection does not replay whatever stale value the
   // controller initialised with (avoids ghost open/close on startup).
   if (!state_received_.load()) {
+    // Silent until now, which hid a whole class of failure: if the Teensy is
+    // not publishing when the plugin activates, this branch swallows EVERY
+    // command for the rest of the session and nothing anywhere says so. The
+    // gripper simply never moves. Seen when the board registers its micro-ROS
+    // entities and then stops executing — /teensy_gripper and /gripper/state
+    // both exist, the topic just never carries a message, and the agent keeps
+    // the stale entities alive so everything looks connected.
+    if (now_ns - last_disconnect_warn_ns_ > 5'000'000'000LL) {
+      last_disconnect_warn_ns_ = now_ns;
+      RCLCPP_WARN(logger_,
+        "Never received /gripper/state — no command has EVER been sent to the servo. "
+        "The board is not publishing: check that %s has a live publisher "
+        "(ros2 topic hz %s), then reset or reflash the Teensy.",
+        state_topic_.c_str(), state_topic_.c_str());
+    }
     last_written_pos_ = cmd_pos_;
     return hardware_interface::return_type::OK;
   }
 
   // While the Teensy is disconnected (state older than 2 s): mark for resend
   // on the next reconnect but do not publish now.
+  //
+  // This branch used to return OK in silence, which made a mid-run agent death
+  // invisible. read() keeps state_pos_ = servo_pos_ once state_received_ has
+  // latched, so the JTC still sees perfect tracking and reports every gripper
+  // goal as succeeded while nothing at all reaches the servo — the gripper just
+  // stops responding with no error in any log. Say so, throttled, because this
+  // runs in the control loop.
   const auto age_ns = now_ns - last_state_ns_.load();
   if (age_ns >= 2'000'000'000LL) {
+    if (now_ns - last_disconnect_warn_ns_ > 2'000'000'000LL) {
+      last_disconnect_warn_ns_ = now_ns;
+      RCLCPP_WARN(logger_,
+        "No /gripper/state for %.1f s — Teensy session is down; gripper commands are "
+        "NOT reaching the servo. Check the micro_ros_agent process and the board.",
+        static_cast<double>(age_ns) * 1e-9);
+    }
     last_written_pos_ = -1.0;   // force resend on reconnect
     return hardware_interface::return_type::OK;
   }
@@ -239,7 +312,6 @@ hardware_interface::return_type TeensyGripperSystem::write(const rclcpp::Time &,
     return hardware_interface::return_type::OK;
   }
 
-  const double range = max_pos_ - min_pos_;
   const float normalized = (range > 0.0) ? static_cast<float>((servo_pos_ - min_pos_) / range) : 0.0f;
 
   std_msgs::msg::Float32 msg;

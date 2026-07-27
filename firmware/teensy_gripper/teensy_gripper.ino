@@ -8,13 +8,28 @@
 // no physical disconnect/reconnect needed after restarting the launch file.
 //
 // Requirements:
-//   - Install the micro_ros_arduino library (https://github.com/micro-ROS/micro_ros_arduino)
+//   - micro_ros_arduino, JAZZY build, to match this workspace's ROS 2 distro:
+//       https://github.com/micro-ROS/micro_ros_arduino/releases  (v2.0.8-jazzy)
+//     The distro must match, and so must the toolchain: the library ships
+//     libmicroros.a PRECOMPILED, so a build made against an older newlib fails
+//     to link against a current Teensy core with
+//       undefined reference to `__locale_ctype_ptr'
+//     out of librmw-validate_node_name / librcl-validate_topic_name. The
+//     3.0.0-iron build did exactly that on Teensy core 1.60.0 (gcc 11.3.1) and
+//     made this sketch unbuildable. If that error returns, the installed
+//     library is the wrong build — replace it rather than patching the symbol.
 //   - Arduino IDE: Tools > Board > Teensy 4.x
 //                  Tools > USB Type > Serial
 //
 // The agent is started automatically by aries_hardware.launch.py.
 // To run it manually:
-//   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 6000000
+//   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 115200
+//
+// Do not raise that baud: Linux speed_t values are encodings, not bit rates,
+// and the largest valid one is B4000000 (== 4111). Anything above it — 6000000
+// was used here previously — is rejected by cfsetospeed with EINVAL, which the
+// agent does not check, leaving the port speed unset. This link is USB CDC
+// (Tools > USB Type > Serial), so the device ignores baud anyway.
 
 #include <micro_ros_arduino.h>
 #include <rcl/rcl.h>
@@ -127,34 +142,70 @@ void cmd_callback(const void * msg_in) {
 
 // ---------- micro-ROS lifecycle ----------
 
+// How far create_entities() got last time.  destroy_entities() is called on the
+// failure path too (see AGENT_AVAILABLE in loop()), and finalising a handle that
+// was never initialised is not a no-op: support/node/cmd_sub are zero-filled
+// globals, so rcl_context_get_rmw_context(&support.context) dereferences a NULL
+// impl pointer and hard-faults the MCU.  A faulted sketch stops pinging and
+// stops publishing while USB stays enumerated, so the agent sits there with the
+// port open and the board never rejoins — indistinguishable from an unflashed
+// Teensy, and only a physical reset clears it.  Tear down exactly what exists.
+uint8_t entities_stage = 0;   // 1 support, 2 node, 3 cmd_sub, 4 state_pub,
+                              // 5 stacklight_sub, 6 executor
+
 bool create_entities() {
   allocator = rcl_get_default_allocator();
+  entities_stage = 0;
   if (RCL_RET_OK != rclc_support_init(&support, 0, NULL, &allocator))         return false;
+  entities_stage = 1;
   if (RCL_RET_OK != rclc_node_init_default(&node, "teensy_gripper", "", &support)) return false;
+  entities_stage = 2;
   if (RCL_RET_OK != rclc_subscription_init_best_effort(
         &cmd_sub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "/gripper/cmd"))  return false;
-  if (RCL_RET_OK != rclc_publisher_init_default(
+  entities_stage = 3;
+  // BEST EFFORT, not _init_default (which is RELIABLE). This publishes at
+  // 100 Hz over a serial XRCE stream: on a reliable stream every sample has to
+  // be acknowledged by the agent, and when the stream window fills before the
+  // ACKs come back the publisher stalls and retransmits the same frame instead
+  // of sending new ones. Captured on the wire as the identical frame repeating
+  // while /gripper/state went silent for seconds at a time, which the host side
+  // reports as "No /gripper/state for 2.0 s — Teensy session is down".
+  // State is a periodic sample: losing one is harmless, blocking the stream is
+  // not. cmd_sub above is best-effort for the same reason.
+  // NOTE: the host subscription in teensy_gripper_system.cpp must stay
+  // best-effort too — a BEST_EFFORT publisher and a RELIABLE subscriber are
+  // incompatible and will not match at all.
+  if (RCL_RET_OK != rclc_publisher_init_best_effort(
         &state_pub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "/gripper/state")) return false;
+  entities_stage = 4;
   if (RCL_RET_OK != rclc_subscription_init_default(
         &stacklight_sub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "stacklight_subscription")) return false;
+  entities_stage = 5;
   if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 2, &allocator)) return false;
+  entities_stage = 6;
   rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &stacklight_sub, &stacklight_msg, &stacklight_callback, ON_NEW_DATA);
   return true;
 }
 
 void destroy_entities() {
+  if (entities_stage == 0) return;   // nothing was ever created
+
   rmw_context_t *rmw_ctx = rcl_context_get_rmw_context(&support.context);
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
-  rcl_publisher_fini(&state_pub, &node);
-  rcl_subscription_fini(&cmd_sub, &node);
-  rcl_subscription_fini(&stacklight_sub, &node);
-  rclc_executor_fini(&executor);
-  rcl_node_fini(&node);
+
+  // Reverse creation order.
+  if (entities_stage >= 6) rclc_executor_fini(&executor);
+  if (entities_stage >= 5) rcl_subscription_fini(&stacklight_sub, &node);
+  if (entities_stage >= 4) rcl_publisher_fini(&state_pub, &node);
+  if (entities_stage >= 3) rcl_subscription_fini(&cmd_sub, &node);
+  if (entities_stage >= 2) rcl_node_fini(&node);
   rclc_support_fini(&support);
+
+  entities_stage = 0;
 }
 
 // ---------- Arduino entry points ----------
