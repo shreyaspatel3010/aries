@@ -2,19 +2,29 @@
 
 ROS 2 workspace for the Aries Mars rover: a 6-wheel differential-drive rover
 base with an igus ReBeL 6-DOF arm, gripper, MoveIt 2 integration, Gazebo
-simulation, ODrive/CAN rover hardware support, and joystick bringup.
+simulation, ODrive/CAN rover hardware support, joystick bringup, and two
+autonomous manipulation tasks — vision-guided probe grasping and terrain-guided
+soil sampling.
 
 ## Repository Layout
 
 ```text
 aries/
-├── docs/                  Operator and subsystem guides
+├── assets/                Source art, terrain sources, and mesh alternatives
+├── docs/                  Operator and subsystem guides, demo captures
 ├── firmware/              Microcontroller sketches (not colcon packages)
 ├── scripts/vision/        Vision environment and model utilities
 ├── src/                   First-party ROS 2 packages
-│   ├── aries_moveit/      Arm, gripper, and MoveIt packages
+│   ├── aries/              Robot description, worlds, Gazebo launch
+│   ├── aries_bringup/      Recommended launch wrappers and hardware checker
+│   ├── aries_common/       Shared hardware auto-detection
+│   ├── aries_imu/          BNO055 / picoScan IMU selection
+│   ├── aries_lidar/        SICK picoScan150 driver wrapper
+│   ├── aries_moveit/       Arm, gripper, and MoveIt packages
+│   ├── aries_soil_sample/  Autonomous soil scooping and deposit
 │   ├── aries_vision_grasp/ Vision grasp nodes, launch, and model
-│   └── vendor/            Vendored upstream ROS dependencies
+│   ├── rover_nav/          Rover odometry and localization
+│   └── vendor/             Vendored upstream ROS dependencies
 └── workspace.repos        Optional vcstool dependency manifest
 ```
 
@@ -31,7 +41,8 @@ datasets and runs belong in `data/`.
 - `aries_imu`: BNO055 selection and picoScan IMU fallback relay.
 - `aries_common`: shared hardware auto-detection used by rover launch files.
 - `aries_moveit`: MoveIt 2 configuration, arm/gripper controllers, Servo teleop, and gripper hardware plugins.
-- `aries_vision_grasp`: camera tools, YOLO inference, and autonomous MoveIt grasping.
+- `aries_vision_grasp`: camera tools, YOLO inference, and autonomous MoveIt grasping of the probe.
+- `aries_soil_sample`: autonomous soil scooping from the ground with the bucket fingertip, and deposit into the rover box. Terrain geometry only, no trained model.
 - `rover_nav`: rover odometry, localization configs, and legacy rover navigation/control scripts.
 
 Vendored packages live under `src/vendor/`; colcon discovers packages
@@ -47,6 +58,13 @@ recursively, so this grouping does not change package or launch names.
 - `odrive_can` for real rover ODrive/CAN hardware
 - `sick_scan_xd` for the real SICK picoScan150 LiDAR
 - `realsense2_camera` only when using the RealSense camera
+- `ultralytics` (pulls in `torch`) for `aries_vision_grasp`. There is no rosdep
+  key for it, so install it with pip into the same Python environment the nodes
+  run under. `aries_soil_sample` needs neither, and no GPU.
+
+The vision Python environment runs NumPy 2.x, where `cv_bridge` (built against
+the 1.x ABI) segfaults. Use `aries_vision_grasp.image_bridge.NumpyImageBridge`
+for image conversion instead.
 
 ## Build
 
@@ -62,10 +80,26 @@ source install/setup.bash
 
 Use your installed ROS distro in place of `jazzy` if needed.
 
-## Vision Grasp
+## Autonomous Manipulation
 
-Vision setup and operation are documented under [`docs/vision`](docs/vision).
-The maintained utilities are in `scripts/vision/`, and the default model is
+Two autonomous tasks share the arm, the gripper, and the wrist camera. They
+solve different perception problems: the probe is an *object* and needs a
+trained detector, while soil is *terrain* and is located by depth geometry
+alone.
+
+Both launches default to `use_sim_time:=false`, because standalone use means
+the physical rover and a `true` default with no `/clock` publisher freezes
+every timer. **Against Gazebo you must pass `use_sim_time:=true` explicitly.**
+Omitting it leaves the node comparing wall-clock `now()` against sim-stamped
+camera frames, so every frame is dropped as too old — an age near the Unix
+epoch in the logs is always this clock-domain mismatch, never a real delay.
+
+### Vision Grasp (Probe)
+
+Vision setup and operation are documented under [`docs/vision`](docs/vision),
+with package detail in
+[`src/aries_vision_grasp/README.md`](src/aries_vision_grasp/README.md). The
+maintained utilities are in `scripts/vision/`, and the default model is
 installed from `src/aries_vision_grasp/models/grasp.pt` with the
 `aries_vision_grasp` package.
 
@@ -73,6 +107,64 @@ installed from `src/aries_vision_grasp/models/grasp.pt` with the
 ./scripts/vision/install_dependencies.sh
 source scripts/vision/setup_environment.bash
 ```
+
+Run the pipeline against the simulator. The default `sandbox_world.sdf` is the
+one with a probe planted in it:
+
+```bash
+ros2 launch aries_bringup my_robot.launch.py
+
+# In a second terminal:
+ros2 launch aries_vision_grasp vision_grasp.launch.py use_sim_time:=true
+```
+
+The node detects the probe, plans and executes the grasp, verifies it, then
+carries the probe to the rover's base-mounted box and releases it. While the
+probe is held, its attached collision mesh is continuously re-fitted to live
+perception rather than frozen at grasp time. Tuning lives in
+`config/vision_grasp_params.yaml` and `config/pick_place.yaml`; override either
+with `params_file:=` or `pick_place_config:=`.
+
+On hardware, bring the arm, gripper, MoveIt, and the gripper RealSense up with
+`aries_bringup aries_hardware.launch.py` first (`enable_depth_sensor:=auto` by
+default), then start `vision_grasp.launch.py` alongside it. The standalone
+annotated-detection node is debug-only — it duplicates inference the grasp node
+already performs and publishes `/vision_grasp/detection_image` itself — so it is
+gated behind `enable_yolo_debug:=true` on the hardware launch.
+
+### Soil Sampling
+
+Package detail is in
+[`src/aries_soil_sample/README.md`](src/aries_soil_sample/README.md).
+
+```bash
+# Simulation: loose grains and a deposit box, no probe.
+ros2 launch aries my_robot.launch.py world:=soil_world.sdf finger_type:=bucket
+
+# In a second terminal:
+ros2 launch aries_soil_sample soil_sample.launch.py use_sim_time:=true
+```
+
+The node does **not** scoop on launch — it drives a gripper into the ground, so
+a cycle runs only when triggered (or with `auto_start:=true`):
+
+```bash
+ros2 service call /soil_sample_node/survey  std_srvs/srv/Trigger  # look, don't move
+ros2 service call /soil_sample_node/dry_run std_srvs/srv/Trigger  # plan, don't execute
+ros2 service call /soil_sample_node/scoop   std_srvs/srv/Trigger  # one full cycle
+ros2 service call /soil_sample_node/abort   std_srvs/srv/Trigger
+```
+
+Sites are picked from a 2.5-D height map scored on roughness, slope, and
+coverage, with roughness as the primary safety gate. Capture is verified by
+re-surveying and differencing the height map — a scoop that collected soil
+leaves a hole — because the gripper reports its command rather than a measured
+position and MoveIt's self-filter blanks the near field inside the jaws.
+
+Note that `octomap_disable_during_scoop` defaults to **true**. The octomap
+models the ground the scoop exists to dig into, so a collision-free path into
+it cannot exist; while suppressed, the arm will not avoid obstacles that exist
+only in the octomap. See the package README for the safeguards that replace it.
 
 ## Firmware
 
@@ -98,6 +190,25 @@ launch file to start a separate rover `joy_node`, add:
 ```bash
 use_rover_joy_node:=true
 ```
+
+#### Worlds And Fingertips
+
+The bringup wrapper does not forward the world or fingertip arguments, so
+choose them on the `aries` launch directly:
+
+```bash
+ros2 launch aries my_robot.launch.py \
+  world:=sandbox_world.sdf \
+  finger_type:=bucket
+```
+
+- `world:=` accepts `sandbox_world.sdf` (default; probe planted in a sand box,
+  for the grasp task) or `soil_world.sdf` (loose grains and a deposit box, for
+  the soil task).
+- `finger_type:=` accepts `bucket` (default), `maintenance`, or `probe`. It must
+  match the jaw the task expects: the four-bar contact point differs by up to
+  23 mm between the three fingertips, which is a 23 mm depth error on every
+  approach.
 
 ### Full Hardware
 
@@ -437,6 +548,19 @@ colcon build --packages-select aries_bringup rover_nav
 colcon build --packages-select aries_moveit
 ```
 
+Tests:
+
+```bash
+colcon test --packages-select aries_vision_grasp aries_soil_sample
+# or directly, without a colcon overlay:
+python3 -m pytest src/aries_vision_grasp/test/ src/aries_soil_sample/test/
+```
+
+The suites cover the pure-NumPy libraries that carry the manipulation geometry:
+the four-bar jaw calibration, quaternion/rotation helpers, depth
+back-projection, the point-to-box probe fit, and the terrain height map, scoop
+waypoints, and deposit poses.
+
 Direct MoveIt launch files still live under:
 
 ```text
@@ -457,4 +581,8 @@ https://github.com/user-attachments/assets/8119749f-b088-4221-86b2-9a9341b05857
 
 
 [simulation.webm](https://github.com/user-attachments/assets/fc0d2934-1fe8-4681-bb4a-53667f0bb681)
+
+The same captures are tracked in the repository under
+[`docs/`](docs): `simulation.webm`, and `automatic_pick_probe.mp4` showing a
+full autonomous probe pick.
 
