@@ -67,15 +67,50 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
     }
 
     if arm_protocol == "rebel":
-        # JOINT_VELOCITY_SCALE=2.0 means effective max vel_cmd ≈ 0.87 rad/s.
-        # Old p=10 saturated at only ~5° error → overshoot → jitter.
-        # Halving P and D prevents saturation while ff_velocity_scale=1.0
-        # keeps trajectory feed-forward as the primary motion driver.
+        # JOINT_VELOCITY_SCALE=2.0 means effective max vel_cmd ≈ 0.87 rad/s,
+        # so gain p saturates at a position error of 0.87/p rad.
+        #   p=10 -> saturates at  5.0 deg   (the old jitter: measured release
+        #                                    overshoot is 4-9 deg, i.e. right
+        #                                    inside the saturating range)
+        #   p= 3 -> saturates at 16.6 deg   (clear of it)
+        #   p= 1 -> saturates at 49.8 deg   but brakes with only 0.07 rad/s at
+        #                                   a 4 deg error, i.e. barely at all
+        #
+        # Measured with scripts/measure_teleop_tracking.py on the real arm
+        # (27 clean releases): tracking lag 85 ms, release overshoot mean
+        # 4.03 deg / worst 8.94 deg, against a designed lead of 1.38 deg. That
+        # decomposes as v*lookahead (1.38) + v*lag (2.34) + the arm's own decel
+        # (0.32) = 4.04 deg, which is the whole of the measured value.
+        #
+        # DO NOT RAISE p. Measured twice on hardware with
+        # scripts/measure_teleop_tracking.py, the second time with the hold
+        # target confirmed latched (holddrift 0.00 deg), so the JTC genuinely
+        # had a growing position error to brake against:
+        #
+        #   p=1.0  stopping time 0.244 s, release overshoot 3.15 deg
+        #   p=3.0  stopping time 0.339 s, release overshoot 5.78 deg   WORSE
+        #
+        # Raising the gain makes it worse because the loop has ~75 ms of
+        # transport delay: the braking command is computed from an error that
+        # is already 75 ms stale and lands 75 ms later still, so more gain
+        # simply drives the loop under-damped and the peak displacement grows.
+        # The d term compounds it, because igus_rebel/src/Rebel.cpp fills the
+        # velocity state with an unfiltered first difference of a quantised
+        # position (Rebel.cpp:683) and p=3 amplifies that noise.
+        #
+        # Saturation is NOT the limit here and was a red herring:
+        # JOINT_VELOCITY_SCALE is 1.0 (Rebel.hpp:22 — the "2.0" that used to be
+        # claimed in this comment was stale), so against the 1.5 rad/s rating
+        # p=3 would not saturate until a 28 deg error, far past the ~6 deg
+        # worst case observed. Dead time, not authority, is the constraint.
+        #
+        # The lever that does work is max_joint_velocity in
+        # config/teleop_speeds.yaml: overshoot = release speed * ~0.25 s.
         data["rebel_arm_trajectory_controller"]["ros__parameters"]["gains"] = {
-            # d=1.0 damps position-error corrections so the arm does not oscillate
-            # when the Servo velocity stream stops (joystick centered).  ff_velocity_scale=1.0
-            # keeps trajectory feed-forward as the primary motion driver so planned
-            # RViz trajectories are unaffected.
+            # d damps the position-error correction so the arm does not
+            # oscillate when the velocity stream stops (joystick centered).
+            # ff_velocity_scale=1.0 keeps trajectory feed-forward as the primary
+            # motion driver, so planned RViz trajectories are unaffected.
             "joint1": {"p": 1.0, "d": 0.1, "i": 0.0, "i_clamp": 0.0, "ff_velocity_scale": 1.0},
             "joint2": {"p": 1.0, "d": 0.1, "i": 0.0, "i_clamp": 0.0, "ff_velocity_scale": 1.0},
             "joint3": {"p": 1.0, "d": 0.1, "i": 0.0, "i_clamp": 0.0, "ff_velocity_scale": 1.0},
@@ -314,6 +349,9 @@ def launch_setup(context, *args, **kwargs):
     )
 
     wheel_joint_publisher_node = Node(
+        condition=IfCondition(
+            LaunchConfiguration("use_wheel_joint_publisher")
+        ),
         package="aries_moveit",
         executable="publish_wheel_joints.py",
         name="wheel_joint_publisher",
@@ -649,6 +687,14 @@ def generate_launch_description():
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),
             DeclareLaunchArgument("enable_depth_sensor", default_value="true", description="Populate MoveIt's Octomap from the gripper depth camera"),
+            DeclareLaunchArgument(
+                "use_wheel_joint_publisher",
+                default_value="true",
+                description=(
+                    "Publish zero-valued rover wheel joints when no real "
+                    "encoder-backed publisher is running"
+                ),
+            ),
             OpaqueFunction(function=launch_setup),
         ]
     )

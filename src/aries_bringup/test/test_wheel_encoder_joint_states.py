@@ -22,9 +22,9 @@ SPEC.loader.exec_module(MODULE)
 
 def test_axis_to_physical_wheel_mapping():
     assert MODULE.AXIS_JOINTS == (
-        "R_1_Wheel_Joint",
-        "R_2_Wheel_Joint",
         "R_3_Wheel_Joint",
+        "R_2_Wheel_Joint",
+        "R_1_Wheel_Joint",
         "L_1_Wheel_Joint",
         "L_2_Wheel_Joint",
         "L_3_Wheel_Joint",

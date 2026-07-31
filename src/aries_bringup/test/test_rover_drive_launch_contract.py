@@ -9,10 +9,19 @@ LAUNCH_PATH = (
     / "launch"
     / "rover_drive.launch.py"
 )
+FULL_HARDWARE_PATH = LAUNCH_PATH.with_name("full_hardware.launch.py")
+ARM_WRAPPER_PATH = LAUNCH_PATH.with_name("aries_hardware.launch.py")
+MOVEIT_HARDWARE_PATH = (
+    LAUNCH_PATH.parents[2]
+    / "aries_moveit"
+    / "moveit_config"
+    / "launch"
+    / "aries_hardware.launch.py"
+)
 
 
-def _declared_default(argument_name):
-    tree = ast.parse(LAUNCH_PATH.read_text(encoding="utf-8"))
+def _declared_default(argument_name, launch_path=LAUNCH_PATH):
+    tree = ast.parse(launch_path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -50,3 +59,25 @@ def test_fail_safe_bridge_is_the_physical_command_owner():
 def test_waypoint_stack_is_not_an_implicit_dependency():
     source = LAUNCH_PATH.read_text(encoding="utf-8")
     assert "grasshopper_waypoint_follower" not in source
+
+
+def test_full_hardware_has_one_wheel_joint_state_owner():
+    full_source = FULL_HARDWARE_PATH.read_text(encoding="utf-8")
+    wrapper_source = ARM_WRAPPER_PATH.read_text(encoding="utf-8")
+    moveit_source = MOVEIT_HARDWARE_PATH.read_text(encoding="utf-8")
+
+    assert (
+        _declared_default(
+            "use_static_wheel_joint_publisher", FULL_HARDWARE_PATH
+        )
+        == "false"
+    )
+    assert (
+        '"use_wheel_joint_publisher": LaunchConfiguration('
+        in full_source
+    )
+    assert (
+        '"use_wheel_joint_publisher": LaunchConfiguration('
+        in wrapper_source
+    )
+    assert 'LaunchConfiguration("use_wheel_joint_publisher")' in moveit_source

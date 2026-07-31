@@ -159,6 +159,9 @@ private:
     joint_velocity_deadband_ = declareGet<double>("joint_velocity_deadband", 0.004);
 
     dls_lambda_ = declareGet<double>("dls_lambda", 0.10);
+    // Smallest singular value at which damping starts ramping in. Above this
+    // the solve is undamped and tracks the commanded twist exactly.
+    dls_sigma_threshold_ = declareGet<double>("dls_sigma_threshold", 0.20);
     joint_limit_margin_ = declareGet<double>("joint_limit_margin", 0.05);
     collision_preview_sec_ = declareGet<double>("collision_preview_sec", 0.16);
 
@@ -217,6 +220,7 @@ private:
     joint_velocity_deadband_ = std::clamp(joint_velocity_deadband_, 0.0, 0.05);
 
     dls_lambda_ = std::clamp(dls_lambda_, 0.001, 1.0);
+    dls_sigma_threshold_ = std::clamp(dls_sigma_threshold_, 0.0, 1.0);
     joint_limit_margin_ = std::clamp(joint_limit_margin_, 0.0, 0.20);
     collision_preview_sec_ = std::clamp(collision_preview_sec_, 0.04, 0.40);
     velocity_point_1_sec_ = std::clamp(velocity_point_1_sec_, 0.015, 0.10);
@@ -225,7 +229,12 @@ private:
     joint_enable_threshold_ = std::clamp(joint_enable_threshold_, 0.05, 0.95);
     // Release must sit below press or the gate latches on forever.
     joint_enable_release_ = std::clamp(joint_enable_release_, 0.02, joint_enable_threshold_ - 0.02);
-    stop_zero_cycles_total_ = std::clamp(stop_zero_cycles_total_, 1, 8);
+    // Upper bound was 8 (100 ms at 80 Hz), which silently clamped any larger
+    // configured value and cut the hold frames off well before the arm had
+    // settled — measured stopping time on the real arm is ~0.25 s. 40 allows
+    // half a second, still short enough that the node hands the controller
+    // back to RViz/MoveIt promptly.
+    stop_zero_cycles_total_ = std::clamp(stop_zero_cycles_total_, 1, 40);
 
     if (gripper_open_position_ > gripper_closed_position_)
     {
@@ -403,6 +412,9 @@ private:
 
     active_motion_ = true;
     stop_zero_cycles_left_ = 0;
+    // Drop the latched stop target: the next hold must be captured fresh, or
+    // the controller would drag the arm back to where the last move ended.
+    hold_latched_ = false;
     publishVelocityOnlyTrajectory(qdot, false);
   }
 
@@ -426,6 +438,7 @@ private:
     last_output_vel_.fill(0.0);
     active_motion_ = false;
     stop_zero_cycles_left_ = stop_zero_cycles_total_;
+    hold_latched_ = false;
     publishZeroVelocityTrajectory(true);
 
     if (active_mode_ == Mode::CARTESIAN)
@@ -481,9 +494,29 @@ private:
       return false;
     }
 
+    // Damped least squares is only *needed* near a singularity, but a constant
+    // lambda damps everywhere. Each singular direction is attenuated by
+    // s^2 / (s^2 + lambda^2), so with lambda = 0.10 a direction with s = 0.10
+    // loses half its magnitude while a well-conditioned one loses ~1%. The
+    // attenuation is therefore uneven across directions, and the twist the arm
+    // actually follows points somewhere other than the one commanded — which
+    // is why a pure "straight up" command also drifts sideways, and why it
+    // depends on pose. Ramp lambda in only as the smallest singular value
+    // collapses, so well-conditioned poses track the command exactly.
+    const Eigen::VectorXd sigma =
+      jacobian.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).singularValues();
+    const double sigma_min = sigma(sigma.size() - 1);
+
+    double lambda = 0.0;
+    if (sigma_min < dls_sigma_threshold_)
+    {
+      const double ratio = sigma_min / dls_sigma_threshold_;
+      lambda = dls_lambda_ * std::sqrt(std::max(0.0, 1.0 - ratio * ratio));
+    }
+
     const Eigen::MatrixXd jj_t =
       jacobian * jacobian.transpose() +
-      (dls_lambda_ * dls_lambda_) * Eigen::MatrixXd::Identity(6, 6);
+      (lambda * lambda) * Eigen::MatrixXd::Identity(6, 6);
 
     const Eigen::VectorXd result =
       jacobian.transpose() * jj_t.ldlt().solve(twist);
@@ -823,6 +856,69 @@ private:
     publishVelocityOnlyTrajectory(zero, force);
   }
 
+  // Hold at a target LATCHED when the stick was released, not at the live
+  // measurement.
+  //
+  // publishVelocityOnlyTrajectory builds positions as measured + vel*T, so
+  // calling it with vel = 0 re-targets the hold to wherever the arm has just
+  // coasted to, every single cycle. The position error is then ~0 by
+  // construction, the JTC's p gain has nothing to act on, and the arm free
+  // coasts with no braking at all. That is why raising p from 1.0 to 3.0
+  // changed nothing measurable, and why the measured stopping time (0.27 s) is
+  // ~4x the transport delay (0.07 s) instead of close to it.
+  //
+  // Freezing the target lets the error grow as the arm coasts past it, which
+  // is what gives the controller something to brake against.
+  void publishHoldTrajectory(bool force)
+  {
+    if (!force && !publishGateReady())
+    {
+      return;
+    }
+
+    if (!hold_latched_)
+    {
+      publishZeroVelocityTrajectory(force);
+      return;
+    }
+
+    trajectory_msgs::msg::JointTrajectory traj;
+    traj.header.stamp = nh_->now();
+    traj.joint_names.assign(arm_joint_names_.begin(), arm_joint_names_.end());
+
+    trajectory_msgs::msg::JointTrajectoryPoint p1;
+    p1.positions.assign(hold_pos_.begin(), hold_pos_.end());
+    p1.velocities.assign(6, 0.0);
+    p1.time_from_start = rclcpp::Duration::from_seconds(velocity_point_1_sec_);
+
+    trajectory_msgs::msg::JointTrajectoryPoint p2 = p1;
+    p2.time_from_start = rclcpp::Duration::from_seconds(velocity_point_2_sec_);
+
+    traj.points.push_back(p1);
+    traj.points.push_back(p2);
+
+    arm_pub_->publish(traj);
+  }
+
+  // Capture the stopping target once, on the transition out of commanded
+  // motion. Re-latching every cycle would reproduce the bug above.
+  void latchHoldPosition()
+  {
+    if (hold_latched_)
+    {
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!have_joint_state_)
+    {
+      return;
+    }
+
+    hold_pos_ = joint_pos_;
+    hold_latched_ = true;
+  }
+
   bool publishGateReady()
   {
     const rclcpp::Time now = nh_->now();
@@ -856,11 +952,26 @@ private:
     }
 
     active_motion_ = false;
+
+    // Zero the command immediately rather than ramping it down. On the real
+    // ReBeL, aries_hardware.launch.py gives the JTC the *velocity* command
+    // interface with ff_velocity_scale 1.0, so the trajectory velocity is fed
+    // almost straight through to the joint. Under that interface an immediate
+    // zero IS the correct "stop now" signal, and ramping instead feeds forward
+    // roughly another 0.5 deg of travel before it takes effect. (A decel ramp
+    // would be right for the position command interface used by the mock/sim
+    // path in config/ros2_controllers.yaml — but that is not what runs here.)
     last_output_vel_.fill(0.0);
 
+    // Freeze the stopping target at the release point so the arm has something
+    // to brake against while it coasts.
+    latchHoldPosition();
+
+    // Pin the target for a few cycles so the controller holds the settled
+    // position, then go silent so MoveIt/RViz can drive the same controller.
     if (stop_zero_cycles_left_ > 0)
     {
-      publishZeroVelocityTrajectory(true);
+      publishHoldTrajectory(true);
       --stop_zero_cycles_left_;
     }
   }
@@ -870,7 +981,7 @@ private:
   {
     if (stop_zero_cycles_left_ > 0)
     {
-      publishZeroVelocityTrajectory(true);
+      publishHoldTrajectory(true);
       --stop_zero_cycles_left_;
     }
   }
@@ -1161,6 +1272,7 @@ private:
   double max_joint_decel_ = 16.0;
   double joint_velocity_deadband_ = 0.004;
   double dls_lambda_ = 0.10;
+  double dls_sigma_threshold_ = 0.20;
   double joint_limit_margin_ = 0.05;
   double collision_preview_sec_ = 0.16;
   double velocity_point_1_sec_ = 0.040;
@@ -1197,6 +1309,9 @@ private:
   int axis_joint4_ = 3;
   int axis_joint5_ = 6;
   int axis_joint6_ = 7;
+
+  std::array<double, 6> hold_pos_{};
+  bool hold_latched_ = false;
 
   bool arm_mode_initialized_ = false;
   bool previous_rb_toggle_pressed_ = false;

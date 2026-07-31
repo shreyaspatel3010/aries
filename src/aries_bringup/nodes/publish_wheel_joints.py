@@ -21,13 +21,17 @@ PASSIVE_JOINTS = (
     "aux_R_Rocker_joint",
 )
 
-# Physical wiring contract:
-# right axes 0..2 = front, mid, rear
+# Encoder-to-URDF contract used only for wheel joint states / TF:
+# right axes 0..2 = rear, mid, front
 # left axes  3..5 = front, mid, rear
+#
+# Drive commands and odometry retain their existing physical axis ordering.
+# The right-front/right-rear correction belongs here because those consumers
+# treat all three wheels on a side equivalently, while TF needs exact joints.
 AXIS_JOINTS = (
-    "R_1_Wheel_Joint",
-    "R_2_Wheel_Joint",
     "R_3_Wheel_Joint",
+    "R_2_Wheel_Joint",
+    "R_1_Wheel_Joint",
     "L_1_Wheel_Joint",
     "L_2_Wheel_Joint",
     "L_3_Wheel_Joint",

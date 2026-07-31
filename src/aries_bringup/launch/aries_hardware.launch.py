@@ -102,6 +102,9 @@ def launch_setup(context, *args, **kwargs):
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
                 "enable_depth_sensor": "true" if enable_depth_sensor else "false",
+                "use_wheel_joint_publisher": LaunchConfiguration(
+                    "use_wheel_joint_publisher"
+                ),
             }.items(),
         )
     )
@@ -157,6 +160,14 @@ def generate_launch_description():
             default_value="auto",
             choices=["auto", "true", "false"],
             description="Auto-detect, force-enable, or disable the gripper RealSense and MoveIt Octomap input",
+        ),
+        DeclareLaunchArgument(
+            "use_wheel_joint_publisher",
+            default_value="true",
+            description=(
+                "Publish static zero wheel joints. Disable when the rover "
+                "ODrive encoder publisher owns the wheel joint states."
+            ),
         ),
         DeclareLaunchArgument(
             "enable_yolo_debug",

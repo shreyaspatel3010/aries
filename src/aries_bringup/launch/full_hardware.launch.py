@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetLaunchConfiguration,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -26,6 +30,14 @@ def generate_launch_description():
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
         DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
+        DeclareLaunchArgument(
+            "use_static_wheel_joint_publisher",
+            default_value="false",
+            description=(
+                "Publish zero-valued wheel joints from the arm stack. Keep "
+                "false when the rover encoder-backed publisher is active."
+            ),
+        ),
 
         DeclareLaunchArgument("start_rover", default_value="true"),
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto", choices=["auto", "odrive", "mock_hardware"]),
@@ -67,6 +79,13 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
         DeclareLaunchArgument("start_checker", default_value="true"),
+        # Preserve the top-level choice before rover_drive_auto.launch.py sets
+        # its own nested start_checker argument to false. Included launch
+        # configurations share context and would otherwise disable this checker.
+        SetLaunchConfiguration(
+            "_start_full_hardware_checker",
+            LaunchConfiguration("start_checker"),
+        ),
         DeclareLaunchArgument("checker_interval", default_value="4.0"),
 
         # Arm + gripper + MoveIt/RViz + shared joy_node.
@@ -95,6 +114,9 @@ def generate_launch_description():
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
                 "enable_depth_sensor": LaunchConfiguration("enable_depth_sensor"),
+                "use_wheel_joint_publisher": LaunchConfiguration(
+                    "use_static_wheel_joint_publisher"
+                ),
             }.items(),
         ),
 
@@ -146,7 +168,9 @@ def generate_launch_description():
                     "full_hardware_checker.launch.py",
                 ])
             ),
-            condition=IfCondition(LaunchConfiguration("start_checker")),
+            condition=IfCondition(
+                LaunchConfiguration("_start_full_hardware_checker")
+            ),
             launch_arguments={
                 "checker_interval": LaunchConfiguration("checker_interval"),
                 "serial_port": LaunchConfiguration("serial_port"),

@@ -39,9 +39,20 @@
     # --- Full-stick speeds ---------------------------------------------------
     # Analog: output is proportional to stick deflection past the deadzone,
     # so these are the values reached at 100% deflection only.
-    linear_scale: 0.38          # m/s    TCP translate      [clamp 0.01 - 0.20]
-    angular_scale: 0.38         # rad/s  TCP rotate (~10°/s) [clamp 0.02 - 0.80]
-    joint_scale: 0.38           # rad/s  per joint (~16°/s)  [clamp 0.01 - 0.60]
+    # THESE are what set the speed in Cartesian mode, and therefore what sets
+    # the release overshoot. NOT max_joint_velocity — that is only a ceiling,
+    # and measurement showed it is not normally reached: halving it from 0.48
+    # to 0.28 left the release speed unchanged (0.218 -> 0.239 rad/s) because
+    # the Jacobian solution was already below both values. Joint speeds were
+    # even observed above 0.28 with the cap set to 0.28.
+    #
+    # Overshoot = release speed * ~0.25 s (the arm's own stopping time), so
+    # halving these halves the overshoot. Restored to the values that were in
+    # use before the speed increase that prompted the overshoot complaint.
+    linear_scale: 0.10          # m/s    TCP translate      [clamp 0.01 - 0.20]
+    angular_scale: 0.18         # rad/s  TCP rotate (~10°/s) [clamp 0.02 - 0.80]
+    joint_scale: 0.38           # rad/s  per joint, JOINT mode only (RT)
+                                #                            [clamp 0.01 - 0.60]
 
     # Set true to make any deflection past the deadzone command FULL speed
     # (bang-bang). Off, because it makes fine alignment near a grasp unusable.
@@ -56,7 +67,22 @@
     # which preserves direction but means that near a singularity or a
     # stretched-out pose the TCP moves visibly slower than linear_scale.
     # Raising linear_scale without raising this achieves nothing.
-    max_joint_velocity: 0.48    # rad/s              [clamp 0.05 - 0.60]
+    # A CEILING, not the speed setting, and NOT the lever for overshoot —
+    # measured: changing it 0.48 -> 0.28 left the release speed unchanged
+    # (0.218 -> 0.239 rad/s) because the Cartesian solution rarely reaches it.
+    # Use linear_scale / angular_scale above to change how fast the arm moves.
+    #
+    # When you let go, the arm keeps travelling for ~0.25 s regardless: ~75 ms
+    # transport delay plus the ReBeL's own firmware deceleration, neither
+    # reachable from ROS (the driver's write path applies no ramp, only a
+    # 0.15 deg/s deadband). So overshoot = release speed * ~0.25 s, and the
+    # only way to shrink it is to release at a lower speed.
+    #
+    # Tried against the overshoot and measured as no better or worse: shorter
+    # lookahead, a release decel ramp, latching the hold target, lowering this
+    # ceiling, and raising the JTC p gain (worse — see the DO NOT RAISE p note
+    # in launch/aries_hardware.launch.py).
+    max_joint_velocity: 0.28    # rad/s              [clamp 0.05 - 0.60]
 
     # --- Ramps ---------------------------------------------------------------
     # Asymmetric on purpose: gentle start, near-instant stop. There is no
@@ -75,26 +101,68 @@
     joy_timeout_sec: 0.35            # no /joy for this long -> stop
 
     # --- Stop / release behaviour --------------------------------------------
-    stop_ramp_duration_sec: 0.06
-    stop_ramp_steps: 10
-    stop_hold_cycles: 2
-    stop_zero_cycles: 4
-    cartesian_release_deadzone: 0.04
-    cartesian_stop_ramp_duration_sec: 0.0   # 0.0 = cut immediately on release
-    cartesian_hard_stop_cycles: 3
+    # WARNING: the five keys below are NOT READ BY ANY NODE. Verified by
+    # grepping every .cpp/.py in src/ — nothing declares them. They are kept
+    # only because they were already in gamepad.yaml; editing them does
+    # nothing. The release ramp they look like they control is actually
+    # max_joint_decel, applied in hardZeroStop().
+    stop_ramp_duration_sec: 0.06            # dead
+    stop_ramp_steps: 10                     # dead
+    stop_hold_cycles: 2                     # dead
+    # Cycles of "hold at the latched release position" published after release
+    # before the node goes silent (silence is deliberate, so RViz/MoveIt can
+    # drive the same controller). At 80 Hz this is cycles/80 seconds.
+    # Measured stopping time on the real arm is ~0.27 s, so 8 cycles (100 ms)
+    # went silent well before the arm had settled. 24 = 300 ms covers it.
+    stop_zero_cycles: 24
+    cartesian_release_deadzone: 0.04        # dead
+    cartesian_stop_ramp_duration_sec: 0.0   # dead
+    cartesian_hard_stop_cycles: 3           # dead
+
+    # This one IS live and is the real release ramp:
+    #   max_joint_decel (above) sets how fast the command winds down on
+    #   release. 16 rad/s^2 brings 0.48 rad/s to rest in ~30 ms / 3 cycles.
+    #   Raise it for a crisper stop, lower it for a softer one.
 
     # --- Solver / lookahead --------------------------------------------------
-    dls_lambda: 0.10            # damping; raise to soften singularities
+    # Damping is now ramped in only as the arm approaches a singularity, rather
+    # than applied at every pose. A constant lambda attenuates each singular
+    # direction by s^2/(s^2 + lambda^2), which is uneven across directions, so
+    # the arm followed a twist that pointed somewhere other than the commanded
+    # one — a pure "straight up" push also drifted sideways, and how much
+    # depended on pose. Above dls_sigma_threshold the solve is now undamped and
+    # tracks the command exactly.
+    #   raise dls_sigma_threshold -> damping starts earlier, smoother near
+    #     singularities, slightly less exact tracking
+    #   lower it -> crisper tracking, less margin before a singularity
+    dls_lambda: 0.10            # MAX damping, reached at a true singularity
                                 #                    [clamp 0.001 - 1.0]
+    dls_sigma_threshold: 0.20   # smallest singular value where damping begins
+                                #                    [clamp 0.0 - 1.0]
     joint_limit_margin: 0.05    # rad before a limit that motion into it stops
                                 #                    [clamp 0.0 - 0.20]
     collision_preview_sec: 0.16 # how far ahead the guard checks
                                 #                    [clamp 0.04 - 0.40]
-    trajectory_horizon_sec: 0.025
-    trajectory_preview_sec: 0.025
-    hold_time_sec: 0.030
-    velocity_point_1_sec: 0.040 #                    [clamp 0.015 - 0.10]
-    velocity_point_2_sec: 0.080 #      [clamp velocity_point_1 + 0.01 - 0.20]
+    trajectory_horizon_sec: 0.025           # dead (see warning above)
+    trajectory_preview_sec: 0.025           # dead
+    hold_time_sec: 0.030                    # dead
+    # THESE TWO SET THE POST-RELEASE SETTLE. Each cycle the node commands
+    #   position = measured_position + velocity * velocity_point_N_sec
+    # so the position command deliberately LEADS the arm by up to
+    # velocity_point_2_sec of travel — that lead is what keeps motion smooth.
+    # When you let go, the arm still has that lead to run out, and the
+    # controller then pulls it back to the pinned point. That settle is the
+    # "it keeps correcting itself" motion, and it is exactly
+    #   velocity * velocity_point_2_sec
+    # so it grows in direct proportion to speed:
+    #   0.28 rad/s * 0.080 = 0.022 rad (~1.3 deg)   <- old speeds
+    #   0.48 rad/s * 0.080 = 0.038 rad (~2.2 deg)   <- speeds as raised above
+    # Shortened to hold the settle near its original size at the higher speed.
+    # Do not go far below these: commands arrive every 12.5 ms, and if the
+    # trajectory is shorter than the gap between commands the motion goes
+    # jerky instead of smooth.
+    velocity_point_1_sec: 0.025 #                    [clamp 0.015 - 0.10]
+    velocity_point_2_sec: 0.050 #      [clamp velocity_point_1 + 0.01 - 0.20]
 
     # --- Gripper (see shared block below; repeated so this node is complete) --
     gripper_speed: 2.00
