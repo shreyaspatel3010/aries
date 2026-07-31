@@ -1,0 +1,27 @@
+cmd_vel_odrive_bridge:
+  ros__parameters:
+    cmd_vel_topic: "/cmd_vel"
+    enable_service: "/aries_drive/enable"
+    enabled_topic: "/aries_drive/enabled"
+    status_topic: "/aries_drive/status"
+
+    num_axes: 6
+    right_wheels: [0, 1, 2]
+    left_wheels: [3, 4, 5]
+
+    # Must stay consistent with rover_nav/Odom.py.
+    wheel_circumference_m: 0.697
+    track_width_m: 0.566
+
+    max_linear_mps: 0.45
+    max_angular_rps: 2.10
+    max_wheel_rps: 1.50
+    wheel_accel_rps2: 3.0
+    command_timeout_s: 0.25
+    # Twenty Hz is responsive at rover speed while leaving headroom on the
+    # 250 kbit/s bus for six 100 Hz encoder streams and status responses.
+    publish_rate_hz: 20.0
+
+    arm_retry_period_s: 2.0
+    axis_state_request_timeout_s: 3.0
+    auto_arm: false

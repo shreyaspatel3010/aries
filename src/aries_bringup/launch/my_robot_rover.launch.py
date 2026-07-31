@@ -47,15 +47,17 @@ def generate_launch_description():
         "virtual_differential.yaml",
     ])
     rover_joystick_config_path = os.path.join(
-        get_package_share_directory("aries_bringup"),
+        get_package_share_directory("aries_teleop"),
         "config",
         "rover_cmd_vel_joystick.yaml",
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    use_sim_ekf = LaunchConfiguration("use_sim_ekf")
     use_rviz = LaunchConfiguration("use_rviz")
     use_rover_joystick = LaunchConfiguration("use_rover_joystick")
     use_rover_joy_node = LaunchConfiguration("use_rover_joy_node")
+    use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     joy_driver = LaunchConfiguration("joy_driver")
     joy_layout = LaunchConfiguration("joy_layout")
     joy_dev = LaunchConfiguration("joy_dev")
@@ -97,7 +99,7 @@ def generate_launch_description():
     )
 
     robot_description_content = ParameterValue(
-        Command(["xacro ", urdf_path]),
+        Command(["xacro ", urdf_path, " enable_lidar_gazebo:=true"]),
         value_type=str,
     )
 
@@ -137,6 +139,26 @@ def generate_launch_description():
         }],
     )
 
+    localization_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("aries_localization"),
+                    "launch",
+                    "localization.launch.py",
+                ]
+            )
+        ),
+        condition=IfCondition(use_sim_ekf),
+        launch_arguments={
+            "use_sim_ekf": "true",
+            "use_sim_time": use_sim_time,
+            "sim_odom_topic": "/ground_truth/odom",
+            "sim_imu_topic": "/imu",
+            "filtered_odom_topic": "/odometry/filtered",
+        }.items(),
+    )
+
     virtual_differential_node = Node(
         package="aries",
         executable="virtual_differential",
@@ -169,7 +191,7 @@ def generate_launch_description():
 
     rover_joystick_node = Node(
         condition=IfCondition(use_rover_joystick),
-        package="aries_bringup",
+        package="aries_teleop",
         executable="rover_cmd_vel_joystick.py",
         name="rover_cmd_vel_joystick",
         output="screen",
@@ -188,7 +210,7 @@ def generate_launch_description():
 
     rover_joy_layout_normalizer_node = Node(
         condition=IfCondition(use_rover_joy_node),
-        package="aries_moveit",
+        package="aries_teleop",
         executable="joy_layout_normalizer.py",
         name="rover_joy_layout_normalizer",
         parameters=[{
@@ -200,11 +222,33 @@ def generate_launch_description():
         output="screen",
     )
 
+    cmd_vel_relay_node = Node(
+        condition=IfCondition(use_cmd_vel_relay),
+        package="aries_teleop",
+        executable="cmd_vel_teleop_relay.py",
+        name="cmd_vel_teleop_relay",
+        output="screen",
+        parameters=[
+            {
+                "input_topic": "/cmd_vel/teleop",
+                "output_topic": "/cmd_vel",
+            }
+        ],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="true",
             description="Use simulation time",
+        ),
+        DeclareLaunchArgument(
+            "use_sim_ekf",
+            default_value="true",
+            description=(
+                "Fuse Gazebo ground-truth odometry and IMU into "
+                "/odometry/filtered and publish odom->base_footprint."
+            ),
         ),
         DeclareLaunchArgument(
             "use_rviz",
@@ -250,6 +294,11 @@ def generate_launch_description():
             description="Start a joy_node for rover joystick input",
         ),
         DeclareLaunchArgument(
+            "use_cmd_vel_relay",
+            default_value="true",
+            description="Relay /cmd_vel/teleop to Gazebo /cmd_vel.",
+        ),
+        DeclareLaunchArgument(
             "joy_layout",
             default_value="auto",
             choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"],
@@ -280,10 +329,12 @@ def generate_launch_description():
         robot_state_publisher_node,
         spawn_robot_node,
         parameter_bridge_node,
+        localization_launch,
         virtual_differential_node,
         wheel_joint_publisher_node,
         rviz_node,
         rover_joystick_node,
         rover_joy_node,
         rover_joy_layout_normalizer_node,
+        cmd_vel_relay_node,
     ])

@@ -12,11 +12,11 @@
 #
 # Final mapping:
 #   Hold LB      = rover drive
-#   Hold RB      = arm/gripper enable
+#   Hold RB      = arm Cartesian movement (also the arm/gripper enable)
+#   Hold RT      = arm chain/joint jog    (also the arm/gripper enable)
 #   Hold RB + Y  = real-arm physical hand guiding (ZeroTorque)
 #   Press LB + Y = re-initialise the ODrives (clear errors, re-arm CLOSED_LOOP)
 #   Y alone      = sound
-#   New RB press = toggle arm Cartesian <-> chain/joint mode
 #
 # Y is shared three ways, disambiguated by which shoulder button is held: bare
 # Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand

@@ -1,0 +1,181 @@
+# ============================================================================
+# ARIES joystick teleop — master speed / motion tuning file
+# ============================================================================
+#
+# Every knob that decides HOW FAST the arm and gripper move under joystick
+# control, in one place. Loaded AFTER gamepad.yaml, so the values here win
+# over the copies still sitting in that file (ROS 2 applies parameter files
+# left to right; the last one to set a key decides it).
+#
+# gamepad.yaml keeps what this file deliberately does not touch: button and
+# axis mappings, topic names, joint limits, frame names.
+#
+# Nothing here changes behaviour on its own — the values below are the ones
+# the system already runs with. Edit them to retune.
+#
+#   Which node reads what
+#     rebel_servo_teleop_gamepad   joystick_control_mode:=servo       (default)
+#     rebel_movegroup_joystick     joystick_control_mode:=move_group
+#     Gripper block                both — the two nodes share it
+#
+#   Clamp ranges below are enforced in C++ at
+#   src/rebel_servo_teleop_gamepad.cpp:200-215. A value outside the range is
+#   silently pulled back to the edge, not rejected, so it will look like the
+#   parameter was ignored.
+#
+#   For scale: config/joint_limits.yaml rates joints 1-6 at 1.5 rad/s, so the
+#   0.28 rad/s ceiling below runs the arm at ~19% of rated speed.
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# ARM — servo mode (default)
+# ----------------------------------------------------------------------------
+# Node computes joint velocities itself (damped-least-squares Jacobian) and
+# publishes straight to rebel_arm_trajectory_controller/joint_trajectory.
+/**/rebel_servo_teleop_gamepad:
+  ros__parameters:
+
+    # --- Full-stick speeds ---------------------------------------------------
+    # Analog: output is proportional to stick deflection past the deadzone,
+    # so these are the values reached at 100% deflection only.
+    linear_scale: 0.38          # m/s    TCP translate      [clamp 0.01 - 0.20]
+    angular_scale: 0.38         # rad/s  TCP rotate (~10°/s) [clamp 0.02 - 0.80]
+    joint_scale: 0.38           # rad/s  per joint (~16°/s)  [clamp 0.01 - 0.60]
+
+    # Set true to make any deflection past the deadzone command FULL speed
+    # (bang-bang). Off, because it makes fine alignment near a grasp unusable.
+    constant_speed_mode: false
+
+    # Stick travel ignored before motion starts. Also the release threshold.
+    deadzone: 0.04
+
+    # --- Hard ceiling --------------------------------------------------------
+    # Applies in BOTH cartesian and joint mode, after the Jacobian solve. If
+    # any joint exceeds it the whole velocity vector is scaled down uniformly,
+    # which preserves direction but means that near a singularity or a
+    # stretched-out pose the TCP moves visibly slower than linear_scale.
+    # Raising linear_scale without raising this achieves nothing.
+    max_joint_velocity: 0.48    # rad/s              [clamp 0.05 - 0.60]
+
+    # --- Ramps ---------------------------------------------------------------
+    # Asymmetric on purpose: gentle start, near-instant stop. There is no
+    # smoothing filter on the servo side (use_smoothing: false in servo.yaml)
+    # because a filter there adds onset lag — the arm would start moving after
+    # the stick push instead of during it. Stopping is handled here instead.
+    max_joint_accel: 1.8        # rad/s^2  ~0.16 s from rest to 0.28 rad/s
+                                #                    [clamp 0.2 - 12.0]
+    max_joint_decel: 16.0       # rad/s^2  ~18 ms to full stop
+                                #                    [clamp 0.2 - 30.0]
+    joint_velocity_deadband: 0.004   # rad/s below this is snapped to zero
+
+    # --- Command stream ------------------------------------------------------
+    command_publish_rate_hz: 80.0    # also sets dt for the gripper stepper
+                                     #               [clamp 30.0 - 100.0]
+    joy_timeout_sec: 0.35            # no /joy for this long -> stop
+
+    # --- Stop / release behaviour --------------------------------------------
+    stop_ramp_duration_sec: 0.06
+    stop_ramp_steps: 10
+    stop_hold_cycles: 2
+    stop_zero_cycles: 4
+    cartesian_release_deadzone: 0.04
+    cartesian_stop_ramp_duration_sec: 0.0   # 0.0 = cut immediately on release
+    cartesian_hard_stop_cycles: 3
+
+    # --- Solver / lookahead --------------------------------------------------
+    dls_lambda: 0.10            # damping; raise to soften singularities
+                                #                    [clamp 0.001 - 1.0]
+    joint_limit_margin: 0.05    # rad before a limit that motion into it stops
+                                #                    [clamp 0.0 - 0.20]
+    collision_preview_sec: 0.16 # how far ahead the guard checks
+                                #                    [clamp 0.04 - 0.40]
+    trajectory_horizon_sec: 0.025
+    trajectory_preview_sec: 0.025
+    hold_time_sec: 0.030
+    velocity_point_1_sec: 0.040 #                    [clamp 0.015 - 0.10]
+    velocity_point_2_sec: 0.080 #      [clamp velocity_point_1 + 0.01 - 0.20]
+
+    # --- Gripper (see shared block below; repeated so this node is complete) --
+    gripper_speed: 2.00
+    max_gripper_command_step: 0.04
+    gripper_trajectory_duration: 0.10
+    gripper_open_position: -1.57
+    gripper_closed_position: 0.07
+
+
+# ----------------------------------------------------------------------------
+# ARM — move_group mode  (joystick_control_mode:=move_group)
+# ----------------------------------------------------------------------------
+# Not velocity control at all. Each stick direction fires a discrete planned
+# nudge through /move_action, using the same planning, collision checking and
+# execution path as RViz Plan + Execute. Speed is therefore step size / period,
+# and real throughput is gated by how fast planning returns.
+/**/rebel_movegroup_joystick:
+  ros__parameters:
+
+    # --- Step size -----------------------------------------------------------
+    cartesian_step_m: 0.025     # m    per nudge, cartesian mode
+    angular_step_rad: 0.10      # rad  per nudge, cartesian mode
+    joint_step_rad: 0.07        # rad  per nudge, joint mode
+
+    # --- Cadence -------------------------------------------------------------
+    # 0.025 m every 0.20 s = ~0.125 m/s nominal if planning keeps up.
+    command_period_sec: 0.20
+    success_cooldown_sec: 0.05
+    failure_cooldown_sec: 0.80  # dominates once you push into an unreachable
+                                # direction — this is why it feels sticky there
+
+    # --- Execution -----------------------------------------------------------
+    # Fraction of the joint_limits.yaml maxima the planned trajectory may use.
+    velocity_scale: 0.35
+    acceleration_scale: 0.35
+
+    # --- Planning budget -----------------------------------------------------
+    allowed_planning_time: 2.0
+    num_planning_attempts: 5
+    position_goal_tolerance: 0.015
+    orientation_goal_tolerance: 0.15
+    joint_goal_tolerance: 0.025
+    joint_limit_margin: 0.05
+
+    # Node's own default is true; kept false to match servo mode.
+    constant_speed_mode: false
+    deadzone: 0.04
+
+    # --- Gripper (same values as servo mode — keep the two in sync) ----------
+    gripper_speed: 2.00
+    max_gripper_command_step: 0.04
+    gripper_trajectory_duration: 0.10
+    gripper_open_position: -1.57
+    gripper_closed_position: 0.07
+
+
+# ============================================================================
+# GRIPPER — reference
+# ============================================================================
+# The gripper block is duplicated into both node sections above because a ROS 2
+# parameter file cannot share a block between two named nodes. Change one,
+# change the other.
+#
+#   Hold X (button 2) = open, hold B (button 1) = close
+#     Per cycle the commanded position moves by
+#       min(max_gripper_command_step, gripper_speed * dt)
+#     At command_publish_rate_hz 80 -> dt = 0.0125 s -> min(0.04, 0.025)
+#     = 0.025 rad, so gripper_speed is the binding limit and the jaws really do
+#     move at 2.0 rad/s. max_gripper_command_step only starts to bite below
+#     50 Hz, where it exists to stop a slow loop from commanding a large jump.
+#
+#   Press A (button 0) = toggle
+#     Sends the whole move as one trajectory of duration
+#       max(gripper_trajectory_duration, distance / gripper_speed)
+#
+#   Travel: gripper_open_position -1.57 -> gripper_closed_position 0.07
+#           = 1.64 rad on gripper_gear_left_joint
+#           -> a full stroke takes ~0.82 s either way.
+#
+#   These are joint positions on the four-bar's driven joint, not jaw
+#   millimetres. The hardware gripper has no position sensor, so /joint_states
+#   only echoes the command — gripper_speed is an open-loop request, and the
+#   real jaws are slower than this whenever they are loaded.
+# ============================================================================

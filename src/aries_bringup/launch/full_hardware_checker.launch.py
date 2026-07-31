@@ -14,13 +14,23 @@ def generate_launch_description():
         DeclareLaunchArgument("can_interface", default_value="can0"),
         DeclareLaunchArgument("use_imu", default_value="auto"),
         DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0"),
+        DeclareLaunchArgument("ybimu_port", default_value="/dev/imu_ybimu"),
         DeclareLaunchArgument("imu_frame", default_value="bno055"),
+        DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/bno055/imu"),
+        DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
         DeclareLaunchArgument("picoscan_imu_topic", default_value="/picoscan/imu"),
         DeclareLaunchArgument("lidar_topic", default_value="/scan"),
         DeclareLaunchArgument("check_imu", default_value="true"),
         DeclareLaunchArgument("require_all_rover_axes", default_value="true"),
-        DeclareLaunchArgument("require_closed_loop", default_value="true"),
+        DeclareLaunchArgument(
+            "require_closed_loop",
+            default_value="false",
+            description=(
+                "Require closed-loop ODrive state. False is the safe preflight "
+                "default because the drive starts disarmed."
+            ),
+        ),
         DeclareLaunchArgument("check_odrive_status", default_value="true"),
         DeclareLaunchArgument("expected_odrive_axes", default_value="6"),
 
@@ -37,8 +47,11 @@ def generate_launch_description():
                 "can_interface": LaunchConfiguration("can_interface"),
                 "use_imu": LaunchConfiguration("use_imu"),
                 "imu_port": LaunchConfiguration("imu_port"),
+                "ybimu_port": LaunchConfiguration("ybimu_port"),
                 "imu_frame": LaunchConfiguration("imu_frame"),
+                "ybimu_frame": LaunchConfiguration("ybimu_frame"),
                 "imu_topic": LaunchConfiguration("imu_topic"),
+                "ybimu_topic": LaunchConfiguration("ybimu_topic"),
                 "picoscan_imu_topic": LaunchConfiguration("picoscan_imu_topic"),
                 "lidar_topic": LaunchConfiguration("lidar_topic"),
                 "check_imu": LaunchConfiguration("check_imu"),

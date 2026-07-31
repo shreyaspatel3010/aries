@@ -34,7 +34,10 @@ ODriveCanNode::ODriveCanNode(const std::string& node_name) : rclcpp::Node(node_n
     rclcpp::Node::declare_parameter<uint16_t>("node_id", 0);
     rclcpp::Node::declare_parameter<bool>("axis_idle_on_shutdown", false);
 
-    rclcpp::QoS ctrl_stat_qos(rclcpp::KeepAll{});
+    // Encoder estimates arrive cyclically at high rate on the Aries bus.
+    // Keep only recent ROS samples so a slow visualization or odometry
+    // subscriber cannot create an unbounded reliable backlog.
+    rclcpp::QoS ctrl_stat_qos(rclcpp::KeepLast(10));
     ctrl_publisher_ = rclcpp::Node::create_publisher<ControllerStatus>("controller_status", ctrl_stat_qos);
     
     rclcpp::QoS odrv_stat_qos(rclcpp::KeepAll{});
@@ -197,7 +200,10 @@ void ODriveCanNode::recv_callback(const can_frame& frame) {
         }
     }
     
-    if (ctrl_pub_flag_ & 0b0001) {
+    // Publish on either heartbeat or encoder-estimate reception. This exposes
+    // the ODrive's existing cyclic encoder frames at their native rate without
+    // transmitting any additional CAN requests.
+    if (ctrl_pub_flag_ & 0b0011) {
         ctrl_publisher_->publish(ctrl_stat_);
         ctrl_pub_flag_ = 0;
     }

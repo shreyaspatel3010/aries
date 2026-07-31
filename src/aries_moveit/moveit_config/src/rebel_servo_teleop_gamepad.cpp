@@ -77,7 +77,7 @@ public:
     last_gripper_update_ = nh_->now();
 
     publishStatus(
-      "FINAL SAFE SMOOTH ReBeL joystick ready: joystick silent when idle so RViz planner can control arm.  RB toggles Cartesian/Direct-Joint, "
+      "FINAL SAFE SMOOTH ReBeL joystick ready: joystick silent when idle so RViz planner can control arm.  Hold RB for Cartesian, RT for Direct-Joint, "
       "80 Hz velocity-only JTC, MoveIt self-collision guard active.");
   }
 
@@ -171,7 +171,15 @@ private:
     button_enable_ = declareGet<int>("button_enable", 5);                    // RB
     button_arm_mode_toggle_ = declareGet<int>("button_arm_mode_toggle", 5);  // RB
     button_rover_enable_ = declareGet<int>("button_rover_enable", 4);        // LB
-    arm_toggle_mode_ = declareGet<bool>("arm_toggle_mode", true);
+    arm_toggle_mode_ = declareGet<bool>("arm_toggle_mode", false);
+
+    // Hold-to-select mode gates: RB = Cartesian, RT = direct joint jog.
+    // RT is an analog axis on every driver this repo supports (there is no
+    // trigger button), so it needs a threshold rather than a button index.
+    // joy_layout_normalizer publishes it as 0.0 released -> 1.0 fully pressed.
+    axis_joint_enable_ = declareGet<int>("axis_joint_enable", 5);            // RT
+    joint_enable_threshold_ = declareGet<double>("axis_joint_enable_threshold", 0.5);
+    joint_enable_release_ = declareGet<double>("axis_joint_enable_release", 0.35);
 
     button_gripper_open_ = declareGet<int>("button_gripper_open", 2);
     button_gripper_close_ = declareGet<int>("button_gripper_close", 1);
@@ -213,6 +221,10 @@ private:
     collision_preview_sec_ = std::clamp(collision_preview_sec_, 0.04, 0.40);
     velocity_point_1_sec_ = std::clamp(velocity_point_1_sec_, 0.015, 0.10);
     velocity_point_2_sec_ = std::clamp(velocity_point_2_sec_, velocity_point_1_sec_ + 0.01, 0.20);
+
+    joint_enable_threshold_ = std::clamp(joint_enable_threshold_, 0.05, 0.95);
+    // Release must sit below press or the gate latches on forever.
+    joint_enable_release_ = std::clamp(joint_enable_release_, 0.02, joint_enable_threshold_ - 0.02);
     stop_zero_cycles_total_ = std::clamp(stop_zero_cycles_total_, 1, 8);
 
     if (gripper_open_position_ > gripper_closed_position_)
@@ -305,6 +317,9 @@ private:
     const bool rb_pressed = buttonPressed(msg, button_enable_);
     const bool rb_toggle_pressed = buttonPressed(msg, button_arm_mode_toggle_);
     const bool rb_rising_edge = rb_toggle_pressed && !previous_rb_toggle_pressed_;
+    const bool rt_pressed = triggerHeld(msg, axis_joint_enable_, joint_trigger_held_);
+
+    joint_trigger_held_ = rt_pressed;
 
     if (rover_enabled)
     {
@@ -322,11 +337,27 @@ private:
 
     previous_rb_toggle_pressed_ = rb_toggle_pressed;
 
-    if (!rb_pressed)
+    // Hold-to-select: RB drives Cartesian, RT drives direct joint jog, and
+    // either one on its own is the enable gate. RB wins when both are held so
+    // that brushing the trigger part way through a Cartesian move cannot
+    // silently change what the sticks are doing.
+    const bool arm_enabled = arm_toggle_mode_ ? rb_pressed : (rb_pressed || rt_pressed);
+
+    if (!arm_enabled)
     {
       previous_gripper_toggle_pressed_ = false;
       hardZeroStop();
       return;
+    }
+
+    if (!arm_toggle_mode_)
+    {
+      const Mode requested = rb_pressed ? Mode::CARTESIAN : Mode::DIRECT_JOINT;
+
+      if (!arm_mode_initialized_ || requested != active_mode_)
+      {
+        setMode(requested);
+      }
     }
 
     updateGripper(msg);
@@ -375,18 +406,23 @@ private:
     publishVelocityOnlyTrajectory(qdot, false);
   }
 
+  // Legacy arm_toggle_mode:=true path — one button flips between the modes.
   void toggleMode()
   {
-    if (!arm_mode_initialized_)
-    {
-      active_mode_ = Mode::CARTESIAN;
-      arm_mode_initialized_ = true;
-    }
-    else
-    {
-      active_mode_ = active_mode_ == Mode::CARTESIAN ? Mode::DIRECT_JOINT : Mode::CARTESIAN;
-    }
+    setMode(!arm_mode_initialized_ || active_mode_ == Mode::DIRECT_JOINT
+              ? Mode::CARTESIAN
+              : Mode::DIRECT_JOINT);
+  }
 
+  void setMode(Mode mode)
+  {
+    active_mode_ = mode;
+    arm_mode_initialized_ = true;
+
+    // Entering a mode always starts from rest. The slew filter in
+    // limitVelocityAndAcceleration carries state across cycles, so a Cartesian
+    // velocity left in it would otherwise be re-applied as a joint velocity on
+    // the first cycle after the switch.
     last_output_vel_.fill(0.0);
     active_motion_ = false;
     stop_zero_cycles_left_ = stop_zero_cycles_total_;
@@ -394,11 +430,11 @@ private:
 
     if (active_mode_ == Mode::CARTESIAN)
     {
-      publishStatus("ARM MODE: Cartesian direct MoveIt IK + self-collision guard, 0.10 m/s");
+      publishStatus("ARM MODE: Cartesian direct MoveIt IK + self-collision guard, 0.10 m/s (RB)");
     }
     else
     {
-      publishStatus("ARM MODE: Direct joint jog + self-collision guard");
+      publishStatus("ARM MODE: Direct joint jog + self-collision guard (RT)");
     }
   }
 
@@ -1006,6 +1042,20 @@ private:
     return sign * (std::abs(raw) - deadzone_) / std::max(1e-6, 1.0 - deadzone_);
   }
 
+  // Treat an analog trigger as a hold button. Hysteresis matters here: a
+  // trigger resting on the threshold would otherwise chatter between modes,
+  // and every flip re-zeros the arm through setMode().
+  bool triggerHeld(const sensor_msgs::msg::Joy &msg, int axis, bool currently_held) const
+  {
+    if (axis < 0 || static_cast<size_t>(axis) >= msg.axes.size())
+    {
+      return false;
+    }
+
+    const double value = msg.axes[axis];
+    return currently_held ? value > joint_enable_release_ : value > joint_enable_threshold_;
+  }
+
   bool buttonPressed(const sensor_msgs::msg::Joy &msg, int button) const
   {
     if (button < 0 || static_cast<size_t>(button) >= msg.buttons.size())
@@ -1123,7 +1173,12 @@ private:
   int button_enable_ = 5;
   int button_arm_mode_toggle_ = 5;
   int button_rover_enable_ = 4;
-  bool arm_toggle_mode_ = true;
+  bool arm_toggle_mode_ = false;
+
+  int axis_joint_enable_ = 5;
+  double joint_enable_threshold_ = 0.5;
+  double joint_enable_release_ = 0.35;
+  bool joint_trigger_held_ = false;
 
   int button_gripper_open_ = 2;
   int button_gripper_close_ = 1;

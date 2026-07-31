@@ -17,9 +17,11 @@ def generate_launch_description():
     joy_dev = LaunchConfiguration("joy_dev")
     use_rover_joystick = LaunchConfiguration("use_rover_joystick")
     use_rover_joy_node = LaunchConfiguration("use_rover_joy_node")
+    use_sim_ekf = LaunchConfiguration("use_sim_ekf")
+    use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
 
     joystick_config = os.path.join(
-        get_package_share_directory("aries_bringup"),
+        get_package_share_directory("aries_teleop"),
         "config",
         "joystick.yaml",
     )
@@ -32,6 +34,15 @@ def generate_launch_description():
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
         DeclareLaunchArgument("use_rover_joystick", default_value="true"),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
+        DeclareLaunchArgument("use_cmd_vel_relay", default_value="true"),
+        DeclareLaunchArgument(
+            "use_sim_ekf",
+            default_value="true",
+            description=(
+                "Fuse Gazebo ground-truth odometry and IMU into "
+                "/odometry/filtered."
+            ),
+        ),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -50,9 +61,27 @@ def generate_launch_description():
             }.items(),
         ),
 
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_localization"),
+                    "launch",
+                    "localization.launch.py",
+                ])
+            ),
+            condition=IfCondition(use_sim_ekf),
+            launch_arguments={
+                "use_sim_ekf": "true",
+                "use_sim_time": "true",
+                "sim_odom_topic": "/ground_truth/odom",
+                "sim_imu_topic": "/imu",
+                "filtered_odom_topic": "/odometry/filtered",
+            }.items(),
+        ),
+
         Node(
             condition=IfCondition(use_rover_joystick),
-            package="aries_bringup",
+            package="aries_teleop",
             executable="rover_cmd_vel_joystick.py",
             name="rover_cmd_vel_joystick",
             output="screen",
@@ -71,7 +100,7 @@ def generate_launch_description():
 
         Node(
             condition=IfCondition(use_rover_joy_node),
-            package="aries_moveit",
+            package="aries_teleop",
             executable="joy_layout_normalizer.py",
             name="rover_joy_layout_normalizer",
             parameters=[{
@@ -81,5 +110,19 @@ def generate_launch_description():
                 "device": joy_dev,
             }],
             output="screen",
+        ),
+
+        Node(
+            condition=IfCondition(use_cmd_vel_relay),
+            package="aries_teleop",
+            executable="cmd_vel_teleop_relay.py",
+            name="cmd_vel_teleop_relay",
+            output="screen",
+            parameters=[
+                {
+                    "input_topic": "/cmd_vel/teleop",
+                    "output_topic": "/cmd_vel",
+                }
+            ],
         ),
     ])

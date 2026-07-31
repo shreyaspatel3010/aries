@@ -18,12 +18,16 @@ aries/
 │   ├── aries/              Robot description, worlds, Gazebo launch
 │   ├── aries_bringup/      Recommended launch wrappers and hardware checker
 │   ├── aries_common/       Shared hardware auto-detection
-│   ├── aries_imu/          BNO055 / picoScan IMU selection
+│   ├── aries_drive/        Fail-safe cmd_vel-to-ODrive backend
+│   ├── aries_imu/          YaBoom / BNO055 / picoScan selection
 │   ├── aries_lidar/        SICK picoScan150 driver wrapper
+│   ├── aries_localization/ Wheel odometry and EKF orchestration
 │   ├── aries_moveit/       Arm, gripper, and MoveIt packages
 │   ├── aries_soil_sample/  Autonomous soil scooping and deposit
+│   ├── aries_teleop/       Rover joystick normalization and Twist output
 │   ├── aries_vision_grasp/ Vision grasp nodes, launch, and model
 │   ├── rover_nav/          Rover odometry and localization
+│   ├── ybimu_ros2/         YaBoom 10-axis serial IMU driver
 │   └── vendor/             Vendored upstream ROS dependencies
 └── workspace.repos        Optional vcstool dependency manifest
 ```
@@ -37,8 +41,12 @@ datasets and runs belong in `data/`.
 
 - `aries`: main robot description, Gazebo launch files, sensors, and base model.
 - `aries_bringup`: recommended launch wrappers for simulation, hardware, rover drive, joystick, and hardware checking.
+- `aries_drive`: fail-safe `/cmd_vel` conversion, ODrive arming, command timeout, acceleration limiting, and mock fallback.
 - `aries_lidar`: real SICK picoScan150 driver wrapper and `/scan` relay.
-- `aries_imu`: BNO055 selection and picoScan IMU fallback relay.
+- `aries_imu`: YaBoom, BNO055, and picoScan IMU selection.
+- `aries_localization`: physical wheel-odometry/EKF and simulation ground-truth/EKF orchestration.
+- `aries_teleop`: rover joystick normalization and `/cmd_vel/teleop` output.
+- `ybimu_ros2`: YaBoom 10-axis serial driver with planar gyro/magnetometer filtering.
 - `aries_common`: shared hardware auto-detection used by rover launch files.
 - `aries_moveit`: MoveIt 2 configuration, arm/gripper controllers, Servo teleop, and gripper hardware plugins.
 - `aries_vision_grasp`: camera tools, YOLO inference, and autonomous MoveIt grasping of the probe.
@@ -234,13 +242,20 @@ ros2 launch aries_bringup full_hardware.launch.py \
 falls back to `mock_rover_drive` when rover hardware is unavailable.
 This top-level launch runs rover CAN setup automatically by default.
 
+The physical ODrive bridge starts disarmed. After the hardware check passes and
+the rover is clear, enable it explicitly:
+
+```bash
+ros2 service call /aries_drive/enable std_srvs/srv/SetBool "{data: true}"
+```
+
 ## SICK picoScan150 LiDAR
 
 Real rover launches now auto-detect the picoScan on its SOPAS TCP port. When
 available, `sick_scan_xd` publishes raw data under `/picoscan`, the Aries relay
 publishes the cleaned planar scan on `/scan`, and the built-in IMU is available
-as `/picoscan/imu`. A serial BNO055 remains the preferred localization IMU;
-picoScan yaw rate is the automatic fallback.
+as `/picoscan/imu`. Auto selection prefers a YaBoom IMU at
+`/dev/imu_ybimu`, then the existing BNO055, and finally the picoScan IMU.
 
 The default rover network values are:
 
@@ -457,8 +472,8 @@ To use automatic CAN setup without a password prompt, install the limited
 sudoers rule provided by this workspace:
 
 ```bash
-sudo visudo -cf src/aries_bringup/setup/rover_can
-sudo install -m 440 src/aries_bringup/setup/rover_can /etc/sudoers.d/rover_can
+sudo visudo -cf src/aries_drive/setup/rover_can
+sudo install -m 440 src/aries_drive/setup/rover_can /etc/sudoers.d/rover_can
 ```
 
 That rule allows only these commands without a password:
@@ -585,4 +600,3 @@ https://github.com/user-attachments/assets/8119749f-b088-4221-86b2-9a9341b05857
 The same captures are tracked in the repository under
 [`docs/`](docs): `simulation.webm`, and `automatic_pick_probe.mp4` showing a
 full autonomous probe pick.
-

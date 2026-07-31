@@ -77,7 +77,11 @@ void SocketCanIntf::deinit() {
 bool SocketCanIntf::send_can_frame(const can_frame& frame) {
     ssize_t nbytes = write(socket_id_, &frame, sizeof(frame));
     if (nbytes == -1) {
-        std::cerr << "Failed to send CAN frame" << std::endl;
+        const int send_errno = errno;
+        std::cerr << "Failed to send CAN frame 0x" << std::hex
+                  << frame.can_id << std::dec << ": "
+                  << std::strerror(send_errno)
+                  << " (errno " << send_errno << ")" << std::endl;
         return false;
     }
 

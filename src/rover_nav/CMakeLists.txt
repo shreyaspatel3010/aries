@@ -36,4 +36,14 @@ install(DIRECTORY
   scripts/Sounds
   DESTINATION share/${PROJECT_NAME}/sounds/
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(
+    odometry_stationary
+    test/test_odometry_stationary.py
+    TIMEOUT 60
+  )
+endif()
+
 ament_package()

@@ -43,7 +43,10 @@
             <child link="Lidar_Scan_Link"/>
         </joint>
 
-        <gazebo reference="Lidar_Scan_Link">
+        <!-- Simulation rays are opt-in; physical bringup only needs the
+             links and fixed transforms above. -->
+        <xacro:if value="${enable_lidar_gazebo}">
+            <gazebo reference="Lidar_Scan_Link">
             <sensor name="gpu_lidar_points" type="gpu_lidar">
                 <pose>0 0 0 0 0 0</pose>
                 <topic>/lidar</topic>
@@ -113,6 +116,7 @@
                 <visualize>false</visualize>
                 </sensor>
             </gazebo>
+        </xacro:if>
     </xacro:if>
 
 </robot>

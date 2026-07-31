@@ -10,6 +10,8 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -20,6 +22,9 @@
   <exec_depend>aries_common</exec_depend>
   <exec_depend>aries_lidar</exec_depend>
   <exec_depend>aries_imu</exec_depend>
+  <exec_depend>aries_drive</exec_depend>
+  <exec_depend>aries_teleop</exec_depend>
+  <exec_depend>aries_localization</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>

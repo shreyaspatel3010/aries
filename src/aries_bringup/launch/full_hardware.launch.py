@@ -31,11 +31,32 @@ def generate_launch_description():
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto", choices=["auto", "odrive", "mock_hardware"]),
         DeclareLaunchArgument("can_interface", default_value="can0"),
         DeclareLaunchArgument("setup_rover_can", default_value="true"),
-        DeclareLaunchArgument("use_rover_imu", default_value="auto"),
+        DeclareLaunchArgument("drive_auto_arm", default_value="true"),
+        DeclareLaunchArgument(
+            "use_rover_imu",
+            default_value="auto",
+            choices=[
+                "auto",
+                "true",
+                "false",
+                "ybimu",
+                "bno055",
+                "picoscan",
+            ],
+        ),
         DeclareLaunchArgument("rover_imu_port", default_value="/dev/ttyUSB0"),
+        DeclareLaunchArgument(
+            "rover_ybimu_port", default_value="/dev/imu_ybimu"
+        ),
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("rover_imu_frame", default_value="bno055"),
+        DeclareLaunchArgument(
+            "rover_ybimu_frame", default_value="imu_frame"
+        ),
         DeclareLaunchArgument("rover_imu_topic", default_value="/bno055/imu"),
+        DeclareLaunchArgument(
+            "rover_ybimu_topic", default_value="/ybimu/imu"
+        ),
         DeclareLaunchArgument("use_rover_lidar", default_value="auto", choices=["auto", "true", "false"]),
         DeclareLaunchArgument("rover_lidar_sensor_ip", default_value="169.254.136.69"),
         DeclareLaunchArgument("rover_lidar_host_ip", default_value="169.254.180.121"),
@@ -91,6 +112,7 @@ def generate_launch_description():
                 "rover_hardware_protocol": LaunchConfiguration("rover_hardware_protocol"),
                 "can_interface": LaunchConfiguration("can_interface"),
                 "setup_can": LaunchConfiguration("setup_rover_can"),
+                "drive_auto_arm": LaunchConfiguration("drive_auto_arm"),
                 "use_joystick": LaunchConfiguration("use_joystick"),
                 # joy_node is already started by aries_hardware when use_joystick:=true.
                 "use_joy_node": LaunchConfiguration("use_rover_joy_node"),
@@ -99,9 +121,12 @@ def generate_launch_description():
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "use_imu": LaunchConfiguration("use_rover_imu"),
                 "imu_port": LaunchConfiguration("rover_imu_port"),
+                "ybimu_port": LaunchConfiguration("rover_ybimu_port"),
                 "imu_baudrate": LaunchConfiguration("rover_imu_baudrate"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
+                "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
+                "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
                 "use_lidar": LaunchConfiguration("use_rover_lidar"),
                 "lidar_sensor_ip": LaunchConfiguration("rover_lidar_sensor_ip"),
                 "lidar_host_ip": LaunchConfiguration("rover_lidar_host_ip"),
@@ -128,8 +153,11 @@ def generate_launch_description():
                 "can_interface": LaunchConfiguration("can_interface"),
                 "use_imu": LaunchConfiguration("use_rover_imu"),
                 "imu_port": LaunchConfiguration("rover_imu_port"),
+                "ybimu_port": LaunchConfiguration("rover_ybimu_port"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
+                "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
+                "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
                 "picoscan_imu_topic": LaunchConfiguration("rover_picoscan_imu_topic"),
                 "lidar_topic": LaunchConfiguration("rover_lidar_topic"),
             }.items(),

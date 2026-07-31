@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Publish Aries wheel joint states from the six physical ODrive encoders."""
+
+from __future__ import annotations
+
+import math
+
+import rclpy
+from odrive_can.msg import ControllerStatus
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import JointState
+
+
+PASSIVE_JOINTS = (
+    "L_Rocker_Joint",
+    "R_Rocker_Joint",
+    "L_Boggie_Joint",
+    "R_Boggie_Joint",
+    "aux_L_Rocker_joint",
+    "aux_R_Rocker_joint",
+)
+
+# Physical wiring contract:
+# right axes 0..2 = front, mid, rear
+# left axes  3..5 = front, mid, rear
+AXIS_JOINTS = (
+    "R_1_Wheel_Joint",
+    "R_2_Wheel_Joint",
+    "R_3_Wheel_Joint",
+    "L_1_Wheel_Joint",
+    "L_2_Wheel_Joint",
+    "L_3_Wheel_Joint",
+)
+
+# The physical left motors/encoders are mounted opposite to the right side.
+# Odom.py corrects this when calculating travel; apply the same convention to
+# URDF wheel rotation so forward rover motion animates forward on both sides.
+DEFAULT_AXIS_SIGNS = (1.0, 1.0, 1.0, -1.0, -1.0, -1.0)
+
+
+def encoder_to_joint(
+    position_turns: float,
+    velocity_turns_per_second: float,
+    zero_turns: float,
+    sign: float = 1.0,
+) -> tuple[float, float]:
+    """Convert an ODrive encoder sample into URDF radians and radians/second."""
+    values = (
+        float(position_turns),
+        float(velocity_turns_per_second),
+        float(zero_turns),
+        float(sign),
+    )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("ODrive encoder values and sign must be finite")
+    if abs(sign) < 1e-12:
+        raise ValueError("encoder sign must be nonzero")
+    return (
+        sign * (position_turns - zero_turns) * math.tau,
+        sign * velocity_turns_per_second * math.tau,
+    )
+
+
+class WheelJointPublisher(Node):
+    """Translate each ODrive encoder directly into its physical wheel joint."""
+
+    def __init__(self) -> None:
+        super().__init__("wheel_joint_publisher")
+        self.declare_parameter("publish_rate_hz", 50.0)
+        self.declare_parameter("feedback_timeout_s", 0.5)
+        self.declare_parameter("axis_signs", list(DEFAULT_AXIS_SIGNS))
+
+        publish_rate = max(
+            1.0, float(self.get_parameter("publish_rate_hz").value)
+        )
+        self.feedback_timeout_s = max(
+            0.05, float(self.get_parameter("feedback_timeout_s").value)
+        )
+        self.axis_signs = tuple(
+            float(value) for value in self.get_parameter("axis_signs").value
+        )
+        if len(self.axis_signs) != len(AXIS_JOINTS):
+            raise ValueError(
+                f"axis_signs must contain {len(AXIS_JOINTS)} values"
+            )
+        if not all(math.isfinite(value) and abs(value) > 1e-12
+                   for value in self.axis_signs):
+            raise ValueError("every axis_signs value must be finite and nonzero")
+
+        self.publisher = self.create_publisher(
+            JointState, "/joint_states", 10
+        )
+        self.encoder_zero = [None] * len(AXIS_JOINTS)
+        self.wheel_positions = [0.0] * len(AXIS_JOINTS)
+        self.wheel_velocities = [0.0] * len(AXIS_JOINTS)
+        self.last_feedback_ns = [None] * len(AXIS_JOINTS)
+
+        feedback_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        for axis in range(len(AXIS_JOINTS)):
+            self.create_subscription(
+                ControllerStatus,
+                f"/odrive_axis{axis}/controller_status",
+                lambda msg, axis=axis: self._feedback(msg, axis),
+                feedback_qos,
+            )
+
+        self.create_timer(1.0 / publish_rate, self.publish_joint_states)
+        mapping = ", ".join(
+            f"{axis}:{joint}" for axis, joint in enumerate(AXIS_JOINTS)
+        )
+        self.get_logger().info(
+            "ODrive encoder wheel joint publisher ready: " + mapping
+        )
+
+    def _feedback(self, msg: ControllerStatus, axis: int) -> None:
+        position = float(msg.pos_estimate)
+        velocity = float(msg.vel_estimate)
+        if not math.isfinite(position) or not math.isfinite(velocity):
+            self.get_logger().warn(
+                f"Ignoring non-finite encoder sample from axis {axis}",
+                throttle_duration_sec=2.0,
+            )
+            return
+        if self.encoder_zero[axis] is None:
+            self.encoder_zero[axis] = position
+        angle, angular_velocity = encoder_to_joint(
+            position,
+            velocity,
+            self.encoder_zero[axis],
+            self.axis_signs[axis],
+        )
+        self.wheel_positions[axis] = angle
+        self.wheel_velocities[axis] = angular_velocity
+        self.last_feedback_ns[axis] = self.get_clock().now().nanoseconds
+
+    def publish_joint_states(self) -> None:
+        now = self.get_clock().now()
+        now_ns = now.nanoseconds
+        timeout_ns = int(self.feedback_timeout_s * 1e9)
+
+        wheel_velocities = self.wheel_velocities.copy()
+        for axis, received_ns in enumerate(self.last_feedback_ns):
+            if received_ns is None or now_ns - received_ns > timeout_ns:
+                wheel_velocities[axis] = 0.0
+
+        msg = JointState()
+        msg.header.stamp = now.to_msg()
+        msg.name = list(PASSIVE_JOINTS + AXIS_JOINTS)
+        msg.position = (
+            [0.0] * len(PASSIVE_JOINTS) + self.wheel_positions.copy()
+        )
+        msg.velocity = (
+            [0.0] * len(PASSIVE_JOINTS) + wheel_velocities
+        )
+        self.publisher.publish(msg)
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = WheelJointPublisher()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

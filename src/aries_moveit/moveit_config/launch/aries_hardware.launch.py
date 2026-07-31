@@ -551,12 +551,17 @@ def launch_setup(context, *args, **kwargs):
     )
 
     gamepad_file = os.path.join(get_package_share_directory("aries_moveit"), "config", "gamepad.yaml")
+    # Speeds live in teleop_speeds.yaml and are loaded last so they win over the
+    # copies still in gamepad.yaml. gamepad.yaml keeps the button/axis mapping.
+    teleop_speeds_file = os.path.join(
+        get_package_share_directory("aries_moveit"), "config", "teleop_speeds.yaml"
+    )
     gamepad_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
         executable="rebel_servo_teleop_gamepad",
         name="rebel_servo_teleop_gamepad",
-        parameters=[gamepad_file],
+        parameters=[gamepad_file, teleop_speeds_file],
         output="screen",
     )
 
@@ -565,7 +570,7 @@ def launch_setup(context, *args, **kwargs):
         package="aries_moveit",
         executable="rebel_movegroup_joystick.py",
         name="rebel_movegroup_joystick",
-        parameters=[gamepad_file],
+        parameters=[gamepad_file, teleop_speeds_file],
         output="screen",
     )
 

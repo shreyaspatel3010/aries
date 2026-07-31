@@ -19,11 +19,8 @@
   gz_type_name: "gz.msgs.Pose_V"
   direction: GZ_TO_ROS
 
-- ros_topic_name: "/tf"
-  gz_topic_name: "/tf"
-  ros_type_name: "tf2_msgs/msg/TFMessage"
-  gz_type_name: "gz.msgs.Pose_V"
-  direction: GZ_TO_ROS
+# Gazebo DiffDrive TF stays private; the simulation EKF owns the corrected
+# odom -> base_footprint transform in ROS.
 
 
 - ros_topic_name: "/cmd_vel"
@@ -130,6 +127,12 @@
 # (Recommended) Odometry from DiffDrive → ROS
 - ros_topic_name: "/odom"
   gz_topic_name: "/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/ground_truth/odom"
+  gz_topic_name: "/ground_truth/odom"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
@@ -252,6 +255,5 @@
   ros_type_name:  "std_msgs/msg/Float64"
   gz_type_name:   "gz.msgs.Double"
   direction:      ROS_TO_GZ
-
 
 

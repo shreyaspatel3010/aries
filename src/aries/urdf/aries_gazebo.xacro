@@ -271,7 +271,7 @@
     </plugin>
   </gazebo>
 
-  <!-- Ground-truth odometry for debugging; DiffDrive owns /odom and /tf. -->
+  <!-- Ground-truth odometry drives the simulation EKF and corrected TF. -->
   <gazebo>
         <plugin filename="libgz-sim-odometry-publisher-system"
             name="gz::sim::systems::OdometryPublisher">
@@ -310,7 +310,9 @@
           <frame_id>odom</frame_id>
           <topic>/cmd_vel</topic>
           <odom_topic>/odom</odom_topic>
-          <tf_topic>/tf</tf_topic>
+          <!-- Keep wheel-integrated TF private to Gazebo. The simulation EKF
+               is the single ROS owner of odom -> base_footprint. -->
+          <tf_topic>/wheel_odom/tf</tf_topic>
           <child_frame_id>base_footprint</child_frame_id>
           <odom_publish_frequency>60</odom_publish_frequency>
       </plugin>

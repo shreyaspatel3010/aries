@@ -280,13 +280,22 @@ def opaque_func(context, *args, **kwargs):
             "gamepad.yaml",
         ]
     )
+    # Speeds live in teleop_speeds.yaml and are loaded last so they win over the
+    # copies still in gamepad.yaml. gamepad.yaml keeps the button/axis mapping.
+    teleop_speeds_file = PathJoinSubstitution(
+        [
+            FindPackageShare("aries_moveit"),
+            "config",
+            "teleop_speeds.yaml",
+        ]
+    )
     teleop_twist_joy_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
         executable="rebel_servo_teleop_gamepad",
         namespace=namespace,
         name="rebel_servo_teleop_gamepad",
-        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file],
+        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file, teleop_speeds_file],
         output="screen",
     )
 
@@ -296,7 +305,7 @@ def opaque_func(context, *args, **kwargs):
         executable="rebel_movegroup_joystick.py",
         namespace=namespace,
         name="rebel_movegroup_joystick",
-        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file],
+        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file, teleop_speeds_file],
         output="screen",
     )
 

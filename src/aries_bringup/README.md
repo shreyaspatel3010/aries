@@ -96,8 +96,9 @@ without torque. Joint-module firmware must report product `0x42`, firmware
 
 The full hardware launch also auto-detects the SICK picoScan150. It publishes
 the cleaned scan on `/scan`, raw driver data under `/picoscan`, and uses the
-picoScan yaw-rate IMU as a localization fallback when the serial BNO055 is not
-available. Override the link-local addresses when needed:
+picoScan yaw-rate IMU as a localization fallback when neither the YaBoom IMU
+nor the serial BNO055 is available. Override the link-local addresses when
+needed:
 
 ```bash
 ros2 launch aries_bringup full_hardware.launch.py \
@@ -120,12 +121,11 @@ ros2 launch aries_lidar lidar.launch.py use_lidar:=true
    ```
 
 Joystick controls:
-- Hold RB to enable arm/gripper joystick output.
+- Hold RB for Cartesian/Twist movement, or RT for Chain/JointJog. Either one
+  also enables arm/gripper joystick output; holding both gives Cartesian.
 - On the real arm, hold Y for physical hand guiding; release Y to restore torque.
-- Default arm mode is the old smooth MoveIt Servo Cartesian/Twist teleop.
-- Press RB to toggle arm mode between Cartesian/Twist and Chain/JointJog.
 - Servo output is filtered by `servo_collision_guard` before it reaches the arm controller.
-- Release RB to stop arm joystick commands.
+- Release RB and RT to stop arm joystick commands.
 - Hold X to manually open the gripper; hold B to manually close it.
 - Release X/B to hold the current gripper angle. Press A to toggle full open/close.
 - Use `joystick_control_mode:=move_group` only if you want the planned MoveGroup
@@ -175,6 +175,16 @@ ros2 launch aries_bringup rover_drive_auto.launch.py
 ros2 launch aries_bringup full_hardware.launch.py
 ```
 
+The fail-safe ODrive bridge starts disarmed by default. After the hardware
+check passes and the rover is clear:
+
+```bash
+ros2 service call /aries_drive/enable std_srvs/srv/SetBool "{data: true}"
+```
+
+It stops on stale `/cmd_vel`, clamps chassis and wheel speeds, ramps commands,
+and confirms all six axes reached closed-loop control before allowing motion.
+
 Disable automatic CAN setup only when you already configured CAN yourself:
 
 ```bash
@@ -186,8 +196,8 @@ To use automatic CAN setup without a password prompt, install the limited
 sudoers rule:
 
 ```bash
-sudo visudo -cf src/aries_bringup/setup/rover_can
-sudo install -m 440 src/aries_bringup/setup/rover_can /etc/sudoers.d/rover_can
+sudo visudo -cf src/aries_drive/setup/rover_can
+sudo install -m 440 src/aries_drive/setup/rover_can /etc/sudoers.d/rover_can
 ```
 
 It only permits:

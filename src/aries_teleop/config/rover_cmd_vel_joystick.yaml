@@ -1,0 +1,17 @@
+rover_cmd_vel_joystick:
+  ros__parameters:
+    joy_topic: "/joy"
+    cmd_vel_topic: "/cmd_vel/teleop"
+    enable_button: 4
+
+    linear_axis: 1
+    angular_axis: 0
+    invert_linear: false
+    invert_angular: false
+
+    deadzone: 0.08
+    max_linear: 0.45
+    max_angular: 1.40
+    accel_limit: 0.80
+    angular_accel_limit: 2.00
+    publish_rate_hz: 30.0
