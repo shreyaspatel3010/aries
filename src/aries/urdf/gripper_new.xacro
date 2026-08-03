@@ -15,6 +15,27 @@
          same mount pivots, so only the visual/collision mesh changes. -->
     <xacro:property name="finger_mesh" value="gripper_${finger_type}.stl"/>
 
+    <!-- Axial correction for where the fingertip actually sits on the bar.
+         The modelled tip sat 50 mm short of the real one: measured against
+         hardware with a probe actually gripped, the attached mesh landed
+         50.2 mm up the shaft from the real probe, with only 1.9 mm lateral and
+         1.3 deg of axis error - i.e. the error is purely along the finger, not
+         a pivot or bar-length problem (see attached_probe_axial_offset_m in
+         aries_vision_grasp/config/vision_grasp_params.yaml, which was the
+         workaround for exactly this). The modelled contact point sat at
+         z=0.220 where the real pinch is ~0.270.
+
+         Consequences of the old value: RViz drew the jaws 50 mm short, so they
+         could be touching a wheel in reality while the model showed clearance,
+         and MoveIt's collision model inherited the same blind spot.
+
+         Applied to the fingertip mesh only. The four-bar pivots are correct -
+         gripper_bucket_*_joint IS the gear bar's tip, which is what a four-bar
+         pivot means - so nothing about the linkage motion changes. Set to 0 to
+         restore the old geometry. If you measure flange-to-tip on the real
+         gripper (closed), the model should now read 397.2 mm; adjust here. -->
+    <xacro:property name="finger_axial_correction" value="0.0"/>
+
     <!-- Mass properties computed from each mesh by tetrahedron decomposition at
          1050 kg/m^3 (near-solid printed plastic), COM and inertia taken about
          that COM. Every gripper link previously carried arm_gripper_base_link's
@@ -287,11 +308,11 @@
 
     <!--gripper_bucket_left Link -->
     <link name="gripper_bucket_left_link">
-        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z}"
+        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z + finger_axial_correction}"
                                 ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
                                 iyz="${finger_iyz}"/>
         <visual>
-            <origin xyz="0 0 0"
+            <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
                 <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
@@ -302,7 +323,7 @@
             </material>
         </visual>
         <collision>
-            <origin xyz="0 0 0"
+            <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
                 <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
@@ -363,11 +384,11 @@
 
     <!--gripper_bucket_right Link -->
     <link name="gripper_bucket_right_link">
-        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z}"
+        <xacro:gripper_inertial mass="${finger_mass}" cx="0.0" cy="${finger_com_y}" cz="${finger_com_z + finger_axial_correction}"
                                 ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
                                 iyz="${finger_iyz}"/>
         <visual>
-            <origin xyz="0 0 0"
+            <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
                 <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
@@ -378,7 +399,7 @@
             </material>
         </visual>
         <collision>
-            <origin xyz="0 0 0"
+            <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
                 <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
@@ -431,6 +452,16 @@
 
     <!-- Visual constraint markers to show four-bar connection -->
     <link name="fourbar_constraint_visual_left">
+        <!-- Pure RViz marker for the four-bar pivot: no collision on purpose,
+             so it can never obstruct planning. It still needs an inertial or
+             MoveIt/KDL warns about the link on every node start; the value is
+             deliberately negligible so it cannot perturb the gripper dynamics
+             (the real finger links are ~0.4 kg). -->
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="1e-6"/>
+            <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+        </inertial>
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
@@ -455,6 +486,13 @@
     </joint>
 
     <link name="fourbar_constraint_visual_right">
+        <!-- See fourbar_constraint_visual_left: marker only, negligible
+             inertial purely to keep MoveIt/KDL from warning on every start. -->
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="1e-6"/>
+            <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+        </inertial>
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>

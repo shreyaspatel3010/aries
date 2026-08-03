@@ -20,7 +20,7 @@ import os
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -588,6 +588,12 @@ class VisionGraspNode(Node):
         # the sequence. NOTE this really does stop the arm avoiding
         # octomap-only obstacles; set false to keep full checking.
         self.declare_parameter('octomap_disable_after_grasp_confirmed', True)
+        # Mirrors move_group.launch.py's octomap_collision_checking argument,
+        # whose default is false: the octomap is visualisation only and MoveIt
+        # never collides against it. When that is the case this node must not
+        # switch it back on at the end of a sequence -- the setting is global
+        # and does not belong to the grasp task.
+        self.declare_parameter('octomap_collision_checking', False)
         self.declare_parameter('movegroup_replan_enabled', True)
         self.declare_parameter('movegroup_replan_attempts', 5)
         self.declare_parameter('movegroup_replan_delay_sec', 0.5)
@@ -1340,6 +1346,7 @@ class VisionGraspNode(Node):
             0.0, float(p('post_grasp_retrace_extra_rise_m').value))
         self.octomap_disable_after_grasp_confirmed = bool(
             p('octomap_disable_after_grasp_confirmed').value)
+        self.octomap_collision_checking = bool(p('octomap_collision_checking').value)
         self.movegroup_replan_enabled = bool(p('movegroup_replan_enabled').value)
         self.movegroup_replan_attempts = max(1, int(p('movegroup_replan_attempts').value))
         self.movegroup_replan_delay_sec = max(0.0, float(p('movegroup_replan_delay_sec').value))
@@ -1812,7 +1819,10 @@ class VisionGraspNode(Node):
         ]
         # Detected (not yet grasped) probe published as an STL collision object.
         self._world_probe_published: bool = False
-        self._octomap_collisions_enabled: bool = True
+        # Starts wherever the launch-wide switch left it, so a visual-only
+        # octomap is never "restored" by this node.
+        self._octomap_collisions_enabled: bool = self.octomap_collision_checking
+        self._octomap_acm_row_backup: Optional[Dict[str, bool]] = None
         self._world_probe_acm_applied: bool = False
         self._world_probe_acm_pending: bool = False
         self._world_probe_last_centre: Optional[np.ndarray] = None
@@ -5162,12 +5172,17 @@ class VisionGraspNode(Node):
         trajectory and can abort it with -3
         MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE.
 
-        Implemented as the ACM's DEFAULT entry for ``<octomap>``: one flag that
-        makes it allowed against every element, rather than N pairwise entries
-        that would need re-applying whenever a link or object appears. It is a
-        planning-scene switch, so it is fully reversible and does not touch the
-        sensor pipeline -- the octomap keeps building, MoveIt just stops
-        colliding against it.
+        Implemented as the ACM's DEFAULT entry for ``<octomap>`` plus its
+        explicit row: the default covers every element that is not in the matrix
+        yet (probe meshes, attached bodies), and the row is needed because an
+        explicit pair entry BEATS the default -- octomap_scene_setup.py gives
+        ``<octomap>`` an explicit entry against every robot link, so the default
+        alone would leave the arm links checking. It is a planning-scene switch,
+        so it is fully reversible and does not touch the sensor pipeline -- the
+        octomap keeps building, MoveIt just stops colliding against it.
+
+        Does nothing when ``octomap_collision_checking`` is false: the octomap
+        is then visualisation-only stack-wide and is not this task's to restore.
 
         TRADE-OFF, stated plainly: with this off the arm will NOT avoid any
         obstacle that exists only in the octomap. That is the intended
@@ -5175,6 +5190,11 @@ class VisionGraspNode(Node):
         rover's own chassis), but it is a real reduction in obstacle
         avoidance. Set octomap_disable_after_grasp_confirmed false to keep it.
         """
+        if enabled and not self.octomap_collision_checking:
+            self._octomap_collisions_enabled = False
+            self.get_logger().debug('[CollisionWorld] Octomap collision checking stays off: it is '
+                'disabled stack-wide by octomap_collision_checking.')
+            return
         if not (self.get_planning_scene_client.service_is_ready()
                 and self.apply_planning_scene_client.service_is_ready()):
             self.get_logger().warning('[CollisionWorld] get/apply_planning_scene unavailable; cannot '
@@ -5209,6 +5229,31 @@ class VisionGraspNode(Node):
             values.append(allowed)
         acm.default_entry_names = names
         acm.default_entry_values = values
+
+        # ...and the explicit row, which overrides the default for every pair it
+        # covers. Backed up on the way down so the restore reinstates exactly the
+        # per-link allowances octomap_scene_setup.py seeded, rather than guessing.
+        entry_names = list(acm.entry_names)
+        rows = [list(entry.enabled) for entry in acm.entry_values]
+        if '<octomap>' in entry_names:
+            oct_i = entry_names.index('<octomap>')
+            if allowed:
+                if self._octomap_acm_row_backup is None:
+                    self._octomap_acm_row_backup = {
+                        name: bool(rows[oct_i][i]) for i, name in enumerate(entry_names)}
+                for i in range(len(entry_names)):
+                    rows[oct_i][i] = True
+                    rows[i][oct_i] = True
+            elif self._octomap_acm_row_backup is not None:
+                for i, name in enumerate(entry_names):
+                    previous = self._octomap_acm_row_backup.get(name)
+                    if previous is None:
+                        continue
+                    rows[oct_i][i] = previous
+                    rows[i][oct_i] = previous
+                self._octomap_acm_row_backup = None
+            acm.entry_names = entry_names
+            acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
 
         scene = PlanningScene()
         scene.is_diff = True
@@ -11631,8 +11676,10 @@ class VisionGraspNode(Node):
         self._remove_post_grasp_collision_objects()
         self._remove_world_probe_object('grasp sequence reset')
         # A new empty-gripper attempt gets the octomap back: it was only
-        # retired because the previous grasp was already confirmed.
-        if not self._octomap_collisions_enabled:
+        # retired because the previous grasp was already confirmed. Not when the
+        # stack runs with a visualisation-only octomap -- there is nothing of
+        # this task's to restore.
+        if self.octomap_collision_checking and not self._octomap_collisions_enabled:
             self._set_octomap_collision_checking(True, 'grasp sequence reset.')
 
         self.last_failure_reason = reason

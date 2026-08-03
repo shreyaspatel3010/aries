@@ -49,7 +49,9 @@
     <joint name="base_footprint_joint" type="fixed">
         <parent link="base_footprint" />
         <child link="base_link" />
-        <origin xyz="0 0 0.165" rpy="0 0 0" />
+        <!-- See base_link_height in common_properties.xacro. Was 0.165, which
+             sat 41 mm below the real wheel contact plane. -->
+        <origin xyz="0 0 ${base_link_height}" rpy="0 0 0" />
     </joint>
 
     <!-- Base Link -->

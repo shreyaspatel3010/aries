@@ -236,6 +236,12 @@ soil_sample_node:
     # cut, so nothing in the scoop (including the wrist-roll IK search) can be
     # collision-checked against it. See the README for the trade-off.
     octomap_disable_during_scoop: true
+    # Must MATCH move_group.launch.py's octomap_collision_checking argument.
+    # false (the launch default) means the octomap is visualisation only for the
+    # whole stack -- still built from the depth camera and still drawn in RViz,
+    # but never collision-checked. The post-scoop restore above then stays a
+    # no-op: the setting is stack-wide and not this task's to put back.
+    octomap_collision_checking: false
     max_scoop_attempts: 3
 
     # ── Postures (radians, joint1..joint6) ─────────────────────────────────

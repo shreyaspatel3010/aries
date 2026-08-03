@@ -28,7 +28,7 @@ Deliberately NOT auto-started: this drives a gripper into the ground. Call the
 import math
 import threading
 import time
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from dataclasses import replace
 
@@ -48,6 +48,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import (
+    AllowedCollisionEntry,
     Constraints,
     JointConstraint,
     MotionPlanRequest,
@@ -248,6 +249,10 @@ class SoilSampleNode(Node):
         p('max_scoop_attempts', 3)
         # Required for a scoop to execute at all: see set_octomap_collisions.
         p('octomap_disable_during_scoop', True)
+        # Mirrors move_group.launch.py's octomap_collision_checking argument,
+        # whose default is false: the octomap is visualisation only stack-wide.
+        # When that is so, the post-scoop restore below must stay a no-op.
+        p('octomap_collision_checking', False)
 
         p('arm_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
         # pick_home is the START posture, the posture the loaded bucket RETURNS
@@ -404,6 +409,7 @@ class SoilSampleNode(Node):
         self.scoop_min_depth_m = max(0.002, float(g('scoop_min_depth_m').value))
         self.scoop_all_cartesian = bool(g('scoop_all_cartesian').value)
         self.octomap_off_during_scoop = bool(g('octomap_disable_during_scoop').value)
+        self.octomap_collision_checking = bool(g('octomap_collision_checking').value)
 
         self.arm_joints = [str(v) for v in g('arm_joint_names').value]
         self.home_q = [float(v) for v in g('home_joint_positions').value]
@@ -512,7 +518,10 @@ class SoilSampleNode(Node):
             GetPlanningScene, '/get_planning_scene', callback_group=self._cb)
         self.apply_scene_client = self.create_client(
             ApplyPlanningScene, '/apply_planning_scene', callback_group=self._cb)
-        self._octomap_collisions_enabled = True
+        # Starts wherever the launch-wide switch left it, so a visualisation-only
+        # octomap is never "restored" by this node.
+        self._octomap_collisions_enabled = self.octomap_collision_checking
+        self._octomap_acm_row_backup: Optional[Dict[str, bool]] = None
 
         self.marker_pub = self.create_publisher(MarkerArray, str(g('markers_topic').value), 1)
 
@@ -1184,11 +1193,16 @@ class SoilSampleNode(Node):
         into the material, by definition.
 
         Implemented exactly as the grasp package does it: the ACM DEFAULT entry
-        for ``<octomap>``, one flag that makes it allowed against every element
-        rather than N pairwise entries that need re-applying whenever a link or
-        object appears. It is a planning-scene switch, so the sensor pipeline
-        keeps running and the octomap keeps building -- MoveIt just stops
-        colliding against it -- and it is fully reversible.
+        for ``<octomap>``, which covers every element that is not in the matrix
+        yet, plus its explicit row, which is needed because an explicit pair
+        entry BEATS the default and octomap_scene_setup.py gives ``<octomap>``
+        one against every robot link. It is a planning-scene switch, so the
+        sensor pipeline keeps running and the octomap keeps building -- MoveIt
+        just stops colliding against it -- and it is fully reversible.
+
+        Enabling does nothing when ``octomap_collision_checking`` is false: the
+        octomap is then visualisation only stack-wide, not this task's to
+        restore.
 
         TRADE-OFF, stated plainly: while off the arm will NOT avoid obstacles
         that exist only in the octomap. What replaces it for the scoop strokes is
@@ -1197,6 +1211,14 @@ class SoilSampleNode(Node):
         survey, every one is bounded by absolute_min_contact_z, and all of them
         were IK pre-screened. It is re-enabled the moment the stroke is done.
         """
+        if not self.octomap_collision_checking:
+            # Off stack-wide: nothing to suppress for the scoop and nothing to
+            # restore afterwards, so skip the planning-scene round-trip entirely.
+            self._octomap_collisions_enabled = False
+            self.get_logger().debug(
+                'Octomap collision checking stays off: it is disabled stack-wide '
+                'by octomap_collision_checking.')
+            return True
         if not (self.get_scene_client.wait_for_service(timeout_sec=3.0)
                 and self.apply_scene_client.wait_for_service(timeout_sec=3.0)):
             self.get_logger().error(
@@ -1222,6 +1244,31 @@ class SoilSampleNode(Node):
             values.append(allowed)
         acm.default_entry_names = names
         acm.default_entry_values = values
+
+        # ...and the explicit row, which overrides the default for every pair it
+        # covers. Backed up on the way down so the restore reinstates exactly the
+        # per-link allowances octomap_scene_setup.py seeded, rather than guessing.
+        entry_names = list(acm.entry_names)
+        rows = [list(entry.enabled) for entry in acm.entry_values]
+        if '<octomap>' in entry_names:
+            oct_i = entry_names.index('<octomap>')
+            if allowed:
+                if self._octomap_acm_row_backup is None:
+                    self._octomap_acm_row_backup = {
+                        name: bool(rows[oct_i][i]) for i, name in enumerate(entry_names)}
+                for i in range(len(entry_names)):
+                    rows[oct_i][i] = True
+                    rows[i][oct_i] = True
+            elif self._octomap_acm_row_backup is not None:
+                for i, name in enumerate(entry_names):
+                    previous = self._octomap_acm_row_backup.get(name)
+                    if previous is None:
+                        continue
+                    rows[oct_i][i] = previous
+                    rows[i][oct_i] = previous
+                self._octomap_acm_row_backup = None
+            acm.entry_names = entry_names
+            acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
 
         scene = PlanningScene()
         scene.is_diff = True

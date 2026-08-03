@@ -45,6 +45,8 @@ def opaque_func(context, *args, **kwargs):
     enable_depth_sensor = LaunchConfiguration("enable_depth_sensor").perform(context).lower() in (
         "1", "true", "yes", "on"
     )
+    octomap_collision_checking = LaunchConfiguration(
+        "octomap_collision_checking").perform(context).lower() in ("1", "true", "yes", "on")
     servo_joystick_condition = IfCondition(PythonExpression([
         "'", use_joystick, "' == 'true' and '", joystick_control_mode, "' == 'servo'"
     ]))
@@ -345,15 +347,18 @@ def opaque_func(context, *args, **kwargs):
         parameters=rviz_parameters,
     )
     
-    # One-shot: after move_group is up, allow <octomap> collisions for the
-    # rover's ground-contact links (wheels stand on the mapped floor) and
+    # One-shot: after move_group is up, decide how the <octomap> participates in
+    # collision checking (by default: not at all, it is visualisation only) and
     # clear voxels inserted before TF/self-filter were ready.
     octomap_scene_setup_node = Node(
         package="aries_moveit",
         executable="octomap_scene_setup.py",
         name="octomap_scene_setup",
         namespace=namespace,
-        parameters=[{"use_sim_time": use_sim_time}],
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "octomap_collision_checking": octomap_collision_checking,
+        }],
         output="screen",
     )
 
@@ -410,7 +415,17 @@ def generate_launch_description():
         default_value="true",
         description="Populate MoveIt's Octomap from the gripper depth camera",
     )
-    
+    octomap_collision_checking_arg = DeclareLaunchArgument(
+        "octomap_collision_checking",
+        default_value="false",
+        choices=["true", "false"],
+        description="false (default): the Octomap is visualisation only -- it is still built "
+                    "and drawn in RViz, but MoveIt never collision-checks against it, so the "
+                    "arm will NOT avoid obstacles that exist only in the Octomap. "
+                    "true: the Octomap is a real obstacle, minus the rover-base and gripper "
+                    "link allowances in octomap_scene_setup.py",
+    )
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', 
         default_value='false', 
@@ -454,6 +469,7 @@ def generate_launch_description():
     ld.add_action(joy_dev_arg)
     ld.add_action(joystick_control_mode_arg)
     ld.add_action(enable_depth_sensor_arg)
+    ld.add_action(octomap_collision_checking_arg)
     ld.add_action(hardware_protocol_arg)
 
     ld.add_action(OpaqueFunction(function=opaque_func))

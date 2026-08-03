@@ -15,6 +15,18 @@
   <xacro:property name="wheel_mass" value="50"/>
   <xacro:property name="wheel_radius" value="0.1100"/>
   <xacro:property name="wheel_thickness" value="0.070"/>
+  <!-- Height of base_link above the wheel contact plane.
+       base_footprint is by convention the ground projection of the base, so
+       this must place the bottom of the wheels at exactly z = 0. It was
+       hard-coded to 0.165, which left the wheels 41 mm BELOW base_footprint —
+       everything treating that frame as ground (EKF, odom->base_footprint,
+       nav ground filtering, the LiDAR height) inherited that error.
+       Forward kinematics through the rocker/bogie chain puts the front and
+       middle wheel centres 0.0964 m below base_link, so the base must stand
+       one wheel radius above that. Derived rather than hard-coded so the two
+       can no longer drift apart if wheel_radius changes. -->
+  <xacro:property name="wheel_centre_below_base_link" value="0.0964"/>
+  <xacro:property name="base_link_height" value="${wheel_radius + wheel_centre_below_base_link}"/>
   <!-- Mesh locations -->
   <xacro:property name="mesh_location" value="package://aries/meshes"/>
   <!-- Enable Mimic joints -->

@@ -214,7 +214,10 @@
                 rpy="0 0 0" />
         <parent link="R_Rocker_Link" />
         <child link="aux_R_Rocker_Link" />
-        <limit lower="-3.14" upper="3.14" effort="0.0" velocity="5"/>
+        <!-- effort was 0.0 while the mirrored aux_L_Rocker_joint had 50, so
+             this side could exert no torque at all. Everything else about the
+             two joints mirrors exactly, so the zero was a typo. -->
+        <limit lower="-3.14" upper="3.14" effort="50" velocity="5"/>
         <dynamics damping="0.05" friction="0.0"/>
         <axis xyz="0 0 1" />
     </joint>

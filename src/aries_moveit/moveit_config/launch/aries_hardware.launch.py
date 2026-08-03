@@ -234,6 +234,7 @@ def launch_setup(context, *args, **kwargs):
     suppress_rebel_logs = LaunchConfiguration("suppress_rebel_logs").perform(context).lower() in ("1", "true", "yes", "on")
     suppress_moveit_execution_logs = LaunchConfiguration("suppress_moveit_execution_logs").perform(context).lower() in ("1", "true", "yes", "on")
     enable_depth_sensor = LaunchConfiguration("enable_depth_sensor").perform(context).lower() in ("1", "true", "yes", "on")
+    octomap_collision_checking = LaunchConfiguration("octomap_collision_checking").perform(context).lower() in ("1", "true", "yes", "on")
 
     if arm_hardware_protocol == "auto":
         try:
@@ -641,6 +642,21 @@ def launch_setup(context, *args, **kwargs):
         output={"both": "log"},
     )
 
+    # One-shot, same as move_group.launch.py: decide how <octomap> participates
+    # in collision checking (by default: not at all, it is visualisation only)
+    # and clear voxels inserted before TF/the self-filter were ready. Without
+    # it the mapped floor under the wheels puts every start state in collision.
+    octomap_scene_setup_node = Node(
+        package="aries_moveit",
+        executable="octomap_scene_setup.py",
+        name="octomap_scene_setup",
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "octomap_collision_checking": octomap_collision_checking,
+        }],
+        output="screen",
+    )
+
     nodes = [
         gripper_detect_note,
         ros2_control_node,
@@ -665,6 +681,8 @@ def launch_setup(context, *args, **kwargs):
         nodes.append(micro_ros_agent)
     if gripper_arc_visualizer_node:
         nodes.append(gripper_arc_visualizer_node)
+    if enable_depth_sensor:
+        nodes.append(octomap_scene_setup_node)
     return nodes
 
 
@@ -687,6 +705,7 @@ def generate_launch_description():
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),
             DeclareLaunchArgument("enable_depth_sensor", default_value="true", description="Populate MoveIt's Octomap from the gripper depth camera"),
+            DeclareLaunchArgument("octomap_collision_checking", default_value="false", choices=["true", "false"], description="false (default): the Octomap is visualisation only -- still built and drawn in RViz, but MoveIt never collision-checks against it, so the arm will NOT avoid Octomap-only obstacles. true: the Octomap is a real obstacle"),
             DeclareLaunchArgument(
                 "use_wheel_joint_publisher",
                 default_value="true",

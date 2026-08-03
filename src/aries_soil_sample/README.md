@@ -140,10 +140,18 @@ dig into, so a collision-free path into it cannot exist by definition.
 
 So `octomap_disable_during_scoop` (default **true**) suppresses octomap collision
 checking for the scoop, using the same mechanism the grasp package uses for the
-held probe: the ACM **default** entry for `<octomap>`, one flag that makes it
-allowed against everything rather than pairwise entries that need re-applying
-whenever a link or object appears. The sensor pipeline keeps running and the
-octomap keeps building — MoveIt just stops colliding against it.
+held probe: the ACM **default** entry for `<octomap>` (which covers everything
+not yet in the matrix) plus its explicit row (needed because an explicit pair
+entry beats the default, and `octomap_scene_setup.py` gives `<octomap>` one
+against every robot link). The sensor pipeline keeps running and the octomap
+keeps building — MoveIt just stops colliding against it.
+
+Since `move_group.launch.py` now defaults to `octomap_collision_checking:=false`,
+the octomap is **visualisation only stack-wide** and this per-scoop switch has
+nothing left to do: the disable is redundant and the restore is a deliberate
+no-op, because a stack-wide setting is not the scoop's to put back. Keep
+`octomap_collision_checking` in `soil_sample_params.yaml` matching the launch
+argument. Everything below applies when it is launched with `:=true`.
 
 It covers the whole scoop, not just the strokes below the surface: the approach
 60 mm *above* the ground is 0/4 too, because the 100 mm bucket shells reach into

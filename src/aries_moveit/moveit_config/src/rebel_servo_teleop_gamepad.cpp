@@ -119,6 +119,16 @@ private:
     status_topic_ = declareGet<std::string>("status_topic", "/arm_joystick/status");
 
     planning_group_ = declareGet<std::string>("planning_group", "igus_rebel_arm");
+    // Collision checking must cover the GRIPPER too, not just the arm chain.
+    // MoveIt only reports a contact when at least one of the two links is
+    // active in the requested group, and igus_rebel_arm contains only
+    // arm_base_link/base_link/link1..6/motor1..5 — the fingers are in the
+    // separate 'gripper' group. Checking against igus_rebel_arm therefore made
+    // gripper-vs-anything a pair of two INACTIVE links, silently unchecked, so
+    // the jaws could be driven into the wheels or chassis with the guard
+    // reporting all clear. The Jacobian still solves over planning_group_;
+    // this group is used only for the collision request.
+    collision_group_ = declareGet<std::string>("collision_check_group", "arm_with_gripper");
     planning_link_ = declareGet<std::string>("planning_link", "gripper_tcp");
 
     std::vector<std::string> default_names(DEFAULT_ARM_JOINTS.begin(), DEFAULT_ARM_JOINTS.end());
@@ -708,7 +718,7 @@ private:
 
     collision_detection::CollisionRequest req;
     collision_detection::CollisionResult res;
-    req.group_name = planning_group_;
+    req.group_name = collision_group_;
     req.contacts = want_details;
     req.max_contacts = want_details ? 4 : 1;
     req.max_contacts_per_pair = 1;
@@ -1258,6 +1268,7 @@ private:
   std::string gripper_joint_name_;
   std::string status_topic_;
   std::string planning_group_;
+  std::string collision_group_;
   std::string planning_link_;
 
   double command_rate_hz_ = 80.0;

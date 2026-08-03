@@ -91,6 +91,28 @@ The default model is installed as `models/grasp.pt`: a YOLO26l segmentation
 model trained for the `probe` class. Override `model_path` when testing other
 weights.
 
+### The octomap is visualisation only by default
+
+`move_group.launch.py` defaults to `octomap_collision_checking:=false`, and
+`octomap_scene_setup.py` implements it at startup by allowing `<octomap>`
+against every element in the ACM plus setting its **default** entry (needed for
+objects and attached bodies that appear later; an explicit pair entry beats the
+default, so both halves are written). The depth camera still feeds the octomap
+and RViz still draws it — MoveIt simply never collides against it.
+
+**The trade-off, stated plainly:** the arm will not avoid an obstacle that
+exists only in the octomap. What is left is self-collision against the robot
+model, explicit collision objects such as the detected-probe mesh, and the
+task's own height/reach guards. Launch with `octomap_collision_checking:=true`
+to get avoidance back, in which case the per-link allowances in
+`octomap_scene_setup.py` are what keep the descent and the wheels-on-floor start
+state plannable.
+
+`vision_grasp_params.yaml` carries a matching `octomap_collision_checking` flag.
+While it is false, `octomap_disable_after_grasp_confirmed` has nothing left to
+turn off and a grasp-sequence reset will **not** turn checking back on — the
+setting is stack-wide, not this task's to restore.
+
 ## Perception timing
 
 Inference runs in a background thread; each detect tick consumes the newest

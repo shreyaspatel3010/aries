@@ -235,11 +235,14 @@ vision_grasp_node:
     # along the axis. The cause is the modelled four-bar contact point, which at
     # z=0.220 in the link falls 25 mm PAST the probe's butt end (0.245); nothing
     # gripping the O30 body (z 0.245-0.295) can be there, so the real pinch is
-    # ~0.270. Corrects the collision mesh ONLY: the same contact offset also
-    # aims the grasp, and that aim does land the jaws on the fat body, so moving
-    # it would break a working grasp to fix a collision model. Fixing the
-    # contact point itself is the real repair -- it would also re-centre the
-    # held-probe jaw volume -- and then this drops back to 0.
+    # ~0.270.
+    #
+    # NOW ZERO: the contact point itself was fixed, which is what this comment
+    # said was the real repair. finger_axial_correction in aries/urdf/
+    # gripper_new.xacro moves the fingertip mesh the 50 mm out to where it
+    # physically sits, so the modelled contact and the held-probe jaw volume
+    # land in the right place on their own. Leaving this at 0.050 as well would
+    # double-correct and push the attached mesh 50 mm PAST the probe.
     attached_probe_axial_offset_m: 0.050
     attached_probe_realign_enabled: false
     attached_probe_realign_confidence_threshold: 0.30
@@ -540,6 +543,15 @@ vision_grasp_node:
     # TRADE-OFF: while off, the arm will NOT avoid obstacles that exist only in
     # the octomap. Set false to keep full checking through transport.
     octomap_disable_after_grasp_confirmed: true
+
+    # Must MATCH move_group.launch.py's octomap_collision_checking argument.
+    # false (the launch default) means the octomap is visualisation only for the
+    # whole stack -- it is still built from the depth camera and still drawn in
+    # RViz, but MoveIt never collision-checks against it. This node then leaves
+    # it alone: octomap_disable_after_grasp_confirmed has nothing left to turn
+    # off, and a grasp-sequence reset does not turn it back on, because the
+    # setting is stack-wide and not this task's to restore.
+    octomap_collision_checking: false
 
     movegroup_replan_enabled: true
     movegroup_replan_attempts: 5
