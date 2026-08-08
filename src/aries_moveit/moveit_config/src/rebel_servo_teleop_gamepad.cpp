@@ -422,9 +422,6 @@ private:
 
     active_motion_ = true;
     stop_zero_cycles_left_ = 0;
-    // Drop the latched stop target: the next hold must be captured fresh, or
-    // the controller would drag the arm back to where the last move ended.
-    hold_latched_ = false;
     publishVelocityOnlyTrajectory(qdot, false);
   }
 
@@ -448,7 +445,6 @@ private:
     last_output_vel_.fill(0.0);
     active_motion_ = false;
     stop_zero_cycles_left_ = stop_zero_cycles_total_;
-    hold_latched_ = false;
     publishZeroVelocityTrajectory(true);
 
     if (active_mode_ == Mode::CARTESIAN)
@@ -866,69 +862,6 @@ private:
     publishVelocityOnlyTrajectory(zero, force);
   }
 
-  // Hold at a target LATCHED when the stick was released, not at the live
-  // measurement.
-  //
-  // publishVelocityOnlyTrajectory builds positions as measured + vel*T, so
-  // calling it with vel = 0 re-targets the hold to wherever the arm has just
-  // coasted to, every single cycle. The position error is then ~0 by
-  // construction, the JTC's p gain has nothing to act on, and the arm free
-  // coasts with no braking at all. That is why raising p from 1.0 to 3.0
-  // changed nothing measurable, and why the measured stopping time (0.27 s) is
-  // ~4x the transport delay (0.07 s) instead of close to it.
-  //
-  // Freezing the target lets the error grow as the arm coasts past it, which
-  // is what gives the controller something to brake against.
-  void publishHoldTrajectory(bool force)
-  {
-    if (!force && !publishGateReady())
-    {
-      return;
-    }
-
-    if (!hold_latched_)
-    {
-      publishZeroVelocityTrajectory(force);
-      return;
-    }
-
-    trajectory_msgs::msg::JointTrajectory traj;
-    traj.header.stamp = nh_->now();
-    traj.joint_names.assign(arm_joint_names_.begin(), arm_joint_names_.end());
-
-    trajectory_msgs::msg::JointTrajectoryPoint p1;
-    p1.positions.assign(hold_pos_.begin(), hold_pos_.end());
-    p1.velocities.assign(6, 0.0);
-    p1.time_from_start = rclcpp::Duration::from_seconds(velocity_point_1_sec_);
-
-    trajectory_msgs::msg::JointTrajectoryPoint p2 = p1;
-    p2.time_from_start = rclcpp::Duration::from_seconds(velocity_point_2_sec_);
-
-    traj.points.push_back(p1);
-    traj.points.push_back(p2);
-
-    arm_pub_->publish(traj);
-  }
-
-  // Capture the stopping target once, on the transition out of commanded
-  // motion. Re-latching every cycle would reproduce the bug above.
-  void latchHoldPosition()
-  {
-    if (hold_latched_)
-    {
-      return;
-    }
-
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!have_joint_state_)
-    {
-      return;
-    }
-
-    hold_pos_ = joint_pos_;
-    hold_latched_ = true;
-  }
-
   bool publishGateReady()
   {
     const rclcpp::Time now = nh_->now();
@@ -973,15 +906,13 @@ private:
     // path in config/ros2_controllers.yaml — but that is not what runs here.)
     last_output_vel_.fill(0.0);
 
-    // Freeze the stopping target at the release point so the arm has something
-    // to brake against while it coasts.
-    latchHoldPosition();
-
-    // Pin the target for a few cycles so the controller holds the settled
-    // position, then go silent so MoveIt/RViz can drive the same controller.
+    // Command exactly zero motor velocity for the stop window. Positions are
+    // populated from live feedback only because Jazzy's trajectory controller
+    // requires them; following the measurement keeps position error near zero
+    // so its P term cannot add a forward or backward correction.
     if (stop_zero_cycles_left_ > 0)
     {
-      publishHoldTrajectory(true);
+      publishZeroVelocityTrajectory(true);
       --stop_zero_cycles_left_;
     }
   }
@@ -991,7 +922,7 @@ private:
   {
     if (stop_zero_cycles_left_ > 0)
     {
-      publishHoldTrajectory(true);
+      publishZeroVelocityTrajectory(true);
       --stop_zero_cycles_left_;
     }
   }
@@ -1320,9 +1251,6 @@ private:
   int axis_joint4_ = 3;
   int axis_joint5_ = 6;
   int axis_joint6_ = 7;
-
-  std::array<double, 6> hold_pos_{};
-  bool hold_latched_ = false;
 
   bool arm_mode_initialized_ = false;
   bool previous_rb_toggle_pressed_ = false;
