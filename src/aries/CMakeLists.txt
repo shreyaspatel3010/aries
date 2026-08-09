@@ -10,6 +10,10 @@ find_package(ament_cmake REQUIRED)
 install(
   DIRECTORY config launch meshes models rviz urdf worlds
   DESTINATION share/${PROJECT_NAME}/
+  # meshes/unused holds geometry nothing in the description loads any more
+  # (superseded arm/rover parts, plus the source STLs the coloured arm .glb
+  # files were baked from). Kept in the repo, but not worth shipping.
+  PATTERN "unused" EXCLUDE
 )
 
 install(

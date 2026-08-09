@@ -22,13 +22,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/base_link.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/arm_base_link.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -60,13 +55,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/motor1.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/motor1.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -110,13 +100,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link1.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link1.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.79216 0.81961 0.93333 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -168,13 +153,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/motor2.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/motor2.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -218,13 +198,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link2.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link2.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -276,13 +251,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/motor3.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/motor3.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -326,13 +296,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link3.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link3.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -384,13 +349,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/motor4.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/motor4.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -434,13 +394,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link4.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link4.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -492,13 +447,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/motor5.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/motor5.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -542,13 +492,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link5.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link5.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
@@ -600,13 +545,8 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find aries)/meshes/robolink_rebel2/link6.stl" />
+          filename="file://$(find aries)/meshes/robolink_rebel2/rebel_6dof_03_visual/link6.glb" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.75294 0.75294 0.75294 1" />
-      </material>
     </visual>
     <collision>
       <origin
