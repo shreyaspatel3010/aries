@@ -34,7 +34,7 @@
 
     <!-- Mount joint - attaches camera to gripper base -->
     <joint name="gripper_camera_joint" type="fixed">
-        <origin xyz="0.0 0.045 0.035" rpy="0 -1.57 -1.57"/>
+        <origin xyz="0.0 0.047439 0.035208" rpy="0 -1.57 -1.57"/>
         <parent link="arm_gripper_base_link"/>
         <child link="gripper_camera_bottom_screw_frame"/>
     </joint>
