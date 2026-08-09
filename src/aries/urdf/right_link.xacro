@@ -139,14 +139,14 @@
         <visual>
             <origin xyz="0 0 0" rpy="${PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_2_Wheel_Link_v2.glb"/>
+                <mesh filename="${mesh_location}/R_3_Wheel_Link_v2.glb"/>
             </geometry>
-         
+
         </visual>
         <collision>
             <origin xyz="0 0.035 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_2_Wheel_Link_v2.stl"/>
+                <mesh filename="${mesh_location}/R_3_Wheel_Link_v2.stl"/>
             </geometry>
         </collision>
     </link>
