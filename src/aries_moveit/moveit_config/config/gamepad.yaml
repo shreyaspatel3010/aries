@@ -36,8 +36,10 @@
 
     # Set move_group_control_mode: "joint" to use planned joint nudges instead.
     joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
-    joint_min_positions: [-3.1241, -1.4835, -1.39626, -3.12414, -1.65806, -3.12414]
-    joint_max_positions: [3.1241, 2.4435, 2.61799, 3.12414, 1.65806, 3.12414]
+    # REBEL-6DOF-03 factory software limits (179, 80/140, 80/140,
+    # 179, 95, 179 degrees). Keep these synchronized with the URDF and MoveIt.
+    joint_min_positions: [-3.12413936106985, -1.3962634015954636, -1.3962634015954636, -3.12413936106985, -1.6580627893946132, -3.12413936106985]
+    joint_max_positions: [3.12413936106985, 2.443460952792061, 2.443460952792061, 3.12413936106985, 1.6580627893946132, 3.12413936106985]
     joint_directions: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     joint_step_rad: 0.07
     joint_limit_margin: 0.05

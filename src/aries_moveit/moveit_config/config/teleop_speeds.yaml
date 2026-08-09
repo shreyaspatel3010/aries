@@ -143,6 +143,11 @@
                                 #                    [clamp 0.0 - 0.20]
     collision_preview_sec: 0.16 # how far ahead the guard checks
                                 #                    [clamp 0.04 - 0.40]
+    # When already touching in the model, a slow command is allowed only if
+    # its preview reduces total penetration by at least this much. This keeps
+    # a genuine escape direction available but stops tangential bucket motion
+    # from scraping along the rover body.
+    collision_escape_min_improvement: 0.0005 # m      [clamp 0.0001 - 0.010]
     trajectory_horizon_sec: 0.025           # dead (see warning above)
     trajectory_preview_sec: 0.025           # dead
     hold_time_sec: 0.030                    # dead
@@ -151,8 +156,9 @@
     # so the position command deliberately LEADS the arm by up to
     # velocity_point_2_sec of travel — that lead is what keeps motion smooth.
     # When you let go, the arm still has that lead to run out, and the
-    # controller then pulls it back to the pinned point. That settle is the
-    # "it keeps correcting itself" motion, and it is exactly
+    # stop path replaces the velocity with exactly zero and follows live
+    # measured position, so no projected endpoint asks the arm to continue or
+    # return. During motion, the maximum trajectory lead is approximately
     #   velocity * velocity_point_2_sec
     # so it grows in direct proportion to speed:
     #   0.28 rad/s * 0.080 = 0.022 rad (~1.3 deg)   <- old speeds

@@ -141,8 +141,12 @@ private:
       }
     }
 
-    auto default_min = std::vector<double>{-3.1241, -1.4835, -1.39626, -3.12414, -1.65806, -3.12414};
-    auto default_max = std::vector<double>{ 3.1241,  2.4435,  2.61799,  3.12414,  1.65806,  3.12414};
+    auto default_min = std::vector<double>{
+      -3.12413936106985, -1.3962634015954636, -1.3962634015954636,
+      -3.12413936106985, -1.6580627893946132, -3.12413936106985};
+    auto default_max = std::vector<double>{
+       3.12413936106985,  2.443460952792061,  2.443460952792061,
+       3.12413936106985,  1.6580627893946132,  3.12413936106985};
 
     auto mins = declareGet<std::vector<double>>("joint_min_positions", default_min);
     auto maxs = declareGet<std::vector<double>>("joint_max_positions", default_max);
@@ -174,6 +178,8 @@ private:
     dls_sigma_threshold_ = declareGet<double>("dls_sigma_threshold", 0.20);
     joint_limit_margin_ = declareGet<double>("joint_limit_margin", 0.05);
     collision_preview_sec_ = declareGet<double>("collision_preview_sec", 0.16);
+    collision_escape_min_improvement_ =
+      declareGet<double>("collision_escape_min_improvement", 0.0005);
 
     velocity_point_1_sec_ = declareGet<double>("velocity_point_1_sec", 0.040);
     velocity_point_2_sec_ = declareGet<double>("velocity_point_2_sec", 0.080);
@@ -233,6 +239,8 @@ private:
     dls_sigma_threshold_ = std::clamp(dls_sigma_threshold_, 0.0, 1.0);
     joint_limit_margin_ = std::clamp(joint_limit_margin_, 0.0, 0.20);
     collision_preview_sec_ = std::clamp(collision_preview_sec_, 0.04, 0.40);
+    collision_escape_min_improvement_ =
+      std::clamp(collision_escape_min_improvement_, 0.0001, 0.010);
     velocity_point_1_sec_ = std::clamp(velocity_point_1_sec_, 0.015, 0.10);
     velocity_point_2_sec_ = std::clamp(velocity_point_2_sec_, velocity_point_1_sec_ + 0.01, 0.20);
 
@@ -774,7 +782,10 @@ private:
     // Nothing was safe. If the arm is already standing in the collision, every
     // preview inherits it and blocking would trap the operator with no way to
     // jog out - the escape has to come from the joystick, not only from RViz.
-    // Allow the slowest step that does not push deeper into the contact.
+    // Allow the slowest step only when it measurably reduces penetration.
+    // Accepting an unchanged depth let tangential bucket motion scrape along
+    // the rover, and state noise could alternate that motion with blocked
+    // commands. A command with no clear escape progress must stop instead.
     std::array<double, 6> slowest{};
     for (size_t i = 0; i < 6; ++i)
     {
@@ -784,13 +795,14 @@ private:
     const GuardVerdict last = evaluateGuard(slowest, true);
     const GuardVerdict current = evaluateGuard({0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, true);
 
+    const double penetration_improvement = current.penetration - last.penetration;
     if (current.checked && current.collision && last.checked && last.collision &&
-        last.penetration <= current.penetration + 1e-6)
+        penetration_improvement >= collision_escape_min_improvement_)
     {
       qdot = slowest;
 
       publishStatus("MoveIt self-collision guard: already touching (" + current.reason +
-                    "), allowing slow motion away");
+                    "), allowing verified slow motion away");
       return true;
     }
 
@@ -1187,8 +1199,12 @@ private:
   std::map<std::string, double> external_joint_pos_;
 
   std::array<std::string, 6> arm_joint_names_ = DEFAULT_ARM_JOINTS;
-  std::array<double, 6> joint_min_ = {-3.1241, -1.4835, -1.39626, -3.12414, -1.65806, -3.12414};
-  std::array<double, 6> joint_max_ = { 3.1241,  2.4435,  2.61799,  3.12414,  1.65806,  3.12414};
+  std::array<double, 6> joint_min_ = {
+    -3.12413936106985, -1.3962634015954636, -1.3962634015954636,
+    -3.12413936106985, -1.6580627893946132, -3.12413936106985};
+  std::array<double, 6> joint_max_ = {
+     3.12413936106985,  2.443460952792061,  2.443460952792061,
+     3.12413936106985,  1.6580627893946132,  3.12413936106985};
 
   std::array<double, 6> last_output_vel_{};
 
@@ -1217,6 +1233,7 @@ private:
   double dls_sigma_threshold_ = 0.20;
   double joint_limit_margin_ = 0.05;
   double collision_preview_sec_ = 0.16;
+  double collision_escape_min_improvement_ = 0.0005;
   double velocity_point_1_sec_ = 0.040;
   double velocity_point_2_sec_ = 0.080;
   bool constant_speed_mode_ = false;
