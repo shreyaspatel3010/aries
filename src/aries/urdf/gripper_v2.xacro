@@ -1,0 +1,401 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!--
+        REBEL-6DOF-04 gripper (gripper_type:=v2).
+
+        Built from the CAD export "full gripper with bucket finger.glb" plus the
+        two single-side fingertips "maintanance_finger.glb" and
+        "probe_finger.glb".  scripts/build_gripper_v2_meshes.py splits that
+        assembly into the per-link meshes this file loads and prints every
+        number quoted below, so all of it can be regenerated rather than
+        trusted.
+
+        WHAT CHANGED FROM gripper_new.xacro
+        The base casting is the same part - its mesh lands inside 0.5 mm of
+        gripper_base.stl in every Z slab, which is what pins the frame below -
+        and every link and joint NAME is unchanged, so this file is a drop-in
+        swap.  The linkage inside it is not the same:
+
+          - Both jaws are now driven by MESHING SECTOR GEARS on a central
+            servo pinion, so they counter-rotate as one degree of freedom
+            rather than through five same-sign mimics.
+          - Each jaw is an exact PARALLELOGRAM: 50.000 mm bars on a 35.000 mm
+            ground link (measured 49.991-50.004 and 34.999).  gripper_new's
+            bars were unequal, 85.563 against a 35.11 ground link, which is
+            why that file has to explain at length why both bars still have to
+            use the same 85.563 tip offset.  Here the parallelogram is real,
+            so the fingertip TRANSLATES: its orientation is fixed for every q
+            and the jaw faces stay parallel through the whole stroke.
+          - Because the fingertip does not rotate, its joint mimics the driver
+            at -1.0, cancelling the bar it hangs off.
+
+        STROKE.  0 to 83 mm, against gripper_new's 0 to 183 mm.  The command
+        convention is preserved - q = +0.07 rad closes, q < 0 opens - and the
+        joint zero is calibrated so the bucket jaws touch exactly at +0.07
+        (see ZERO-POSE below).  But the two grippers are NOT interchangeable
+        at the same joint angle, and anything that converts an object width
+        into a close angle must be re-fitted:
+
+          jaw gap [mm] against q [rad]
+            q       -1.373 -1.200 -1.000 -0.800 -0.600 -0.400 -0.200 -0.100  0.000  0.070
+            bucket    83.1   81.7   76.3   67.4   55.2   40.4   24.0   15.4    6.3    0.0
+            maint.    76.4   74.9   69.5   60.5   48.0   32.7   15.2    5.8    0.0      -
+            probe     75.4   73.9   68.5   59.4   47.0   31.7   14.2    4.8    0.0      -
+
+          jaw contact sits at z = 243 / 215 / 224 mm from arm_gripper_base_link
+          for bucket / maintenance / probe.
+
+        TWO CAVEATS worth knowing before trusting a commanded angle:
+
+        1. The gap is NOT monotonic over the whole joint range.  The bars pass
+           through perpendicular - over centre - at q = -1.3728, and past that
+           the jaws start closing again (81.7 mm at -1.2, 83.1 mm at -1.373,
+           and back to ~81 mm at the -1.57 limit).  The limit is kept at -1.57
+           because the linkage really does reach it with nothing fouling, and
+           because the rest of the stack calls -1.57 "open"; but -1.373 is the
+           widest the gripper actually opens, and any gap-to-angle inverse must
+           be restricted to q >= -1.373 or it can pick the wrong branch.
+        2. The three fingertips do NOT close at the same angle.  gripper_new's
+           three happened to agree within 0.5 mm; these do not - maintenance
+           touches at q ~ -0.030 and probe at q ~ -0.045, both well before the
+           bucket's +0.07.  The joint limit stays at +0.07 (it is a property of
+           the linkage, not of the tip), so with those tips fitted a commanded
+           "closed" drives them into contact ~7 mm early.
+    -->
+
+    <!-- Keep the nominal -1.57/0.07 commands inside Gazebo's physics limits.
+         When a commanded endpoint equals a DART hard stop, the linked mimic
+         joints can wedge there and refuse the following reverse command. Real
+         hardware retains its original physical limits. -->
+    <xacro:property name="gripper_joint_lower_limit"
+                    value="${-1.62 if gripper_hardware_protocol == 'gazebo' else -1.57}"/>
+    <xacro:property name="gripper_joint_upper_limit"
+                    value="${0.12 if gripper_hardware_protocol == 'gazebo' else 0.07}"/>
+
+    <!-- ZERO POSE.  The bars sit 11.3428 deg off the gripper axis at q = 0,
+         which is the one free choice in the whole model: the CAD snapshot is a
+         pose, not a datum, and its two jaws are not even symmetric with each
+         other (the bars are at -14.031 and +12.627 deg in the export).  The
+         angle below is solved so the bucket jaws just touch at q = +0.07,
+         which is what "closed" means everywhere else in this stack - the SRDF
+         `closed` group state, the mock-hardware command limits in
+         igus_rebel2.control.xacro, the aries_vision_grasp gap tables.  It sits
+         2.0 deg from the symmetrised CAD pose, inside that pose's own 1.4 deg
+         left-right disagreement.
+
+         Everything downstream is a consequence: sin/cos of this angle times
+         the 50 mm bar give the tip offsets, so change it here and re-run the
+         build script rather than editing the offsets by hand. -->
+    <xacro:property name="fourbar_zero_psi" value="${radians(11.3428)}"/>
+    <xacro:property name="fourbar_bar" value="0.050"/>
+    <xacro:property name="fourbar_tip_x" value="${fourbar_bar * sin(fourbar_zero_psi)}"/>
+    <xacro:property name="fourbar_tip_z" value="${fourbar_bar * cos(fourbar_zero_psi)}"/>
+
+    <!-- Physically swappable fingertip. finger_type is 'bucket', 'maintenance'
+         or 'probe'. Unlike gripper_new.xacro these are handed: the two jaws are
+         mirror images about the gripper axis, and a mirror is not a rotation,
+         so a left and a right mesh are exported for each type. The bucket pair
+         comes straight out of the assembly; the other two are the single-side
+         export placed on both jaws, which is only valid because each of those
+         solids is symmetric about its own mid-plane (the build script asserts
+         it). -->
+    <xacro:property name="finger_mesh_left" value="gripper_${finger_type}_left.stl"/>
+    <xacro:property name="finger_mesh_right" value="gripper_${finger_type}_right.stl"/>
+
+    <!-- Mass properties integrated from each exported mesh at 1050 kg/m^3
+         (near-solid printed plastic), the same density gripper_new.xacro used
+         so the two models stay comparable. COM and inertia are about that COM.
+         The left-hand values are listed; the right-hand link is the mirror, so
+         it takes -cx and -ixz and leaves the rest alone. Total gripper mass is
+         458 g with the bucket fitted, of which 90 g is the servo. -->
+    <xacro:property name="finger_mass"
+                    value="${0.0277 if finger_type == 'probe' else (0.0433 if finger_type == 'bucket' else 0.0187)}"/>
+    <xacro:property name="finger_com_x"
+                    value="${0.01892 if finger_type == 'probe' else (0.00840 if finger_type == 'bucket' else 0.01748)}"/>
+    <xacro:property name="finger_com_z"
+                    value="${0.05805 if finger_type == 'probe' else (0.05452 if finger_type == 'bucket' else 0.04608)}"/>
+    <xacro:property name="finger_ixx"
+                    value="${2.343e-05 if finger_type == 'probe' else (3.617e-05 if finger_type == 'bucket' else 1.338e-05)}"/>
+    <xacro:property name="finger_iyy"
+                    value="${2.362e-05 if finger_type == 'probe' else (3.212e-05 if finger_type == 'bucket' else 1.468e-05)}"/>
+    <xacro:property name="finger_izz"
+                    value="${3.462e-06 if finger_type == 'probe' else (1.736e-05 if finger_type == 'bucket' else 1.999e-06)}"/>
+    <xacro:property name="finger_ixz"
+                    value="${-5.067e-06 if finger_type == 'probe' else (6.137e-07 if finger_type == 'bucket' else -4.098e-06)}"/>
+
+    <!-- Reusable inertial block. -->
+    <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
+        <inertial>
+            <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+            <mass value="${mass}"/>
+            <inertia ixx="${ixx}" ixy="${ixy}" ixz="${ixz}"
+                     iyy="${iyy}" iyz="${iyz}" izz="${izz}"/>
+        </inertial>
+    </xacro:macro>
+
+    <!-- Visual + collision from the same mesh, which is what every link here
+         wants: these are small printed parts whose swept volume is the shape
+         itself, and the CAD export is already coarse (200-1300 faces a link). -->
+    <xacro:macro name="gripper_mesh_geometry" params="file">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/gripper_v2/${file}"/>
+            </geometry>
+            <material name="">
+                <color rgba="1 1 1 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/gripper_v2/${file}"/>
+            </geometry>
+        </collision>
+    </xacro:macro>
+
+    <!-- Joint damping/friction, sized against the inertias above; see the long
+         note in gripper_new.xacro for why they cannot be left at the 10/2 that
+         file inherited. The links here are the same order of magnitude as that
+         one's (27 g and 11 g bars, 19-43 g fingertips), so the same values
+         hold: damping gives an explicit-integration limit of h < 2I/b well
+         clear of the 1 ms world step, and friction stays under the links' own
+         gravity torque so it cannot weld the linkage. Only Gazebo reads
+         these. -->
+    <xacro:property name="fourbar_joint_damping" value="0.01"/>
+    <xacro:property name="fourbar_joint_friction" value="0.001"/>
+
+    <!-- Mount unchanged from gripper_new.xacro. The base solid is the same
+         part in the same frame, so the flange offset, the 180 deg yaw and the
+         camera pose all carry over; see the header. -->
+    <joint name="arm_gripper_base_joint" type="fixed">
+        <parent link="link6"/>
+        <child link="arm_gripper_base_link"/>
+        <origin xyz="0.0 0.0 0.0522" rpy="0.0 0.0 3.141592653589793"/>
+    </joint>
+
+    <!-- Gripper base: side plates, link6 flange, stand-offs, servo, pinion and
+         all the pins and screw heads, merged into one solid. The servo carries
+         its datasheet 90 g rather than the plastic density; the two are
+         combined by parallel axis, so the tensor below is not a uniform-density
+         one. -->
+    <link name="arm_gripper_base_link">
+        <xacro:gripper_inertial mass="0.2957" cx="-0.00033" cy="-0.00513" cz="0.04977"
+                                ixx="4.228e-04" iyy="3.976e-04" izz="2.278e-04"
+                                ixy="2.038e-06" ixz="5.816e-07" iyz="5.046e-05"/>
+        <xacro:gripper_mesh_geometry file="gripper_base.stl"/>
+    </link>
+
+    <!-- ================= driven bars (the sector gears) ================= -->
+    <!-- The driver. Its sector gear meshes with the right-hand one, which is
+         what makes the two jaws one degree of freedom; every other joint below
+         mimics this one. Link frames throughout this file are parallel to
+         arm_gripper_base_link at q = 0 and sit on their own pivot, so every
+         joint origin is a pure translation and every axis is +/-Y. -->
+    <link name="gripper_gear_left_link">
+        <xacro:gripper_inertial mass="0.0269" cx="-0.00160" cy="0.00749" cz="0.00795"
+                                ixx="1.222e-05" iyy="1.256e-05" izz="6.137e-06"
+                                ixy="-4.439e-07" ixz="1.272e-06" iyz="2.212e-06"/>
+        <xacro:gripper_mesh_geometry file="gripper_gear_left.stl"/>
+    </link>
+
+    <joint name="gripper_gear_left_joint" type="revolute">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_gear_left_link"/>
+        <origin xyz="-0.024250 0.0 0.090470" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+    </joint>
+
+    <link name="gripper_gear_right_link">
+        <xacro:gripper_inertial mass="0.0269" cx="0.00159" cy="0.00749" cz="0.00795"
+                                ixx="1.222e-05" iyy="1.256e-05" izz="6.137e-06"
+                                ixy="4.438e-07" ixz="-1.272e-06" iyz="2.212e-06"/>
+        <xacro:gripper_mesh_geometry file="gripper_gear_right.stl"/>
+    </link>
+
+    <!-- The gears mesh, so this bar turns the opposite way. That is carried by
+         the axis, not by a negative multiplier, so the joint VALUES stay equal
+         and a reader comparing joint_states sees one number. -->
+    <joint name="gripper_gear_right_joint" type="revolute">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_gear_right_link"/>
+        <origin xyz="0.024250 0.0 0.090470" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 -1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+        <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+
+    <!-- ==================== coupler bars ==================== -->
+    <!-- Second bar of each parallelogram. Same 50 mm length as the driven bar
+         and its ground pivot is 35 mm from the gear axis, which is what holds
+         the fingertip's orientation fixed. -->
+    <link name="gripper_left_link">
+        <xacro:gripper_inertial mass="0.0107" cx="-0.00492" cy="-0.00005" cz="0.02451"
+                                ixx="5.063e-06" iyy="3.512e-06" izz="1.967e-06"
+                                ixz="6.473e-07"/>
+        <xacro:gripper_mesh_geometry file="gripper_coupler_left.stl"/>
+    </link>
+
+    <joint name="gripper_link_left_joint" type="revolute">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_left_link"/>
+        <origin xyz="-0.007500 0.0 0.121200" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+        <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+
+    <link name="gripper_right_link">
+        <xacro:gripper_inertial mass="0.0107" cx="0.00492" cy="-0.00005" cz="0.02451"
+                                ixx="5.063e-06" iyy="3.512e-06" izz="1.967e-06"
+                                ixz="-6.472e-07"/>
+        <xacro:gripper_mesh_geometry file="gripper_coupler_right.stl"/>
+    </link>
+
+    <joint name="gripper_link_right_joint" type="revolute">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_right_link"/>
+        <origin xyz="0.007500 0.0 0.121200" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 -1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+        <mimic joint="gripper_gear_left_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+
+    <!-- ==================== bar tips ==================== -->
+    <!-- Massless frames on the far pivot of each bar. Both bars use the SAME
+         offset because they are the same length - that is what a parallelogram
+         means here, and it is why the gear tip and the link tip stay exactly
+         35 mm apart at every q, matching the fingertip's own bore spacing. -->
+    <xacro:macro name="fourbar_tip" params="name parent sign">
+        <link name="${name}_link">
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.001"/>
+                <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+            </inertial>
+        </link>
+        <joint name="${name}_joint" type="fixed">
+            <parent link="${parent}"/>
+            <child link="${name}_link"/>
+            <origin xyz="${sign * fourbar_tip_x} 0.0 ${fourbar_tip_z}" rpy="0.0 0.0 0.0"/>
+        </joint>
+    </xacro:macro>
+
+    <xacro:fourbar_tip name="gripper_gear_tip_left" parent="gripper_gear_left_link" sign="-1"/>
+    <xacro:fourbar_tip name="gripper_gear_tip_right" parent="gripper_gear_right_link" sign="1"/>
+    <xacro:fourbar_tip name="gripper_link_tip_left" parent="gripper_left_link" sign="-1"/>
+    <xacro:fourbar_tip name="gripper_link_tip_right" parent="gripper_right_link" sign="1"/>
+
+    <!-- ==================== fingertips ==================== -->
+    <!-- The fingertip hangs off the gear-bar tip and mimics at -1.0, which
+         cancels that bar's rotation exactly. That is not a fudge to keep the
+         jaws looking parallel: in a parallelogram the coupler's orientation is
+         invariant, so the fingertip's true motion IS a pure translation along
+         a 50 mm arc, and -1.0 is the multiplier that reproduces it. The second
+         bore rides on gripper_link_tip_*_link, which the closed loop keeps
+         underneath it. -->
+    <link name="gripper_bucket_left_link">
+        <xacro:gripper_inertial mass="${finger_mass}" cx="${finger_com_x}" cy="0.0" cz="${finger_com_z}"
+                                ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
+                                ixz="${finger_ixz}"/>
+        <xacro:gripper_mesh_geometry file="${finger_mesh_left}"/>
+    </link>
+
+    <joint name="gripper_bucket_left_joint" type="revolute">
+        <parent link="gripper_gear_tip_left_link"/>
+        <child link="gripper_bucket_left_link"/>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+        <mimic joint="gripper_gear_left_joint" multiplier="-1.0" offset="0.0"/>
+    </joint>
+
+    <link name="gripper_bucket_right_link">
+        <xacro:gripper_inertial mass="${finger_mass}" cx="${-finger_com_x}" cy="0.0" cz="${finger_com_z}"
+                                ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
+                                ixz="${-finger_ixz}"/>
+        <xacro:gripper_mesh_geometry file="${finger_mesh_right}"/>
+    </link>
+
+    <!-- Mirror of the left fingertip joint. Its parent already turns the other
+         way (see gripper_gear_right_joint's axis), so the -1.0 multiplier here
+         cancels that rotation just as it does on the left. -->
+    <joint name="gripper_bucket_right_joint" type="revolute">
+        <parent link="gripper_gear_tip_right_link"/>
+        <child link="gripper_bucket_right_link"/>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 -1 0"/>
+        <limit effort="500" velocity="1.0"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
+        <mimic joint="gripper_gear_left_joint" multiplier="-1.0" offset="0.0"/>
+    </joint>
+
+    <!-- Visual markers on the closing pivot of each four-bar. Pure RViz aids:
+         no collision, so they can never obstruct planning, and a negligible
+         inertial only because MoveIt/KDL warns about inertia-less links on
+         every start. A <cylinder> runs along its own local Z, and here local Z
+         is NOT the pivot axis - these link frames are base-aligned, so the
+         axis is Y and the pin has to be laid over onto it. -->
+    <xacro:macro name="fourbar_marker" params="name parent">
+        <link name="${name}">
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="1e-6"/>
+                <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <cylinder radius="0.001" length="0.030"/>
+                </geometry>
+                <material name="constraint_color">
+                    <color rgba="1 0 0 0.5"/>
+                </material>
+            </visual>
+        </link>
+        <joint name="${name}_joint" type="fixed">
+            <parent link="${parent}"/>
+            <child link="${name}"/>
+            <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+        </joint>
+    </xacro:macro>
+
+    <xacro:fourbar_marker name="fourbar_constraint_visual_left" parent="gripper_link_tip_left_link"/>
+    <xacro:fourbar_marker name="fourbar_constraint_visual_right" parent="gripper_link_tip_right_link"/>
+
+    <!-- Virtual TCP frame used as the IK tip. Held at gripper_new.xacro's
+         0.15 m so the SRDF chain and every cached pose stay valid; it is a
+         reference frame, not the contact point. The fingertips span
+         z = 0.135-0.245 m from arm_gripper_base_link and the jaws actually
+         meet at 243 / 215 / 224 mm for bucket / maintenance / probe - see the
+         header. -->
+    <xacro:property name="gripper_tcp_z" value="0.15"/>
+
+    <link name="gripper_tcp"/>
+
+    <joint name="gripper_tcp_joint" type="fixed">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_tcp"/>
+        <origin xyz="0.0 0.0 ${gripper_tcp_z}" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- Gripper Camera (D435i) - defined in gripper_camera.xacro. Its mount
+         pose is unchanged: it hangs off a bracket that is modelled in neither
+         base mesh, and the base solid itself is the same part in the same
+         frame, so the old extrinsics still apply. -->
+    <xacro:include filename="gripper_camera.xacro" />
+
+</robot>
