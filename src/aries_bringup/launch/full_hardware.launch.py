@@ -30,6 +30,9 @@ def generate_launch_description():
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
         DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
+        DeclareLaunchArgument("gripper_camera_serial", default_value=""),
+        DeclareLaunchArgument("enable_front_camera", default_value="auto", choices=["auto", "true", "false"]),
+        DeclareLaunchArgument("front_camera_serial", default_value=""),
         DeclareLaunchArgument(
             "use_static_wheel_joint_publisher",
             default_value="false",
@@ -114,6 +117,9 @@ def generate_launch_description():
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
                 "enable_depth_sensor": LaunchConfiguration("enable_depth_sensor"),
+                "gripper_camera_serial": LaunchConfiguration("gripper_camera_serial"),
+                "enable_front_camera": LaunchConfiguration("enable_front_camera"),
+                "front_camera_serial": LaunchConfiguration("front_camera_serial"),
                 "use_wheel_joint_publisher": LaunchConfiguration(
                     "use_static_wheel_joint_publisher"
                 ),

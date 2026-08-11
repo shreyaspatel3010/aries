@@ -96,13 +96,9 @@
   direction:      GZ_TO_ROS
 
 # The /gripper_camera/.../points and /gripper_camera/infra* bridges were
-# removed for the same reason as the front-camera ones above.
-
-- ros_topic_name: "/gripper_camera/imu/data"
-  gz_topic_name:  "/gripper_camera/imu/data"
-  ros_type_name:  "sensor_msgs/msg/Imu"
-  gz_type_name:   "gz.msgs.IMU"
-  direction:      GZ_TO_ROS
+# removed for the same reason as the front-camera ones above. The camera IMU
+# bridges went with the IMU sensors themselves: no camera IMU is used anywhere
+# in the stack, in simulation or on hardware.
 
 
 

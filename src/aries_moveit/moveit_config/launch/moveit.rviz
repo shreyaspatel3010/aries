@@ -185,14 +185,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_accel_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        camera_accel_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         camera_bottom_screw_frame:
           Alpha: 1
           Show Axes: false
@@ -210,14 +202,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         camera_depth_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        camera_gyro_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        camera_gyro_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -262,14 +246,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        gripper_camera_accel_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_camera_accel_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         gripper_camera_bottom_screw_frame:
           Alpha: 1
           Show Axes: false
@@ -287,14 +263,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         gripper_camera_depth_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_camera_gyro_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_camera_gyro_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -598,14 +566,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           camera_bottom_screw_frame:
             Alpha: 1
             Show Axes: false
@@ -623,14 +583,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -675,14 +627,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          gripper_camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           gripper_camera_bottom_screw_frame:
             Alpha: 1
             Show Axes: false
@@ -700,14 +644,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           gripper_camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -993,14 +929,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           camera_bottom_screw_frame:
             Alpha: 1
             Show Axes: false
@@ -1018,14 +946,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          camera_gyro_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -1070,14 +990,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          gripper_camera_accel_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_accel_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           gripper_camera_bottom_screw_frame:
             Alpha: 1
             Show Axes: false
@@ -1095,14 +1007,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           gripper_camera_depth_optical_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          gripper_camera_gyro_optical_frame:
             Alpha: 1
             Show Axes: false
             Show Trail: false

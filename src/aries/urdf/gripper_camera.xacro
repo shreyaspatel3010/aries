@@ -10,26 +10,20 @@
           gripper_camera_color_frame / gripper_camera_color_optical_frame
           gripper_camera_left_ir_frame  / gripper_camera_left_ir_optical_frame
           gripper_camera_right_ir_frame / gripper_camera_right_ir_optical_frame
-          gripper_camera_accel_frame    / gripper_camera_accel_optical_frame
-          gripper_camera_gyro_frame     / gripper_camera_gyro_optical_frame
 
-        Gazebo sensor specs match Intel RealSense D435i datasheet
-          Color  69 deg H-FOV (1.204 rad), 1280x720, RGB_INT8,  30 Hz
-          Depth  85 deg H-FOV (1.487 rad), 1280x720, R_FLOAT32, 30 Hz, noise stddev 3 mm
-          Infra  85 deg H-FOV (1.487 rad),  640x480, L_INT8,    30 Hz
-          IMU    400 Hz, gyro + accel with realistic bias noise
+        Simulated sensors (matched to what the hardware driver is launched with
+        in aries_bringup/launch/aries_hardware.launch.py)
+          Color  69 deg H-FOV (1.204 rad), 640x480, RGB_INT8,   15 Hz
+          Depth  69 deg H-FOV (1.204 rad), 640x480, R_FLOAT32,  15 Hz, noise stddev 3 mm
+        No infra and no IMU: neither is used by anything in the stack, and each
+        extra render sensor costs real GPU time.
 
         ROS topics (bridged via gazebo_bridge.yaml)
           /gripper_camera/color/image_raw
           /gripper_camera/color/camera_info
           /gripper_camera/depth/image_rect_raw
           /gripper_camera/depth/camera_info
-          /gripper_camera/depth/image_rect_raw/points
-          /gripper_camera/infra1/image_rect_raw
-          /gripper_camera/infra1/camera_info
-          /gripper_camera/infra2/image_rect_raw
-          /gripper_camera/infra2/camera_info
-          /gripper_camera/imu/data
+          /gripper_camera/aligned_depth_to_color/image_raw  (alias of the depth image)
     -->
 
     <!-- Mount joint - attaches camera to gripper base -->
@@ -61,11 +55,16 @@
                 <box size="0.0252 0.090 0.025"/>
             </geometry>
         </collision>
+        <!-- Uniform box of the collision dimensions (25.2 x 90 x 25 mm) at the
+             datasheet mass, m/12*(a^2+b^2). The previous tensor was the rover
+             camera's scaled by 1e-3, which left it ~13x below the box value.
+             The COM sits at the collision box centroid, not at the link origin
+             (which is the bottom screw mount, on the front face). -->
         <inertial>
             <mass value="0.072"/>
-            <origin xyz="0 0 0"/>
-            <inertia ixx="0.000003881243" ixy="0.0" ixz="0.0"
-                     iyy="0.000000498940" iyz="0.0" izz="0.000003879257"/>
+            <origin xyz="-0.0126 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.00005235" ixy="0.0" ixz="0.0"
+                     iyy="0.00000751" iyz="0.0" izz="0.00005236"/>
         </inertial>
     </link>
 
@@ -128,35 +127,9 @@
     </joint>
     <link name="gripper_camera_color_optical_frame"/>
 
-    <!-- IMU sensor frames -->
-    <!-- Offsets from official Intel D435i URDF (_d435i_imu_modules.urdf.xacro) -->
-    <joint name="gripper_camera_accel_joint" type="fixed">
-        <origin xyz="-0.01174 -0.00552 0.0051" rpy="0 0 0"/>
-        <parent link="gripper_camera_link"/>
-        <child link="gripper_camera_accel_frame"/>
-    </joint>
-    <link name="gripper_camera_accel_frame"/>
-
-    <joint name="gripper_camera_accel_optical_joint" type="fixed">
-        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
-        <parent link="gripper_camera_accel_frame"/>
-        <child link="gripper_camera_accel_optical_frame"/>
-    </joint>
-    <link name="gripper_camera_accel_optical_frame"/>
-
-    <joint name="gripper_camera_gyro_joint" type="fixed">
-        <origin xyz="-0.01174 -0.00552 0.0051" rpy="0 0 0"/>
-        <parent link="gripper_camera_link"/>
-        <child link="gripper_camera_gyro_frame"/>
-    </joint>
-    <link name="gripper_camera_gyro_frame"/>
-
-    <joint name="gripper_camera_gyro_optical_joint" type="fixed">
-        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
-        <parent link="gripper_camera_gyro_frame"/>
-        <child link="gripper_camera_gyro_optical_frame"/>
-    </joint>
-    <link name="gripper_camera_gyro_optical_frame"/>
+    <!-- The accel/gyro frames were removed with the IMU sensor: the D435i IMU is
+         not used anywhere in the stack, and the hardware driver is launched with
+         enable_gyro/enable_accel false, so it publishes no IMU frames either. -->
 
     <!-- Gazebo sensors -->
     <gazebo reference="gripper_camera_link">
@@ -236,67 +209,8 @@
             <gz_frame_id>gripper_camera_depth_optical_frame</gz_frame_id>
         </sensor>
 
-        <!-- IMU - D435i 400 Hz with realistic gyro + accel bias -->
-        <sensor name="gripper_camera_imu" type="imu">
-            <always_on>true</always_on>
-            <update_rate>400</update_rate>
-            <imu>
-                <angular_velocity>
-                    <x>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>2e-4</stddev>
-                            <bias_mean>0.0000075</bias_mean>
-                            <bias_stddev>0.0000008</bias_stddev>
-                        </noise>
-                    </x>
-                    <y>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>2e-4</stddev>
-                            <bias_mean>0.0000075</bias_mean>
-                            <bias_stddev>0.0000008</bias_stddev>
-                        </noise>
-                    </y>
-                    <z>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>2e-4</stddev>
-                            <bias_mean>0.0000075</bias_mean>
-                            <bias_stddev>0.0000008</bias_stddev>
-                        </noise>
-                    </z>
-                </angular_velocity>
-                <linear_acceleration>
-                    <x>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>1.7e-2</stddev>
-                            <bias_mean>0.1</bias_mean>
-                            <bias_stddev>0.001</bias_stddev>
-                        </noise>
-                    </x>
-                    <y>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>1.7e-2</stddev>
-                            <bias_mean>0.1</bias_mean>
-                            <bias_stddev>0.001</bias_stddev>
-                        </noise>
-                    </y>
-                    <z>
-                        <noise type="gaussian">
-                            <mean>0.0</mean>
-                            <stddev>1.7e-2</stddev>
-                            <bias_mean>0.1</bias_mean>
-                            <bias_stddev>0.001</bias_stddev>
-                        </noise>
-                    </z>
-                </linear_acceleration>
-            </imu>
-            <topic>gripper_camera/imu/data</topic>
-            <gz_frame_id>gripper_camera_gyro_optical_frame</gz_frame_id>
-        </sensor>
+        <!-- The IMU sensor was removed: nothing subscribes to it, and the
+             hardware driver runs with enable_gyro/enable_accel false. -->
     </gazebo>
 
 </robot>

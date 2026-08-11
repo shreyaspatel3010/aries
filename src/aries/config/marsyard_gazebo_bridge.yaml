@@ -91,11 +91,8 @@
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
-- ros_topic_name: "/gripper_camera/imu/data"
-  gz_topic_name:  "/gripper_camera/imu/data"
-  ros_type_name:  "sensor_msgs/msg/Imu"
-  gz_type_name:   "gz.msgs.IMU"
-  direction:      GZ_TO_ROS
+# No camera IMU bridge: the D435i IMU sensors were removed from the URDFs and
+# the hardware driver runs with enable_gyro/enable_accel false.
 
 
 

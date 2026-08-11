@@ -13,7 +13,7 @@ aries/
 ├── assets/                Source art, terrain sources, and mesh alternatives
 ├── docs/                  Operator and subsystem guides, demo captures
 ├── firmware/              Microcontroller sketches (not colcon packages)
-├── scripts/vision/        Vision environment and model utilities
+├── scripts/               Vision environment/model utilities, teleop measurement
 ├── src/                   First-party ROS 2 packages
 │   ├── aries/              Robot description, worlds, Gazebo launch
 │   ├── aries_bringup/      Recommended launch wrappers and hardware checker
@@ -87,6 +87,43 @@ source install/setup.bash
 ```
 
 Use your installed ROS distro in place of `jazzy` if needed.
+
+## Octomap Collision Checking
+
+**The Octomap is visualisation only by default.** `octomap_collision_checking`
+defaults to `false`, so the gripper depth camera still builds the Octomap and
+RViz still draws it, but MoveIt never collision-checks against it. Stated
+plainly: the arm will **not** avoid an obstacle that exists only in the
+Octomap. What still protects it is self-collision against the robot model,
+explicit collision objects such as the detected-probe mesh, and each task's own
+height and reach guards.
+
+`octomap_scene_setup.py` applies this once at startup by writing both halves of
+the allowance — the ACM **default** entry for `<octomap>`, which covers objects
+and attached bodies that appear later, and its explicit row against every robot
+link, because an explicit pair entry beats the default. The same one-shot also
+clears voxels inserted before TF and the self-filter were ready, which is what
+otherwise puts the wheels-on-mapped-floor start state in collision.
+
+Turn real avoidance on with:
+
+```bash
+# Simulation / any move_group launch
+ros2 launch aries_moveit move_group.launch.py octomap_collision_checking:=true
+
+# Arm + gripper hardware
+ros2 launch aries_moveit aries_hardware.launch.py octomap_collision_checking:=true
+```
+
+The `aries_bringup` wrappers and `aries my_robot.launch.py` do not forward this
+argument, so set it on the `aries_moveit` launch directly.
+
+Both manipulation tasks carry a matching `octomap_collision_checking` flag in
+their params file that must be kept equal to the launch argument. While it is
+`false`, their per-task octomap switches
+(`octomap_disable_after_grasp_confirmed`, `octomap_disable_during_scoop`) have
+nothing left to turn off, and neither task turns checking back on at the end of
+a sequence — the setting is stack-wide and not a task's to restore.
 
 ## Autonomous Manipulation
 
@@ -171,8 +208,12 @@ position and MoveIt's self-filter blanks the near field inside the jaws.
 
 Note that `octomap_disable_during_scoop` defaults to **true**. The octomap
 models the ground the scoop exists to dig into, so a collision-free path into
-it cannot exist; while suppressed, the arm will not avoid obstacles that exist
-only in the octomap. See the package README for the safeguards that replace it.
+it cannot exist. With the stack-wide default of
+`octomap_collision_checking:=false` this per-scoop switch is already redundant
+and its post-scoop restore is a deliberate no-op; it matters only when you
+launch with checking on. Either way the arm does not avoid obstacles that exist
+only in the octomap during a scoop — see the package README for the safeguards
+that replace it.
 
 ## Firmware
 
@@ -241,6 +282,13 @@ ros2 launch aries_bringup full_hardware.launch.py \
 `rover_hardware_protocol:=auto` uses real ODrive/CAN when `can0` exists and
 falls back to `mock_rover_drive` when rover hardware is unavailable.
 This top-level launch runs rover CAN setup automatically by default.
+
+Only one publisher may own the wheel joint states. `full_hardware.launch.py`
+defaults `use_static_wheel_joint_publisher` to `false` because the rover's
+encoder-backed publisher is running; the arm-only
+`aries_hardware.launch.py` defaults its `use_wheel_joint_publisher` to `true`
+so the wheels still have a pose when no rover stack is up. Set them the other
+way only if you swap which side owns the joints.
 
 The physical ODrive bridge starts disarmed. After the hardware check passes and
 the rover is clear, enable it explicitly:
@@ -351,7 +399,7 @@ The arm/gripper joystick config is:
 src/aries_moveit/moveit_config/config/gamepad.yaml
 ```
 
-Xbox-style `/joy` mapping:
+Canonical Xbox-style `/joy` mapping:
 
 - A: button 0
 - B: button 1
@@ -362,27 +410,46 @@ Xbox-style `/joy` mapping:
 - BACK: button 6
 - START: button 7
 
+Those numbers hold regardless of which driver is running. `joy_driver` defaults
+to `game_controller_node` (SDL ordering, where LB/RB are buttons 9/10 and the
+D-pad is buttons 11-14), and `joy_layout_normalizer` republishes `/joy/raw` on
+`/joy` in the canonical layout above. It also normalizes the analog triggers to
+`0.0` released and `1.0` fully pressed, which the drivers otherwise disagree
+about. Pick the conversion with `joy_layout:=`, which accepts `auto` (default),
+`dongle`, `bluetooth`, `game_controller`, or `passthrough`.
+
 Current operating mapping:
 
 - Hold LB to drive the rover base.
 - Left stick vertical drives rover forward/back.
 - Left stick horizontal turns the rover.
-- Hold RB to enable arm/gripper joystick output.
-- Default `servo` mode uses the old smooth Cartesian/Twist joystick movement.
-- Press RB to toggle arm mode between Cartesian/Twist and Chain/JointJog.
-- Servo output is checked by MoveIt Servo and `servo_collision_guard` before it
-  reaches the arm controller.
-- Release RB to stop arm joystick commands.
+- Hold RB for arm Cartesian movement. RB is also the arm/gripper enable.
+- Hold RT for direct joint jog. RT is also the arm/gripper enable.
+- RB and RT are independent holds, **not** a toggle. Holding both gives
+  Cartesian — RB wins, so brushing the trigger mid-move cannot silently change
+  what the sticks do. Release both to stop the arm.
 - Hold X to manually open the gripper; release to hold that angle.
 - Hold B to manually close the gripper; release to hold that angle.
 - Press A to toggle full open/close.
+- Hold RB + Y for physical hand guiding (ZeroTorque) on the real arm.
+- Press LB + Y to re-initialise the ODrives: `clear_errors` on all six axes,
+  then re-arm `CLOSED_LOOP_CONTROL`. Edge-triggered, so holding the pair fires
+  once.
+- Press Y on its own for sound.
 - Release LB to stop rover commands.
+
+Y is shared three ways and disambiguated by which shoulder button is held:
+bare Y is sound, LB+Y is the rover's ODrive recovery, RB+Y is arm hand guiding.
 
 LB is reserved for the rover. When LB rover drive is active, arm and gripper
 joystick output is blocked so the same controller does not command both systems.
 
 There is no timed 180-degree turn trigger. BACK, START, and the D-pad are not
 used for an automatic 180-degree rover command.
+
+`arm_toggle_mode: false` in `gamepad.yaml` is the legacy escape hatch: set it
+true to restore the old single-button behaviour where RB alone gates the arm
+and toggles Cartesian/joint, with RT ignored.
 
 ## MoveIt And RViz
 
@@ -393,15 +460,44 @@ When using a MoveIt-enabled launch with RViz:
 3. Set a goal with the interactive marker or joint targets.
 4. Click `Plan`, then `Execute`.
 
-The default joystick arm mode uses the old continuous MoveIt Servo Cartesian
-teleop path for smooth XYZ/rotation movement. Servo commands pass through
-MoveIt Servo collision checking and `servo_collision_guard` before reaching
-`rebel_arm_trajectory_controller`.
+The default joystick arm mode (`joystick_control_mode:=servo`) is
+`rebel_servo_teleop_gamepad`, which is the primary way the arm is driven. It
+solves the Cartesian command itself with a damped-least-squares Jacobian and
+publishes joint trajectories straight to the controller:
 
-For RViz planning/execution, release LB and RB so the joystick is not actively
-sending arm or rover commands.
+```text
+/joy -> rebel_servo_teleop_gamepad (DLS IK + collision guard) -> rebel_arm_trajectory_controller
+```
 
-To use the newer planned MoveGroup joystick backend instead:
+It does not go through MoveIt Servo. `servo_node` and `servo_collision_guard`
+are still launched and still serve the keyboard teleop
+(`rebel_servo_teleop_keyboard`), whose path is:
+
+```text
+MoveIt Servo -> /servo_guard/input_joint_trajectory -> servo_collision_guard -> rebel_arm_trajectory_controller
+```
+
+Both guards check each commanded arm trajectory against the MoveIt
+self-collision model for `arm_with_gripper` — the arm chain **and** the gripper,
+because MoveIt only reports a contact when at least one of the two links is
+active in the requested group, and the fingers are not in `igus_rebel_arm`.
+Commands that enter self-collision or move deeper inside the safety margin are
+blocked and replaced with a hold command. When the arm is already touching in
+the model, a slow command is allowed only if its preview measurably reduces
+penetration, so a genuine escape stays available but tangential motion cannot
+scrape along the rover.
+
+Damping is ramped in only as the arm approaches a singularity
+(`dls_sigma_threshold`), not applied at every pose. A constant lambda attenuates
+each singular direction unevenly, which made a pure "straight up" push also
+drift sideways; above the threshold the solve is undamped and tracks the
+command exactly.
+
+For RViz planning/execution, release LB, RB, and RT so the joystick is not
+actively sending arm or rover commands. The teleop node deliberately goes
+silent shortly after release so RViz and MoveIt can drive the same controller.
+
+To use the planned MoveGroup joystick backend instead:
 
 ```bash
 ros2 launch aries_bringup igus_rebel_hardware.launch.py \
@@ -409,16 +505,36 @@ ros2 launch aries_bringup igus_rebel_hardware.launch.py \
   joystick_control_mode:=move_group
 ```
 
-In default Servo mode, joystick trajectories pass through a collision guard
-before reaching the arm controller:
+### Teleop Tuning
 
-```text
-MoveIt Servo -> /servo_guard/input_joint_trajectory -> servo_collision_guard -> rebel_arm_trajectory_controller
+Every speed and motion value is owned by
+`src/aries_moveit/moveit_config/config/teleop_speeds.yaml`, which is loaded
+after `gamepad.yaml` and overrides it. Retune there — editing the numbers in
+`gamepad.yaml` has no effect. What `gamepad.yaml` still owns is the button/axis
+mapping, topic names, joint limits, and frame names.
+
+`linear_scale` and `angular_scale` set the Cartesian speed and therefore the
+release overshoot; `max_joint_velocity` is only a ceiling and is rarely reached.
+When the stick is released the arm keeps travelling for roughly 0.25 s no matter
+what — transport delay plus the ReBeL's own firmware deceleration, neither
+reachable from ROS — so overshoot is release speed times that time, and the only
+lever is releasing at a lower speed. Do **not** raise the trajectory controller
+`p` gain against it: measured on hardware, `p=3.0` was worse than `p=1.0`
+(5.78 deg vs 3.15 deg overshoot), because more gain against ~75 ms of dead time
+simply drives the loop under-damped. Several `teleop_speeds.yaml` keys are
+marked dead in the file — they are read by no node and are kept only so the two
+config files stay aligned.
+
+Measure rather than guess with:
+
+```bash
+python3 scripts/measure_teleop_tracking.py
 ```
 
-The guard checks each commanded arm trajectory against the MoveIt self-collision
-model for `arm_with_gripper`. Commands that enter self-collision or move deeper
-inside the safety margin are blocked and replaced with a hold command.
+It records `/joy`, the commanded joint trajectory, and `/joint_states`, then
+reports tracking lag and per-release overshoot on Ctrl-C. It is a workspace
+script rather than an installed entry point, so run it by path. It publishes
+nothing, so it cannot move the arm.
 
 ## Hardware Checker
 
@@ -545,14 +661,19 @@ ros2 launch aries_bringup rover_drive_auto.launch.py \
   use_joy_node:=true
 ```
 
-If the default Servo joystick stops before an obstacle or self-collision, check:
+If the joystick arm stops before an obstacle or self-collision, check:
 
 ```bash
 ros2 topic echo /arm_joystick/status
-ros2 topic echo /servo_node/status
 ```
 
-`/arm_joystick/status` reports the reason a joystick command was blocked.
+`/arm_joystick/status` reports the reason a joystick command was blocked, and it
+is the right topic for the default gamepad path. `/servo_node/status` only
+describes the MoveIt Servo chain, which the gamepad does not use — check it when
+debugging the keyboard teleop.
+
+Remember that an Octomap obstacle is not a reason for the arm to stop by
+default; see [Octomap Collision Checking](#octomap-collision-checking).
 
 ## Development Notes
 
@@ -575,6 +696,24 @@ The suites cover the pure-NumPy libraries that carry the manipulation geometry:
 the four-bar jaw calibration, quaternion/rotation helpers, depth
 back-projection, the point-to-box probe fit, and the terrain height map, scoop
 waypoints, and deposit poses.
+
+### Robot Model Notes
+
+- Arm joint limits are the REBEL-6DOF-03 factory software limits (179, 80/140,
+  80/140, 179, 95, 179 degrees). They are stated in three places — the URDF,
+  `moveit_config/config/joint_limits.yaml`, and `gamepad.yaml` — and must be
+  kept in sync.
+- `base_link_height` in `common_properties.xacro` is derived from
+  `wheel_radius` rather than hard-coded, so `base_footprint` sits exactly on
+  the wheel contact plane. The old hard-coded 0.165 left the wheels 41 mm below
+  it, and everything treating that frame as ground (EKF,
+  `odom -> base_footprint`, nav ground filtering, LiDAR height) inherited the
+  error.
+- Arm visuals are `.glb`, and the gripper carries the near plates and pivot
+  pins of the double-plate four-bar as visual-only geometry. Superseded meshes
+  are archived under `src/aries/meshes/unused/` rather than deleted.
+- `finger_type` must match the jaw the task expects; the four-bar contact point
+  differs by up to 23 mm between the three fingertips.
 
 Direct MoveIt launch files still live under:
 

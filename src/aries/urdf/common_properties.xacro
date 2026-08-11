@@ -37,7 +37,7 @@
          automatically enabling the expensive Gazebo sensors. -->
   <xacro:property name="enable_lidar_gazebo" value="false"/>
   <!-- Enable D435i -->
-  <xacro:property name="enable_D435i" value="false"/>
+  <xacro:property name="enable_D435i" value="true"/>
   <!-- Enable Gazebo extras used by the full robot description -->
   <xacro:property name="enable_full_robot_gazebo_extras" value="true"/>
 </robot>

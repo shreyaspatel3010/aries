@@ -16,11 +16,6 @@
     <!-- Mount Position Offsets -->
     <xacro:property name="d435i_cam_depth_py" value="0.0175"/>
     <xacro:property name="d435i_cam_depth_pz" value="0.0125"/>
-    
-    <!-- IMU Position Offset -->
-    <xacro:property name="d435i_imu_offset_x" value="-0.00174"/>
-    <xacro:property name="d435i_imu_offset_y" value="0.00552"/>
-    <xacro:property name="d435i_imu_offset_z" value="0.0176"/>
 
     <!-- Material definitions -->
     <material name="camera_aluminum">
@@ -55,10 +50,17 @@
                 <box size="0.0252 0.090 0.025"/>
             </geometry>
         </collision>
+        <!-- Uniform box of the collision dimensions (25.2 x 90 x 25 mm) at the
+             datasheet mass of the D435i. The previous 0.564 kg / 1e-3-scaled
+             tensor was neither the real camera nor consistent with the
+             identical gripper camera; both now derive from m/12*(a^2+b^2).
+             The COM sits at the collision box centroid, not at the link origin
+             (which is the bottom screw mount, on the front face). -->
         <inertial>
-            <mass value="0.564"/>
-            <origin xyz="0 0 0"/>
-            <inertia ixx="0.003881243" ixy="0.0" ixz="0.0" iyy="0.000498940" iyz="0.0" izz="0.003879257"/>
+            <mass value="0.072"/>
+            <origin xyz="-0.0126 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.00005235" ixy="0.0" ixz="0.0"
+                     iyy="0.00000751" iyz="0.0" izz="0.00005236"/>
         </inertial>
     </link>
 
@@ -121,34 +123,9 @@
     </joint>
     <link name="camera_color_optical_frame"/>
 
-    <!-- Camera IMU sensor frames (accelerometer and gyroscope) -->
-    <joint name="camera_accel_joint" type="fixed">
-        <origin xyz="-0.00174 0.00552 0.0176" rpy="0 0 0"/>
-        <parent link="camera_link"/>
-        <child link="camera_accel_frame"/>
-    </joint>
-    <link name="camera_accel_frame"/>
-    
-    <joint name="camera_accel_optical_joint" type="fixed">
-        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
-        <parent link="camera_accel_frame"/>
-        <child link="camera_accel_optical_frame"/>
-    </joint>
-    <link name="camera_accel_optical_frame"/>
-    
-    <joint name="camera_gyro_joint" type="fixed">
-        <origin xyz="-0.00174 0.00552 0.0176" rpy="0 0 0"/>
-        <parent link="camera_link"/>
-        <child link="camera_gyro_frame"/>
-    </joint>
-    <link name="camera_gyro_frame"/>
-    
-    <joint name="camera_gyro_optical_joint" type="fixed">
-        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
-        <parent link="camera_gyro_frame"/>
-        <child link="camera_gyro_optical_frame"/>
-    </joint>
-    <link name="camera_gyro_optical_frame"/>
+    <!-- The accel/gyro frames were removed with the IMU sensor: the D435i IMU is
+         not used anywhere in the stack, and the hardware driver is launched with
+         enable_gyro/enable_accel false, so it publishes no IMU frames either. -->
 
     <!-- Gazebo configuration for Ionic/ROS2 Jazzy -->
     <xacro:if value="${enable_D435i}">
@@ -163,7 +140,19 @@
             
             <!-- Color Camera Sensor - 15 Hz: nothing on the rover consumes this
                  stream faster, and every render sensor competes for GPU time with
-                 the gripper camera used for grasping. -->
+                 the gripper camera used for grasping.
+
+                 FOV/resolution are deliberately IDENTICAL to the depth sensor
+                 below. The RViz DepthCloud display (urdf_config.rviz) paints this
+                 image onto the depth image pixel-for-pixel, which is only valid
+                 when both share intrinsics; the depth sensor used to be 1.487 rad
+                 against this 1.211 rad, which mis-coloured the cloud by ~23 cm at
+                 the image edge at 1 m.
+
+                 gz_frame_id is depth_optical_frame, not color_optical_frame:
+                 Gazebo renders both sensors from camera_link, so declaring the
+                 color frame would apply a 15 mm offset that does not exist in
+                 simulation. Same reasoning as gripper_camera.xacro. -->
             <sensor name="camera_color" type="camera">
                 <camera name="camera">
                     <horizontal_fov>1.211</horizontal_fov>
@@ -186,7 +175,7 @@
                 <update_rate>15</update_rate>
                 <visualize>false</visualize>
                 <topic>camera/color/image_raw</topic>
-                <gz_frame_id>camera_color_optical_frame</gz_frame_id>
+                <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
             </sensor>
 
             <!-- The infra1/infra2 render sensors were removed from simulation:
@@ -194,10 +183,11 @@
                  significant GPU time. The IR frames/links are kept for TF parity
                  with the hardware driver. -->
 
-            <!-- Depth Camera Sensor - 15 Hz (see color-sensor comment). -->
+            <!-- Depth Camera Sensor - 15 Hz, same intrinsics as the color sensor
+                 (see color-sensor comment for why they must match). -->
             <sensor name="camera_depth" type="depth_camera">
                 <camera name="camera">
-                    <horizontal_fov>1.487</horizontal_fov>
+                    <horizontal_fov>1.211</horizontal_fov>
                     <image>
                         <width>640</width>
                         <height>480</height>
@@ -207,10 +197,13 @@
                         <near>0.1</near>
                         <far>100</far>
                     </clip>
+                    <!-- 3 mm, the D435i datasheet figure and what the gripper
+                         camera uses. The old 0.100 m put +/-10 cm of noise on
+                         every pixel, which swamped the measurement entirely. -->
                     <noise>
                         <type>gaussian</type>
                         <mean>0.0</mean>
-                        <stddev>0.100</stddev>
+                        <stddev>0.003</stddev>
                     </noise>
                 </camera>
                 <always_on>1</always_on>
@@ -220,67 +213,9 @@
                 <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
             </sensor>
 
-            <!-- IMU Sensor -->
-            <sensor name="camera_imu" type="imu">
-                <always_on>true</always_on>
-                <update_rate>400</update_rate>
-                <imu>
-                    <angular_velocity>
-                        <x>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>2e-4</stddev>
-                                <bias_mean>0.0000075</bias_mean>
-                                <bias_stddev>0.0000008</bias_stddev>
-                            </noise>
-                        </x>
-                        <y>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>2e-4</stddev>
-                                <bias_mean>0.0000075</bias_mean>
-                                <bias_stddev>0.0000008</bias_stddev>
-                            </noise>
-                        </y>
-                        <z>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>2e-4</stddev>
-                                <bias_mean>0.0000075</bias_mean>
-                                <bias_stddev>0.0000008</bias_stddev>
-                            </noise>
-                        </z>
-                    </angular_velocity>
-                    <linear_acceleration>
-                        <x>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>1.7e-2</stddev>
-                                <bias_mean>0.1</bias_mean>
-                                <bias_stddev>0.001</bias_stddev>
-                            </noise>
-                        </x>
-                        <y>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>1.7e-2</stddev>
-                                <bias_mean>0.1</bias_mean>
-                                <bias_stddev>0.001</bias_stddev>
-                            </noise>
-                        </y>
-                        <z>
-                            <noise type="gaussian">
-                                <mean>0.0</mean>
-                                <stddev>1.7e-2</stddev>
-                                <bias_mean>0.1</bias_mean>
-                                <bias_stddev>0.001</bias_stddev>
-                            </noise>
-                        </z>
-                    </linear_acceleration>
-                </imu>
-                <topic>camera/imu/data</topic>
-                <gz_frame_id>camera_gyro_optical_frame</gz_frame_id>
-            </sensor>
+            <!-- The IMU sensor was removed: nothing subscribes to it, it was
+                 bridged to ROS in no configuration, and the camera IMU is unused
+                 stack-wide (the rover has its own IMU). -->
         </gazebo>
     </xacro:if>
 </robot>
