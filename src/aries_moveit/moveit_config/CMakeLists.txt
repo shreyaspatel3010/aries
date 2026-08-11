@@ -64,7 +64,6 @@ install(PROGRAMS
   scripts/publish_wheel_joints.py
   scripts/rebel_movegroup_joystick.py
   scripts/gripper_arc_visualizer.py
-  scripts/octomap_scene_setup.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -55,6 +55,15 @@
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
+# Gazebo renders depth and color with identical intrinsics and optical frames,
+# so the raw depth is already registered. Mirror the RealSense driver's aligned
+# topic so the colored DepthCloud uses the same interface in sim and hardware.
+- ros_topic_name: "/camera/aligned_depth_to_color/image_raw"
+  gz_topic_name:  "/camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
 # The /camera/.../points and /camera/infra* bridges were removed: the infra
 # render sensors no longer exist in simulation and nothing consumed the point
 # cloud. Every bridged image stream costs serialization CPU on both sides.
@@ -251,5 +260,3 @@
   ros_type_name:  "std_msgs/msg/Float64"
   gz_type_name:   "gz.msgs.Double"
   direction:      ROS_TO_GZ
-
-

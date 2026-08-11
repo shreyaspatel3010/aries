@@ -7,14 +7,9 @@ in front of it), and every downstream stage then reports a held object. The
 lift check's "I no longer see the probe on the floor" is *absence* of
 evidence, which is not evidence of a grasp.
 
-This module turns the two sensors that CAN see the jaw volume into a verdict:
-
-* the held-probe box fit (``probe_alignment``) run against the wrist camera —
-  a fit that lands on the jaw axis is direct evidence of a held probe;
-* the self-filtered depth cloud that feeds MoveIt's octomap — the robot's own
-  links are already removed from it, so any point left inside the jaw volume
-  is a non-robot object, and an otherwise healthy cloud with *nothing* there
-  is positive evidence the jaws are empty.
+The held-probe box fit (``probe_alignment``) runs against the wrist camera; a
+fit that lands on the jaw axis is direct evidence of a held probe. The helper
+geometry below remains useful for back-projecting and evaluating depth samples.
 
 Verdicts are pooled over a short window rather than trusted per frame: a
 single occluded or TF-lagged frame must not condemn a good grasp, and one
@@ -45,12 +40,7 @@ def backproject_depth(
 ) -> np.ndarray:
     """Back-project a depth image to ``(N, 3)`` XYZ in the optical frame.
 
-    Used for MoveIt's self-filtered depth image, which is what a
-    DepthImageOctomapUpdater publishes in place of the filtered cloud a
-    PointCloudOctomapUpdater would. Zero, negative and non-finite pixels carry
-    no range and are dropped — for the filtered image that includes every pixel
-    the robot self-filter removed, which is precisely the point: what survives
-    is non-robot.
+    Zero, negative and non-finite pixels carry no range and are dropped.
 
     ``stride`` subsamples both axes. Pixel coordinates are taken before
     subsampling, so a strided call returns the same 3D points as a full-rate one

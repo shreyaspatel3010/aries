@@ -91,27 +91,14 @@ The default model is installed as `models/grasp.pt`: a YOLO26l segmentation
 model trained for the `probe` class. Override `model_path` when testing other
 weights.
 
-### The octomap is visualisation only by default
+### Depth visualisation
 
-`move_group.launch.py` defaults to `octomap_collision_checking:=false`, and
-`octomap_scene_setup.py` implements it at startup by allowing `<octomap>`
-against every element in the ACM plus setting its **default** entry (needed for
-objects and attached bodies that appear later; an explicit pair entry beats the
-default, so both halves are written). The depth camera still feeds the octomap
-and RViz still draws it — MoveIt simply never collides against it.
-
-**The trade-off, stated plainly:** the arm will not avoid an obstacle that
-exists only in the octomap. What is left is self-collision against the robot
-model, explicit collision objects such as the detected-probe mesh, and the
-task's own height/reach guards. Launch with `octomap_collision_checking:=true`
-to get avoidance back, in which case the per-link allowances in
-`octomap_scene_setup.py` are what keep the descent and the wheels-on-floor start
-state plannable.
-
-`vision_grasp_params.yaml` carries a matching `octomap_collision_checking` flag.
-While it is false, `octomap_disable_after_grasp_confirmed` has nothing left to
-turn off and a grasp-sequence reset will **not** turn checking back on — the
-setting is stack-wide, not this task's to restore.
+MoveIt no longer builds an occupancy map. RViz shows separate colored
+`rover_DepthCloud` and `gripper_DepthCloud` displays using each camera's own
+aligned depth, RGB image, CameraInfo, optical frame, and TF. No `PointCloud2`
+topic is produced. Planning safety comes from robot self-collision, explicit
+collision objects such as the detected-probe mesh, and the task's height/reach
+guards.
 
 ## Perception timing
 
@@ -176,8 +163,7 @@ frames, and deviations beyond the `attached_probe_realign_fast_*` thresholds
 bypass the republish rate limit so a slip inside the gripper updates the
 collision world immediately. Each commit also refreshes the base-box drop
 facts (probe world yaw, centre and long axis in the link frame) used for drop
-alignment and release verification, and clears the octomap so voxels painted
-by the probe at its previous pose cannot poison the next plan. This corrects
+alignment and release verification. This corrects
 an off-centre or rotated grasp within about half a second of closing and keeps
 tracking through transport and the terminal holding states.
 

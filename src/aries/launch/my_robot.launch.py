@@ -237,7 +237,7 @@ def generate_launch_description():
     # Rover wheel/rocker joint states come from the Gazebo JointStatePublisher
     # plugin via the gz bridge (real physics values, sim-time stamps). Do not
     # run publish_wheel_joints.py here: its zero-value, potentially wall-clock
-    # stamped messages corrupt TF and break the MoveIt octomap self-filter.
+    # stamped messages corrupt TF for the moving wrist camera.
 
     # MoveIt move_group for arm control
     move_group_launch = IncludeLaunchDescription(

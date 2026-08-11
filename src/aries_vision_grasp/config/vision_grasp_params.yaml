@@ -182,16 +182,6 @@ vision_grasp_node:
     hold_after_close_no_motion: false
     post_grasp_lift_then_pick_home: true
 
-    # Clear the MoveIt octomap once the gripper has closed (and again right
-    # before the pick_home transport plan). The wrist depth camera paints the
-    # probe — and, when TF lags the rendered depth image, the moving gripper
-    # itself — into the octomap during the final approach; those voxels sit
-    # inside the closed gripper links and abort every post-grasp plan with
-    # START_STATE_IN_COLLISION. The attached probe mesh and the node's own
-    # collision objects keep post-grasp planning safe after the clear.
-    clear_octomap_after_grasp: true
-    clear_octomap_service_name: /clear_octomap
-
     # Attached-probe pose sync. Place the probe collision mesh from reality
     # instead of assumptions: link orientation from the measured TF at close
     # time (not the commanded grasp orientation), and the probe's centre from
@@ -216,8 +206,7 @@ vision_grasp_node:
     # a probe shifting inside the gripper updates the collision world (and
     # the base-box drop geometry) immediately. Small corrections need
     # confirm_samples agreeing frames; deviations beyond the fast thresholds
-    # skip the republish rate limit. After a commit the octomap is cleared so
-    # voxels painted by the probe at its old pose cannot poison planning.
+    # skip the republish rate limit.
     # The attached probe mesh is placed from the repeatable coaxial grip (jaws on
     # the Ø30 cylindrical body, tool axis down the shaft) and then left alone.
     # Perception-driven placement + live realignment was tried and removed: the
@@ -267,8 +256,6 @@ vision_grasp_node:
     attached_probe_realign_max_lateral_correction_m: 0.020
     attached_probe_realign_max_axial_correction_m: 0.100
     attached_probe_realign_min_republish_sec: 0.2
-    attached_probe_realign_clear_octomap: true
-    attached_probe_realign_octomap_min_interval_sec: 2.0
     attached_probe_realign_stale_warn_sec: 4.0
     # Re-acquisition: tracking gates points against the attached pose, so a
     # grossly wrong attach (e.g. flipped mesh) rejects every observation and
@@ -285,40 +272,20 @@ vision_grasp_node:
     # An empty close is silent. The controller reaches the deliberately
     # over-closed target because nothing stopped it, the probe is no longer
     # detectable at its old floor pose (the rover is now parked over it), and
-    # every later stage reports a held object. Two sensors can see the jaw
-    # volume and are pooled into one verdict:
-    #   * the ProbeRealign box fit above -- a fit that lands on the jaw axis
-    #     is direct evidence of a held probe;
-    #   * MoveIt's self-filtered octomap-input cloud. Robot links are already
-    #     removed from it, so any point left inside the jaw volume is a
-    #     non-robot object, and a healthy cloud with NOTHING there is positive
-    #     evidence the jaws are empty -- which "I no longer see the probe on
-    #     the floor" never was.
+    # every later stage reports a held object. The ProbeRealign box fit above
+    # supplies direct evidence when a fitted probe lands on the jaw axis.
     # The thresholds are deliberately asymmetric: the fingers occlude the held
     # probe constantly, so a minority of solid looks proves it is there, while
     # calling the gripper empty demands a near-unanimous set of clear looks.
     held_probe_verification_enabled: true
-    held_probe_octomap_cloud_topic: /move_group/gripper_camera_filtered_cloud
     # Jaw volume: a cylinder about the tool approach axis through the four-bar
     # contact point, spanning from just behind the jaws to past the fingertips
     # where a coaxially gripped probe protrudes.
-    # NOTE: extending past the fingertips does NOT escape the self-filter. The
-    # padding is not a 60 mm shell in space -- mesh_filter displaces each model
-    # vertex along its normal by a quadratic in depth and then drops everything
-    # from that inflated surface back to shadow_threshold (0.20 m), so on this
-    # gripper-mounted camera NOTHING nearer than ~0.35 m survives while the jaw
-    # volume spans 0.16-0.36 m. Measured on the running sim: 6376 raw pixels
-    # land in the jaw volume and all 6376 are filtered out. The cloud therefore
-    # votes UNKNOWN there, never EMPTY (see self_filter_blinds_jaw_volume); a
-    # HELD vote still comes from the ProbeRealign fit, which reads raw depth.
+    # NOTE: the fingers occlude much of this volume at close range, so a HELD
+    # vote normally comes from the ProbeRealign fit, which reads raw depth.
     held_probe_region_radius_m: 0.055
     held_probe_region_along_min_m: -0.030
     held_probe_region_along_max_m: 0.170
-    held_probe_region_min_points: 25
-    held_probe_region_min_elongation: 3.0
-    held_probe_region_min_extent_m: 0.040
-    held_probe_cloud_min_total_points: 400
-    held_probe_cloud_max_age_sec: 1.5
     held_probe_evidence_window_sec: 8.0
     held_probe_evidence_min_votes: 3
     held_probe_evidence_min_held_votes: 2
@@ -326,22 +293,12 @@ vision_grasp_node:
     held_probe_abort_transport_on_empty: true
 
     # The detected probe published as its own STL mesh in the planning scene.
-    # Until it is grasped the only record of the probe MoveIt has is whatever
-    # the depth camera painted into the octomap: 30 mm voxel cubes that smear
-    # a 30 mm rod into a blocky column, sit in the path of the coaxial
-    # descent, and cannot be told apart from the sand box it is planted in.
     # Publishing the real mesh at the tracked 6D pose gives MoveIt the probe's
-    # actual shape, and the octomap is cleared behind it so the cubes do not
-    # duplicate (and inflate) the object the mesh already describes.
-    # octomap_scene_setup.py allows this object id against the gripper links,
-    # exactly as it already does for <octomap>, so the mesh does not simply
-    # reinstate the blockage the voxels used to cause.
+    # actual shape for explicit collision checking.
     world_probe_object_enabled: true
     world_probe_object_id: detected_probe
     world_probe_object_min_republish_sec: 0.5
     world_probe_object_move_threshold_m: 0.010
-    world_probe_object_clear_octomap: true
-    world_probe_object_octomap_min_interval_sec: 5.0
 
     # Object yaw for a floor-lying probe; top-down approach. A near-vertical
     # probe (e.g. planted in sand) switches to a coaxial grasp of the fat body
@@ -515,44 +472,6 @@ vision_grasp_node:
     # world-vertical segment that planned to only 0.86 and aborted the task
     # with the probe already gripped.
     post_grasp_retrace_extra_rise_m: 0.015
-    # MoveGroup re-validates an EXECUTING trajectory against every planning-scene
-    # update and, with replan off (its default), aborts on the first one that
-    # invalidates it: moveit_error_code=-3
-    # MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE. During held-probe transport
-    # that is near-certain -- the wrist camera repaints the octomap at
-    # sensors_3d.yaml's max_update_rate (5 Hz) while staring at the probe it is
-    # carrying, and the arm sweeping reveals new space every second. The
-    # environment really is dynamic, so replan from the new scene rather than
-    # giving up on the first change.
-    # Retire the octomap once the camera lift check confirms the grasp, and keep
-    # it retired for the rest of the task (only a grasp-sequence reset restores
-    # it). This deliberately does NOT also require a HELD held-probe verdict:
-    # that sensor cannot see the jaw volume (the padded self-filter blanks the
-    # near field), so the extra condition was unsatisfiable and left the octomap
-    # ON, which killed transport with -10 START_STATE_IN_COLLISION on exactly one
-    # contact -- <octomap> vs post_grasp_probe, voxels painted on the carried
-    # probe. From that point everything the octomap describes is described
-    # better elsewhere -- the probe is an attached mesh, the floor is covered by
-    # the height guards, the rover is in the robot model -- and all it still
-    # does is churn: the wrist camera repaints it at 5 Hz while staring at the
-    # probe it is carrying, and every update can abort the executing transport
-    # with -3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE.
-    #
-    # This is a planning-scene switch (the ACM default entry for <octomap>), so
-    # the sensor pipeline keeps running and the setting reverts on reset.
-    # TRADE-OFF: while off, the arm will NOT avoid obstacles that exist only in
-    # the octomap. Set false to keep full checking through transport.
-    octomap_disable_after_grasp_confirmed: true
-
-    # Must MATCH move_group.launch.py's octomap_collision_checking argument.
-    # false (the launch default) means the octomap is visualisation only for the
-    # whole stack -- it is still built from the depth camera and still drawn in
-    # RViz, but MoveIt never collision-checks against it. This node then leaves
-    # it alone: octomap_disable_after_grasp_confirmed has nothing left to turn
-    # off, and a grasp-sequence reset does not turn it back on, because the
-    # setting is stack-wide and not this task's to restore.
-    octomap_collision_checking: false
-
     movegroup_replan_enabled: true
     movegroup_replan_attempts: 5
     movegroup_replan_delay_sec: 0.5

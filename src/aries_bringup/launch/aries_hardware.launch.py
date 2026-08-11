@@ -155,15 +155,15 @@ def launch_setup(context, *args, **kwargs):
         actions.append(_realsense_driver("gripper_camera", gripper_camera_serial))
 
     if enable_front_camera:
-        # Front/rover camera. Publishes /camera/* to match d435i.xacro and the
-        # RViz displays; nothing else on the robot consumes it today.
+        # Front/rover camera supplies its own independent colored DepthCloud.
         actions.append(_realsense_driver("camera", front_camera_serial))
 
     if not enable_depth_sensor:
         actions.append(
             LogInfo(msg=(
-                "[aries_hardware] No gripper RealSense{}. MoveIt's Octomap stays empty "
-                "and the vision grasp pipeline has no input; everything else comes up "
+                "[aries_hardware] No gripper RealSense{}. The gripper DepthCloud and "
+                "vision grasp pipeline have no wrist input; "
+                "everything else comes up "
                 "normally.".format(
                     " detected on USB" if depth_sensor_mode == "auto" else " (disabled)"
                 )
@@ -215,7 +215,6 @@ def launch_setup(context, *args, **kwargs):
                 "serial_port": LaunchConfiguration("serial_port"),
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
-                "enable_depth_sensor": "true" if enable_depth_sensor else "false",
                 "use_wheel_joint_publisher": LaunchConfiguration(
                     "use_wheel_joint_publisher"
                 ),
@@ -273,7 +272,7 @@ def generate_launch_description():
             "enable_depth_sensor",
             default_value="auto",
             choices=["auto", "true", "false"],
-            description="Auto-detect, force-enable, or disable the gripper RealSense and MoveIt Octomap input",
+            description="Auto-detect, force-enable, or disable the gripper RealSense used by vision and its DepthCloud",
         ),
         DeclareLaunchArgument(
             "gripper_camera_serial",

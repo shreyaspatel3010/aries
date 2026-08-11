@@ -56,6 +56,13 @@
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
+# Simulation alias matching the hardware RealSense aligned-depth topic.
+- ros_topic_name: "/camera/aligned_depth_to_color/image_raw"
+  gz_topic_name:  "/camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
 # Gripper Camera Topics (D435i on gripper — gripper_camera.xacro)
 - ros_topic_name: "/gripper_camera/color/image_raw"
   gz_topic_name:  "/gripper_camera/color/image_raw"
@@ -239,6 +246,5 @@
   ros_type_name:  "std_msgs/msg/Float64"
   gz_type_name:   "gz.msgs.Double"
   direction:      ROS_TO_GZ
-
 
 

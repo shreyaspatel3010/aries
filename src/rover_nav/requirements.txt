@@ -182,7 +182,6 @@ notify2==0.3
 numpy==1.26.4
 oauthlib==3.2.2
 object-recognition-msgs==2.0.0
-octomap-msgs==2.0.1
 olefile==0.46
 osrf-pycommon==2.1.7
 packaging==24.0

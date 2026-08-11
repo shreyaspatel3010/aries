@@ -34,7 +34,6 @@
     <depend>moveit_ros_planning_interface</depend>
 
     <exec_depend>moveit_ros_move_group</exec_depend>
-    <exec_depend>moveit_ros_perception</exec_depend>
     <exec_depend>moveit_kinematics</exec_depend>
     <exec_depend>moveit_planners</exec_depend>
     <exec_depend>moveit_simple_controller_manager</exec_depend>
@@ -67,7 +66,6 @@
     <exec_depend>launch_param_builder</exec_depend>
     <exec_depend>cv_bridge</exec_depend>
     <exec_depend>python3-numpy</exec_depend>
-    <exec_depend>sensor_msgs_py</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -50,6 +50,12 @@
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
+- ros_topic_name: "/camera/aligned_depth_to_color/image_raw"
+  gz_topic_name: "/camera/depth/image_rect_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
 - ros_topic_name: "/scan"
   gz_topic_name: "/lidar_scan"
   ros_type_name: "sensor_msgs/msg/LaserScan"

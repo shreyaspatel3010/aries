@@ -113,13 +113,6 @@ def generate_launch_description():
         'ompl': ompl_config,
     }
     
-    # Sensor manager config - disable octomap (no depth camera)
-    sensor_manager_yaml = {
-        'moveit_sensor_manager': 'moveit_msgs/MoveItSensorManager',
-        'sensor_manager': '',
-        'octomap_resolution': 0.0,
-    }
-
     joint_limits_yaml = {
         'robot_description_planning': load_yaml(Path(os.path.join(moveit_config_dir, 'joint_limits.yaml')))
     }
@@ -207,7 +200,6 @@ def generate_launch_description():
             kinematics_yaml,
             ompl_planning_yaml,
             moveit_controllers,
-            sensor_manager_yaml,
             joint_limits_yaml,
             {
                 'use_sim_time': False,
@@ -223,8 +215,6 @@ def generate_launch_description():
                 'trajectory_execution.allowed_execution_duration_scaling': 1.2,
                 'trajectory_execution.allowed_goal_duration_margin': 0.5,
                 'trajectory_execution.allowed_start_tolerance': 0.03,
-                # Disable octomap/3D sensor monitor (no depth camera attached)
-                'octomap_resolution': 0.0,
             }
         ],
     )

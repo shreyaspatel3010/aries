@@ -62,11 +62,9 @@ from moveit_msgs.msg import (
     PositionConstraint,
     RobotState,
 )
-from sensor_msgs.msg import CameraInfo, Image, JointState, PointCloud2
-from sensor_msgs_py import point_cloud2
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from std_msgs.msg import ColorRGBA, Float64, Int32
-from std_srvs.srv import Empty as EmptySrv
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 from control_msgs.action import FollowJointTrajectory
@@ -125,9 +123,7 @@ class FrameSnapshot:
 # Gripper links that legitimately touch the probe: the four-bar linkage, both
 # fingertips and the wrist camera. Used both as the attached object's
 # touch_links and as the ACM allowance for the detected-probe mesh in the
-# world, so the mesh does not reinstate the descent blockage the octomap
-# voxels used to cause. Matches GRIPPER_LINKS in
-# aries_moveit/moveit_config/scripts/octomap_scene_setup.py.
+# world, so intentional jaw contact is not rejected as a collision.
 GRIPPER_PROBE_CONTACT_LINKS = (
     'gripper_link',
     'gripper_gear_left_link',
@@ -406,15 +402,6 @@ class VisionGraspNode(Node):
         # git history if it ever needs to be resurrected.)
         self.declare_parameter('post_grasp_lift_then_pick_home', True)
         self.declare_parameter('post_grasp_planning_time_sec', 10.0)
-        # The wrist depth camera paints the probe (and, when TF lags the
-        # rendered depth image, the moving gripper itself) into the octomap
-        # during final approach and close. Those voxels end up inside the
-        # closed gripper links, so every post-grasp plan aborts with
-        # START_STATE_IN_COLLISION. Clearing the octomap once the gripper is
-        # closed unblocks the lift; the attached probe mesh and the node's own
-        # collision objects keep post-grasp planning safe.
-        self.declare_parameter('clear_octomap_after_grasp', True)
-        self.declare_parameter('clear_octomap_service_name', '/clear_octomap')
         # Attached-probe pose sync. Without it the collision mesh assumes the
         # probe's geometric centre sits exactly at the bucket contact point
         # and uses the COMMANDED grasp orientation — an off-centre grasp
@@ -493,8 +480,6 @@ class VisionGraspNode(Node):
         self.declare_parameter('attached_probe_realign_max_lateral_correction_m', 0.020)
         self.declare_parameter('attached_probe_realign_max_axial_correction_m', 0.100)
         self.declare_parameter('attached_probe_realign_min_republish_sec', 0.2)
-        self.declare_parameter('attached_probe_realign_clear_octomap', True)
-        self.declare_parameter('attached_probe_realign_octomap_min_interval_sec', 2.0)
         self.declare_parameter('attached_probe_realign_stale_warn_sec', 4.0)
         # Re-acquisition: tracking gates measurements against the currently
         # attached box pose, so a grossly wrong initial attach (flipped or
@@ -510,49 +495,12 @@ class VisionGraspNode(Node):
         # Held-probe verification. An empty close is otherwise silent: the
         # controller reaches the deliberately over-closed target because
         # nothing stopped it, the probe is no longer visible at its old floor
-        # pose, and every later stage reports a held object. Two sensors can
-        # actually see the jaw volume and are pooled into a verdict here:
-        #   * the ProbeRealign box fit (a fit on the jaw axis == held), and
-        #   * the self-filtered depth cloud that feeds MoveIt's octomap. The
-        #     robot's own links are already removed from that cloud, so a
-        #     healthy cloud with nothing left inside the jaw volume is
-        #     POSITIVE evidence that the jaws are empty -- which "I no longer
-        #     see the probe on the floor" never was.
+        # pose, and every later stage reports a held object. A ProbeRealign box
+        # fit on the jaw axis supplies positive held-object evidence.
         self.declare_parameter('held_probe_verification_enabled', True)
-        self.declare_parameter('held_probe_octomap_cloud_topic',
-                               '/move_group/gripper_camera_filtered_cloud')
-        # The cloud above only exists under a PointCloudOctomapUpdater. This
-        # stack runs a DepthImageOctomapUpdater (sensors_3d.yaml), which honours
-        # filtered_cloud_topic for nothing and instead republishes the
-        # self-filtered depth IMAGE on a fixed name. Setting the cloud topic
-        # there therefore produced a subscription nobody ever published to, so
-        # held-probe verification never received one sample and its verdict was
-        # permanently UNKNOWN — the empty-close net was silently inoperative.
-        # Back-project this image into the same point cache instead; the cloud
-        # subscription stays for stacks that really do publish one.
-        self.declare_parameter('held_probe_filtered_depth_topic', '/filtered_depth')
-        self.declare_parameter('held_probe_filtered_depth_info_topic',
-                               '/gripper_camera/depth/camera_info')
-        # Back-projecting every pixel of a 640x480 frame at the updater's
-        # max_update_rate is wasted work when the jaw volume covers a small part
-        # of the view; 2 keeps ~77k points, far above
-        # held_probe_cloud_min_total_points.
-        self.declare_parameter('held_probe_filtered_depth_stride', 2)
         self.declare_parameter('held_probe_region_radius_m', 0.055)
         self.declare_parameter('held_probe_region_along_min_m', -0.030)
         self.declare_parameter('held_probe_region_along_max_m', 0.170)
-        self.declare_parameter('held_probe_region_min_points', 25)
-        self.declare_parameter('held_probe_region_min_elongation', 3.0)
-        self.declare_parameter('held_probe_region_min_extent_m', 0.040)
-        # Below this the cloud itself is unusable (sensor stalled, everything
-        # self-filtered away), so the frame votes UNKNOWN rather than EMPTY.
-        self.declare_parameter('held_probe_cloud_min_total_points', 400)
-        # How much nearer than the nearest surviving return the jaw volume must
-        # start before the cloud is declared blind there. Small: the comparison
-        # is between a measured cloud boundary and a computed volume, and both
-        # are good to a few mm.
-        self.declare_parameter('held_probe_cloud_near_field_margin_m', 0.010)
-        self.declare_parameter('held_probe_cloud_max_age_sec', 1.5)
         self.declare_parameter('held_probe_evidence_window_sec', 8.0)
         self.declare_parameter('held_probe_evidence_min_votes', 3)
         self.declare_parameter('held_probe_evidence_min_held_votes', 2)
@@ -576,38 +524,15 @@ class VisionGraspNode(Node):
         # Margin above grasp_success_min_lift_m that the retrace must clear
         # before the vertical top-up is skipped entirely.
         self.declare_parameter('post_grasp_retrace_extra_rise_m', 0.015)
-        # MoveGroup aborts an executing trajectory the moment a planning-scene
-        # update invalidates it (-3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE).
-        # The octomap is repainted several times a second by the wrist camera,
-        # so during held-probe transport that is a near-certainty. Replan from
-        # the new scene instead of giving up.
-        # Once the grasp is confirmed by camera + octomap the octomap has no
-        # job left in this task: the probe rides as an attached mesh, the floor
-        # is covered by the height guards, and all the octomap still does is
-        # churn the scene and abort transport plans. Retire it for the rest of
-        # the sequence. NOTE this really does stop the arm avoiding
-        # octomap-only obstacles; set false to keep full checking.
-        self.declare_parameter('octomap_disable_after_grasp_confirmed', True)
-        # Mirrors move_group.launch.py's octomap_collision_checking argument,
-        # whose default is false: the octomap is visualisation only and MoveIt
-        # never collides against it. When that is the case this node must not
-        # switch it back on at the end of a sequence -- the setting is global
-        # and does not belong to the grasp task.
-        self.declare_parameter('octomap_collision_checking', False)
         self.declare_parameter('movegroup_replan_enabled', True)
         self.declare_parameter('movegroup_replan_attempts', 5)
         self.declare_parameter('movegroup_replan_delay_sec', 0.5)
 
         # Detected probe published as its own STL mesh in the planning scene.
-        # Without it the only record of the probe is octomap voxels: 30 mm
-        # cubes that smear a 30 mm rod into a blocky column, sit in the path of
-        # the coaxial descent, and cannot be told apart from the sand box.
         self.declare_parameter('world_probe_object_enabled', True)
         self.declare_parameter('world_probe_object_id', 'detected_probe')
         self.declare_parameter('world_probe_object_min_republish_sec', 0.5)
         self.declare_parameter('world_probe_object_move_threshold_m', 0.010)
-        self.declare_parameter('world_probe_object_clear_octomap', True)
-        self.declare_parameter('world_probe_object_octomap_min_interval_sec', 5.0)
         # Held-probe transport goal validation. At the calibrated pick_home
         # posture the probe hangs directly over the chassis front, so with a
         # long attached probe the goal state itself is in collision and
@@ -1251,8 +1176,6 @@ class VisionGraspNode(Node):
         self.hold_after_close_no_motion = bool(p('hold_after_close_no_motion').value)
         self.post_grasp_lift_then_pick_home = bool(p('post_grasp_lift_then_pick_home').value)
         self.post_grasp_planning_time_sec = max(1.0, float(p('post_grasp_planning_time_sec').value))
-        self.clear_octomap_after_grasp = bool(p('clear_octomap_after_grasp').value)
-        self.clear_octomap_service_name = str(p('clear_octomap_service_name').value)
         self.attach_probe_pose_sync_enabled = bool(p('attach_probe_pose_sync_enabled').value)
         self.attach_probe_max_centre_offset_m = max(0.0, float(p('attach_probe_max_centre_offset_m').value))
         self.attached_probe_fixed_grip_enabled = bool(
@@ -1302,10 +1225,6 @@ class VisionGraspNode(Node):
         )
         self.attached_probe_realign_min_republish_sec = max(
             0.0, float(p('attached_probe_realign_min_republish_sec').value))
-        self.attached_probe_realign_clear_octomap = bool(
-            p('attached_probe_realign_clear_octomap').value)
-        self.attached_probe_realign_octomap_min_interval_sec = max(
-            0.0, float(p('attached_probe_realign_octomap_min_interval_sec').value))
         self.attached_probe_realign_stale_warn_sec = max(
             0.5, float(p('attached_probe_realign_stale_warn_sec').value))
         self.attached_probe_realign_reacquire_after_sec = max(
@@ -1315,28 +1234,11 @@ class VisionGraspNode(Node):
         self.attached_probe_realign_reacquire_confirm_samples = max(
             1, int(p('attached_probe_realign_reacquire_confirm_samples').value))
         self.held_probe_verification_enabled = bool(p('held_probe_verification_enabled').value)
-        self.held_probe_octomap_cloud_topic = str(p('held_probe_octomap_cloud_topic').value)
         self.held_probe_region_radius_m = max(0.005, float(p('held_probe_region_radius_m').value))
         self.held_probe_region_along_min_m = float(p('held_probe_region_along_min_m').value)
         self.held_probe_region_along_max_m = float(p('held_probe_region_along_max_m').value)
         if self.held_probe_region_along_max_m <= self.held_probe_region_along_min_m:
             self.held_probe_region_along_max_m = self.held_probe_region_along_min_m + 0.05
-        self.held_probe_region_min_points = max(4, int(p('held_probe_region_min_points').value))
-        self.held_probe_region_min_elongation = max(
-            1.0, float(p('held_probe_region_min_elongation').value))
-        self.held_probe_region_min_extent_m = max(
-            0.0, float(p('held_probe_region_min_extent_m').value))
-        self.held_probe_cloud_min_total_points = max(
-            1, int(p('held_probe_cloud_min_total_points').value))
-        self.held_probe_cloud_max_age_sec = max(0.1, float(p('held_probe_cloud_max_age_sec').value))
-        self.held_probe_cloud_near_field_margin_m = max(
-            0.0, float(p('held_probe_cloud_near_field_margin_m').value))
-        self.held_probe_filtered_depth_topic = str(
-            p('held_probe_filtered_depth_topic').value or '')
-        self.held_probe_filtered_depth_info_topic = str(
-            p('held_probe_filtered_depth_info_topic').value or '')
-        self.held_probe_filtered_depth_stride = max(
-            1, int(p('held_probe_filtered_depth_stride').value))
         self.held_probe_abort_transport_on_empty = bool(
             p('held_probe_abort_transport_on_empty').value)
         self.lift_check_require_positive_evidence = bool(
@@ -1344,9 +1246,6 @@ class VisionGraspNode(Node):
         self.post_grasp_retrace_descent = bool(p('post_grasp_retrace_descent').value)
         self.post_grasp_retrace_extra_rise_m = max(
             0.0, float(p('post_grasp_retrace_extra_rise_m').value))
-        self.octomap_disable_after_grasp_confirmed = bool(
-            p('octomap_disable_after_grasp_confirmed').value)
-        self.octomap_collision_checking = bool(p('octomap_collision_checking').value)
         self.movegroup_replan_enabled = bool(p('movegroup_replan_enabled').value)
         self.movegroup_replan_attempts = max(1, int(p('movegroup_replan_attempts').value))
         self.movegroup_replan_delay_sec = max(0.0, float(p('movegroup_replan_delay_sec').value))
@@ -1356,9 +1255,6 @@ class VisionGraspNode(Node):
             0.0, float(p('world_probe_object_min_republish_sec').value))
         self.world_probe_object_move_threshold_m = max(
             0.0, float(p('world_probe_object_move_threshold_m').value))
-        self.world_probe_object_clear_octomap = bool(p('world_probe_object_clear_octomap').value)
-        self.world_probe_object_octomap_min_interval_sec = max(
-            0.0, float(p('world_probe_object_octomap_min_interval_sec').value))
         self.transport_goal_validity_check_enabled = bool(p('transport_goal_validity_check_enabled').value)
         self.state_validity_service_name = str(p('state_validity_service_name').value)
         self.pick_home_alternative_joint_positions_flat = [
@@ -1791,10 +1687,9 @@ class VisionGraspNode(Node):
         self._probe_reacquire_measurements: deque = deque(maxlen=4)
         self._probe_realign_last_commit_sec = 0.0
         self._probe_realign_last_measurement_sec = 0.0
-        self._probe_realign_last_octomap_clear_sec = 0.0
-        # Held-probe verification: pooled evidence, the newest self-filtered
-        # octomap-input cloud, and the empty-close latch set by the final
-        # close. The latch is a hard veto -- it means the jaws measurably shut
+        # Held-probe verification: pooled ProbeRealign evidence and the
+        # empty-close latch set by the final close. The latch is a hard veto --
+        # it means the jaws measurably shut
         # past the probe's width, so no later "PASSED by timeout" may override
         # it without positive evidence.
         self._held_probe_evidence = grasp_verification.HeldProbeEvidence(
@@ -1803,12 +1698,6 @@ class VisionGraspNode(Node):
             min_held_votes=int(p('held_probe_evidence_min_held_votes').value),
             empty_fraction=float(p('held_probe_evidence_empty_fraction').value),
         )
-        self._filtered_cloud_points_in_frame: Optional[np.ndarray] = None
-        self._filtered_cloud_frame: str = ''
-        self._filtered_cloud_stamp = None
-        self._filtered_cloud_recv_sec: float = 0.0
-        self._filtered_cloud_seen: bool = False
-        self._held_probe_last_cloud_vote_sec: float = 0.0
         self._empty_close_detected: bool = False
         self._empty_close_gap_m: Optional[float] = None
         self._held_probe_empty_reported: bool = False
@@ -1819,15 +1708,10 @@ class VisionGraspNode(Node):
         ]
         # Detected (not yet grasped) probe published as an STL collision object.
         self._world_probe_published: bool = False
-        # Starts wherever the launch-wide switch left it, so a visual-only
-        # octomap is never "restored" by this node.
-        self._octomap_collisions_enabled: bool = self.octomap_collision_checking
-        self._octomap_acm_row_backup: Optional[Dict[str, bool]] = None
         self._world_probe_acm_applied: bool = False
         self._world_probe_acm_pending: bool = False
         self._world_probe_last_centre: Optional[np.ndarray] = None
         self._world_probe_last_publish_sec: float = 0.0
-        self._world_probe_last_octomap_clear_sec: float = 0.0
         self._base_box_drop_candidates: List[dict] = []
         self._base_box_drop_candidate_index: int = -1
         self._base_box_drop_round: int = 0
@@ -1999,7 +1883,6 @@ class VisionGraspNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.move_group_client = ActionClient(self, MoveGroup, p('move_action_name').value)
         self.cartesian_client = self.create_client(GetCartesianPath, p('cartesian_service_name').value)
-        self.clear_octomap_client = self.create_client(EmptySrv, self.clear_octomap_service_name)
         self.get_planning_scene_client = self.create_client(GetPlanningScene, 'get_planning_scene')
         self.apply_planning_scene_client = self.create_client(ApplyPlanningScene, 'apply_planning_scene')
         self.state_validity_client = self.create_client(GetStateValidity, self.state_validity_service_name)
@@ -2022,50 +1905,6 @@ class VisionGraspNode(Node):
         self.info_sub = self.create_subscription(
             CameraInfo, info_topic, self.info_cb, qos_profile_sensor_data)
         self.joint_states_sub = self.create_subscription(JointState, '/joint_states', self._joint_states_cb, 10)
-        # MoveIt's octomap input AFTER the robot self-filter: every robot link
-        # is already removed, so whatever is left inside the jaw volume is a
-        # non-robot object. This is the same data the octomap is built from,
-        # read as points rather than as 30 mm voxel cubes.
-        self.filtered_cloud_sub = None
-        if self.held_probe_verification_enabled and self.held_probe_octomap_cloud_topic:
-            self.filtered_cloud_sub = self.create_subscription(
-                PointCloud2,
-                self.held_probe_octomap_cloud_topic,
-                self._filtered_cloud_cb,
-                qos_profile_sensor_data,
-            )
-            self.get_logger().info(f'Held-probe verification enabled: octomap-input cloud '
-                f'{self.held_probe_octomap_cloud_topic}, jaw volume = r'
-                f'{self.held_probe_region_radius_m*1000:.0f}mm cylinder from '
-                f'{self.held_probe_region_along_min_m*1000:+.0f}mm to '
-                f'{self.held_probe_region_along_max_m*1000:+.0f}mm along the tool axis '
-                'through the four-bar contact point.')
-        # Same self-filtered data, as the depth image the DepthImageOctomapUpdater
-        # actually publishes. Feeds the identical point cache, so the jaw-volume
-        # test, staleness gate and verdict pooling are shared with the cloud path.
-        self.filtered_depth_sub = None
-        self.filtered_depth_info_sub = None
-        self._filtered_depth_info: Optional[CameraInfo] = None
-        if self.held_probe_verification_enabled and self.held_probe_filtered_depth_topic:
-            self.filtered_depth_sub = self.create_subscription(
-                Image,
-                self.held_probe_filtered_depth_topic,
-                self._filtered_depth_cb,
-                qos_profile_sensor_data,
-            )
-            self.filtered_depth_info_sub = self.create_subscription(
-                CameraInfo,
-                self.held_probe_filtered_depth_info_topic,
-                self._filtered_depth_info_cb,
-                qos_profile_sensor_data,
-            )
-            self.get_logger().info(
-                'Held-probe verification also reads the self-filtered depth image '
-                f'{self.held_probe_filtered_depth_topic} (intrinsics from '
-                f'{self.held_probe_filtered_depth_info_topic}, stride '
-                f'{self.held_probe_filtered_depth_stride}). Required because a '
-                'DepthImageOctomapUpdater publishes no filtered cloud.'
-            )
         self.rover_motion_sub = None
         if self.pause_arm_when_rover_moving and self.rover_motion_cmd_vel_topic:
             self.rover_motion_sub = self.create_subscription(
@@ -3651,8 +3490,7 @@ class VisionGraspNode(Node):
         if self.probe_track_enabled and self._probe_track is not None:
             self.object_track_id_pub.publish(Int32(data=int(self._probe_track.track_id)))
 
-        # Give MoveIt the probe's actual shape at this pose. Without it the
-        # only record of the probe in the planning scene is octomap voxels.
+        # Give MoveIt the probe's actual shape at this pose.
         self._publish_world_probe_object(centre_base, R_obj_base)
 
         p = pose_msg.pose.position
@@ -4229,25 +4067,6 @@ class VisionGraspNode(Node):
     #  Collision-world management for post-grasp transport                #
     # ------------------------------------------------------------------ #
 
-    def _clear_octomap(self, context: str) -> None:
-        """Ask move_group to drop all octomap voxels (fire-and-forget).
-
-        Ghost voxels painted onto the probe/gripper during the final approach
-        sit inside the closed gripper links, so any collision-aware plan from
-        the grasp pose aborts with START_STATE_IN_COLLISION. After the close,
-        those voxels carry no information the attached probe mesh and the
-        node's own collision objects do not already provide.
-        """
-        if not self.clear_octomap_after_grasp:
-            return
-        if not self.clear_octomap_client.service_is_ready():
-            self.get_logger().warning(
-                f'[{context}] {self.clear_octomap_service_name} service is not available; post-grasp '
-                'planning may abort with START_STATE_IN_COLLISION from stale octomap voxels.')
-            return
-        self.clear_octomap_client.call_async(EmptySrv.Request())
-        self.get_logger().info(f'[{context}] Clearing the MoveIt octomap before planning with the closed gripper.')
-
     def _add_collision_floor(self, floor_z: float) -> None:
         """Publish a wide floor plane into the MoveIt collision world.
 
@@ -4415,8 +4234,7 @@ class VisionGraspNode(Node):
         self._remove_world_probe_object('the probe is now attached to the gripper')
         # That removal drops the ACM entries with the object, and the pre-grasp
         # publisher (the only other caller) stops running once attached -- so
-        # re-assert here, or the attached mesh plans against an octomap full of
-        # its own voxels.
+        # re-assert here so intentional gripper contact remains allowed.
         self._ensure_world_probe_collisions_allowed()
 
         correction_rad = math.radians(float(getattr(self, 'stl_yaw_correction_deg', 0.0)))
@@ -5070,22 +4888,16 @@ class VisionGraspNode(Node):
             )
 
     # ------------------------------------------------------------------ #
-    #   Detected probe as a planning-scene mesh (not octomap cubes)        #
+    #   Detected probe as an explicit planning-scene mesh                  #
     # ------------------------------------------------------------------ #
 
     def _ensure_world_probe_collisions_allowed(self) -> None:
         """Let the gripper links touch the detected-probe mesh.
 
         The gripper is the end-effector that intentionally closes onto the
-        probe, which is why octomap_scene_setup.py already allows the gripper
-        links against ``<octomap>``: without it the probe's own voxels abort
-        the coaxial descent with a near-zero Cartesian fraction. Replacing
-        those voxels with a mesh replaces the blockage too unless the mesh
-        gets the same allowance. Arm links keep full checking, so the probe is
-        still a real obstacle to everything that is not meant to touch it.
-
-        octomap_scene_setup.py seeds this at startup, but MoveIt deletes an
-        object's ACM entry when the object is REMOVEd, so it has to be
+        probe. Arm links keep full checking, so the probe remains a real
+        obstacle to everything that is not meant to touch it. MoveIt deletes
+        an object's ACM entry when the object is REMOVEd, so this allowance is
         re-asserted afterwards. A diff PlanningScene REPLACES the ACM wholesale
         instead of merging into it, hence the read-modify-write.
         """
@@ -5129,23 +4941,12 @@ class VisionGraspNode(Node):
                 rows.append([False] * len(names))
             return names.index(name)
 
-        oct_i = index_of('<octomap>')
         for obj in (self.world_probe_object_id, 'post_grasp_probe'):
             probe_i = index_of(obj)
             for link in self.gripper_probe_contact_links:
                 i = index_of(link)
                 rows[probe_i][i] = True
                 rows[i][probe_i] = True
-            # The wrist camera paints the probe into the octomap from
-            # point-blank range, on the ground AND once it is held: those
-            # voxels sit exactly where the probe mesh is, because they ARE the
-            # probe. Without this the attached mesh starts every post-grasp
-            # plan in collision with its own reflection and MoveGroup aborts in
-            # under a second, before OMPL runs. Clearing the octomap does not
-            # help -- the camera repaints the held probe within one update
-            # period.
-            rows[probe_i][oct_i] = True
-            rows[oct_i][probe_i] = True
 
         acm.entry_names = names
         acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
@@ -5157,117 +4958,8 @@ class VisionGraspNode(Node):
         apply_req.scene = scene
         self._world_probe_acm_applied = True
         self.apply_planning_scene_client.call_async(apply_req)
-        self.get_logger().info(f'[CollisionWorld] Gripper links and <octomap> may now overlap '
+        self.get_logger().info(f'[CollisionWorld] Gripper links may now overlap '
             f'{self.world_probe_object_id} and post_grasp_probe; arm links still avoid them.')
-
-    def _set_octomap_collision_checking(self, enabled: bool, reason: str) -> None:
-        """Switch octomap collision checking on or off for the whole robot.
-
-        Once the grasp is confirmed the octomap has no job left in this task.
-        Everything it is meant to describe is already described better: the
-        probe is an attached mesh, the floor is handled by the height guards,
-        and the rover's own body is in the robot model. What the octomap still
-        does is churn -- the wrist camera repaints it at 5 Hz while staring at
-        the probe it is carrying, and every update re-validates the executing
-        trajectory and can abort it with -3
-        MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE.
-
-        Implemented as the ACM's DEFAULT entry for ``<octomap>`` plus its
-        explicit row: the default covers every element that is not in the matrix
-        yet (probe meshes, attached bodies), and the row is needed because an
-        explicit pair entry BEATS the default -- octomap_scene_setup.py gives
-        ``<octomap>`` an explicit entry against every robot link, so the default
-        alone would leave the arm links checking. It is a planning-scene switch,
-        so it is fully reversible and does not touch the sensor pipeline -- the
-        octomap keeps building, MoveIt just stops colliding against it.
-
-        Does nothing when ``octomap_collision_checking`` is false: the octomap
-        is then visualisation-only stack-wide and is not this task's to restore.
-
-        TRADE-OFF, stated plainly: with this off the arm will NOT avoid any
-        obstacle that exists only in the octomap. That is the intended
-        behaviour for this task (the transport path is a known posture over the
-        rover's own chassis), but it is a real reduction in obstacle
-        avoidance. Set octomap_disable_after_grasp_confirmed false to keep it.
-        """
-        if enabled and not self.octomap_collision_checking:
-            self._octomap_collisions_enabled = False
-            self.get_logger().debug('[CollisionWorld] Octomap collision checking stays off: it is '
-                'disabled stack-wide by octomap_collision_checking.')
-            return
-        if not (self.get_planning_scene_client.service_is_ready()
-                and self.apply_planning_scene_client.service_is_ready()):
-            self.get_logger().warning('[CollisionWorld] get/apply_planning_scene unavailable; cannot '
-                f'{"enable" if enabled else "disable"} octomap collision checking.',
-                throttle_duration_sec=30.0)
-            return
-        req = GetPlanningScene.Request()
-        req.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
-        self.get_planning_scene_client.call_async(req).add_done_callback(
-            lambda fut, en=enabled, rs=reason: self._apply_octomap_collision_setting(fut, en, rs)
-        )
-
-    def _apply_octomap_collision_setting(self, future, enabled: bool, reason: str) -> None:
-        try:
-            response = future.result()
-        except Exception as exc:
-            self.get_logger().warning(f'[CollisionWorld] get_planning_scene failed while switching '
-                f'octomap collision checking: {exc}')
-            return
-        if response is None:
-            return
-        acm = response.scene.allowed_collision_matrix
-        names = list(acm.default_entry_names)
-        values = [bool(v) for v in acm.default_entry_values]
-        # allowed == True means "collisions with <octomap> are permitted",
-        # i.e. checking is OFF.
-        allowed = not enabled
-        if '<octomap>' in names:
-            values[names.index('<octomap>')] = allowed
-        else:
-            names.append('<octomap>')
-            values.append(allowed)
-        acm.default_entry_names = names
-        acm.default_entry_values = values
-
-        # ...and the explicit row, which overrides the default for every pair it
-        # covers. Backed up on the way down so the restore reinstates exactly the
-        # per-link allowances octomap_scene_setup.py seeded, rather than guessing.
-        entry_names = list(acm.entry_names)
-        rows = [list(entry.enabled) for entry in acm.entry_values]
-        if '<octomap>' in entry_names:
-            oct_i = entry_names.index('<octomap>')
-            if allowed:
-                if self._octomap_acm_row_backup is None:
-                    self._octomap_acm_row_backup = {
-                        name: bool(rows[oct_i][i]) for i, name in enumerate(entry_names)}
-                for i in range(len(entry_names)):
-                    rows[oct_i][i] = True
-                    rows[i][oct_i] = True
-            elif self._octomap_acm_row_backup is not None:
-                for i, name in enumerate(entry_names):
-                    previous = self._octomap_acm_row_backup.get(name)
-                    if previous is None:
-                        continue
-                    rows[oct_i][i] = previous
-                    rows[i][oct_i] = previous
-                self._octomap_acm_row_backup = None
-            acm.entry_names = entry_names
-            acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
-
-        scene = PlanningScene()
-        scene.is_diff = True
-        scene.allowed_collision_matrix = acm
-        apply_req = ApplyPlanningScene.Request()
-        apply_req.scene = scene
-        self.apply_planning_scene_client.call_async(apply_req)
-        self._octomap_collisions_enabled = bool(enabled)
-        if enabled:
-            self.get_logger().info(f'[CollisionWorld] Octomap collision checking ON: {reason}')
-        else:
-            self.get_logger().warning(f'[CollisionWorld] Octomap collision checking OFF for the rest of '
-                f'this task: {reason} The probe travels as an attached mesh and the arm will not '
-                'avoid octomap-only obstacles until the sequence resets.')
 
     def _publish_world_probe_object(
         self,
@@ -5276,13 +4968,8 @@ class VisionGraspNode(Node):
     ) -> None:
         """Publish the detected probe as its own STL mesh in the world.
 
-        Until the probe is grasped, the only thing the planning scene knows
-        about it is whatever the depth camera painted into the octomap: 30 mm
-        voxel cubes, which smear a 30 mm rod into a blocky column, sit in the
-        path of the coaxial descent, and are indistinguishable from the sand
-        box it is planted in. Publishing the real mesh at the tracked 6D pose
-        gives MoveIt the probe's actual shape and lets the octomap be cleared
-        without losing the obstacle.
+        Publishing the real mesh at the tracked 6D pose gives MoveIt the
+        probe's actual shape as an explicit obstacle.
 
         ``R_obj_base`` columns are (long axis, short axis, normal) in the
         planning frame; the probe STL is (X width, Y height, Z long axis), so
@@ -5290,9 +4977,9 @@ class VisionGraspNode(Node):
         """
         if not self.world_probe_object_enabled or self._post_grasp_probe_attached:
             return
-        # Same race as the attached-mesh realignment: adding a collision object
-        # and clearing the octomap under a plan that is already running
-        # invalidates it. The probe is not going anywhere during one motion.
+        # Same race as attached-mesh realignment: changing a collision object
+        # under a live plan invalidates it. The probe is stationary during one
+        # motion, so defer the update.
         if self._arm_motion_in_flight():
             return
         self._ensure_probe_mesh()
@@ -5352,18 +5039,7 @@ class VisionGraspNode(Node):
             self.get_logger().info(f'[CollisionWorld] Detected probe added to the planning scene as a '
                 f'{shape} (id={self.world_probe_object_id}) at '
                 f'({centre[0]:.3f},{centre[1]:.3f},{centre[2]:.3f}). MoveIt now plans against the '
-                'probe\'s real shape instead of the octomap voxel cubes covering it.')
-
-        # Voxels the camera painted over the probe now duplicate the mesh, and
-        # a cube column is fatter than the rod it covers. Drop them so the mesh
-        # is the only description of the probe in the scene.
-        if (
-            self.world_probe_object_clear_octomap
-            and now_sec - self._world_probe_last_octomap_clear_sec
-                >= self.world_probe_object_octomap_min_interval_sec
-        ):
-            self._world_probe_last_octomap_clear_sec = now_sec
-            self._clear_octomap('world-probe-mesh')
+                'probe\'s measured shape.')
 
     def _remove_world_probe_object(self, reason: str) -> None:
         """Drop the world probe mesh (grasped, or no longer tracked)."""
@@ -5394,11 +5070,11 @@ class VisionGraspNode(Node):
         opening gripper must not yank the mesh around mid-release.
 
         Also skipped while an arm motion is in flight, because a commit
-        REPUBLISHES the attached collision object and clears the octomap. Doing
-        that to the scene MoveGroup is planning against invalidates the solve:
+        REPUBLISHES the attached collision object. Doing that to the scene
+        MoveGroup is planning against invalidates the solve:
         the pick_home transport was seen aborting (status 6) after burning its
         full 10 s planning window, having had the probe mesh moved 84 ms after
-        the goal was sent -- a 180 deg end-for-end flip, plus an octomap wipe.
+        the goal was sent -- a 180 deg end-for-end flip.
         The grip is rigid over those few seconds, so deferring the correction
         until the motion finishes costs nothing: the realignment rides the
         detection stream, so it re-measures and commits on the next tick after
@@ -5422,8 +5098,8 @@ class VisionGraspNode(Node):
 
         Same scope as ``_attached_probe_realign_should_run`` minus the
         realignment switch, and minus the in-flight-motion guard: that guard
-        exists because a realign COMMIT republishes the collision object and
-        wipes the octomap under a live plan. Sampling evidence does neither, so
+        exists because a realign COMMIT republishes the collision object under
+        a live plan. Sampling evidence does not, so
         it is safe while the arm moves — which is exactly when a probe slips.
         """
         return (
@@ -5871,10 +5547,8 @@ class VisionGraspNode(Node):
             # produced no measurement GATED against the attached pose, so it
             # is not evidence that the probe is in the jaws. The re-acquisition
             # path fits any probe-shaped cloud within 400 mm of the link, which
-            # includes probes still on the floor. Let the octomap-input cloud
-            # answer instead: it can tell "occluded by the fingers" from
-            # "nothing there", which a missing fit never could.
-            self._sample_held_probe_evidence()
+            # includes probes still on the floor. A missing fit records no vote;
+            # absence of a detection is not evidence of an empty gripper.
             if self._check_held_probe_during_transport() or reacquired:
                 return
             silent_sec = now_sec - max(
@@ -6034,126 +5708,15 @@ class VisionGraspNode(Node):
             f'centre moved {d_centre_m*1000:.0f} mm, axis rotated {d_axis_deg:.1f} deg '
             f'({evidence}); {shape_info}')
 
-        if (
-            self.attached_probe_realign_clear_octomap
-            and now_sec - self._probe_realign_last_octomap_clear_sec
-                >= self.attached_probe_realign_octomap_min_interval_sec
-        ):
-            # Voxels painted by the probe at its previous pose now sit outside
-            # the corrected mesh and would poison the next plan's start state.
-            self._probe_realign_last_octomap_clear_sec = now_sec
-            self._clear_octomap('probe-realign')
-
     # ------------------------------------------------------------------ #
     #   Held-probe verification (is anything actually in the jaws?)        #
     # ------------------------------------------------------------------ #
-
-    def _filtered_cloud_cb(self, msg: PointCloud2) -> None:
-        """Cache MoveIt's self-filtered octomap-input cloud as XYZ points.
-
-        The updater publishes it in the sensor frame; it is transformed on
-        demand at the stamp the points were captured, so a moving wrist does
-        not smear the jaw volume.
-        """
-        try:
-            pts = point_cloud2.read_points_numpy(
-                msg, field_names=('x', 'y', 'z'), skip_nans=True
-            )
-        except Exception as exc:
-            self.get_logger().warning(f'[HeldProbe] Could not read {self.held_probe_octomap_cloud_topic}: '
-                f'{exc}', throttle_duration_sec=30.0)
-            return
-        pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-        self._filtered_cloud_points_in_frame = pts
-        self._filtered_cloud_frame = str(msg.header.frame_id)
-        self._filtered_cloud_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
-        self._filtered_cloud_recv_sec = self._now_sec()
-        if not self._filtered_cloud_seen:
-            self._filtered_cloud_seen = True
-            self.get_logger().info(f'[HeldProbe] Octomap-input cloud is live on '
-                f'{self.held_probe_octomap_cloud_topic} ({len(pts)} pts, '
-                f'frame={self._filtered_cloud_frame}).')
-
-    def _filtered_depth_info_cb(self, msg: CameraInfo) -> None:
-        self._filtered_depth_info = msg
-
-    def _filtered_depth_cb(self, msg: Image) -> None:
-        """Back-project MoveIt's self-filtered depth image into the point cache.
-
-        The DepthImageOctomapUpdater removes the robot's own links from the
-        depth image before the octomap is built, so a non-robot object left
-        inside the jaw volume is exactly the positive/negative evidence the
-        verdict wants — the same semantics as the filtered cloud, just delivered
-        as an image. Writing into the cloud cache keeps one jaw-volume test and
-        one staleness gate for both sources.
-        """
-        info = self._filtered_depth_info
-        if info is None:
-            self.get_logger().warning(
-                '[HeldProbe] Self-filtered depth received before its CameraInfo on '
-                f'{self.held_probe_filtered_depth_info_topic}; cannot back-project yet.',
-                throttle_duration_sec=30.0,
-            )
-            return
-        try:
-            depth = self.bridge.imgmsg_to_cv2(msg, '32FC1')
-        except Exception as exc:
-            self.get_logger().warning(
-                f'[HeldProbe] Could not read {self.held_probe_filtered_depth_topic}: {exc}',
-                throttle_duration_sec=30.0,
-            )
-            return
-
-        fx, fy = float(info.k[0]), float(info.k[4])
-        cx, cy = float(info.k[2]), float(info.k[5])
-        if fx <= 0.0 or fy <= 0.0:
-            return
-        # The published image can be a different size than the CameraInfo when
-        # the updater is fed a resized stream; scale the intrinsics rather than
-        # back-projecting through the wrong principal point.
-        depth = np.asarray(depth, dtype=np.float32)
-        if info.width and info.height and (
-            depth.shape[1] != info.width or depth.shape[0] != info.height
-        ):
-            sx = depth.shape[1] / float(info.width)
-            sy = depth.shape[0] / float(info.height)
-            fx, cx = fx * sx, cx * sx
-            fy, cy = fy * sy, cy * sy
-
-        # An all-invalid frame yields zero points rather than an error: entirely
-        # self-filtered or unobserved carries no information, and the
-        # min-total-points gate then votes UNKNOWN instead of mistaking it for
-        # "nothing in the jaws".
-        try:
-            pts = grasp_verification.backproject_depth(
-                depth, fx, fy, cx, cy, self.held_probe_filtered_depth_stride
-            )
-        except ValueError as exc:
-            self.get_logger().warning(
-                f'[HeldProbe] Cannot back-project {self.held_probe_filtered_depth_topic}: '
-                f'{exc}',
-                throttle_duration_sec=30.0,
-            )
-            return
-
-        self._filtered_cloud_points_in_frame = pts
-        self._filtered_cloud_frame = str(msg.header.frame_id)
-        self._filtered_cloud_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
-        self._filtered_cloud_recv_sec = self._now_sec()
-        if not self._filtered_cloud_seen:
-            self._filtered_cloud_seen = True
-            self.get_logger().info(
-                '[HeldProbe] Self-filtered depth is live on '
-                f'{self.held_probe_filtered_depth_topic} ({len(pts)} pts, '
-                f'frame={self._filtered_cloud_frame}).'
-            )
 
     def _reset_held_probe_evidence(self) -> None:
         self._held_probe_evidence.reset()
         self._empty_close_detected = False
         self._empty_close_gap_m = None
         self._held_probe_empty_reported = False
-        self._held_probe_last_cloud_vote_sec = 0.0
 
     def _jaw_volume_in_link(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """``(contact_point, axis)`` of the jaw volume in the planning link frame."""
@@ -6163,81 +5726,6 @@ class VisionGraspNode(Node):
         contact = np.array([float(eff[0]), float(eff[1]), float(eff[2])], dtype=np.float64)
         axis = normalize(np.asarray(self.approach_axis_in_tool, dtype=np.float64).reshape(3,))
         return contact, axis
-
-    def _octomap_jaw_occupancy(self) -> Optional[Tuple[int, int, np.ndarray, bool]]:
-        """Non-robot points inside the jaw volume, from the octomap-input cloud.
-
-        Returns ``(points_in_volume, total_points, region_points, blinded)`` or
-        None when the cloud is missing, stale, too sparse to trust, or cannot be
-        transformed into the planning link frame — all of which mean the
-        sensor could not look, not that the gripper is empty.
-
-        ``blinded`` reports that the self-filter deleted the whole range band
-        the jaw volume sits in, so an empty region proves nothing (see
-        ``grasp_verification.self_filter_blinds_jaw_volume``).
-        """
-        pts_sensor = self._filtered_cloud_points_in_frame
-        if pts_sensor is None or len(pts_sensor) < self.held_probe_cloud_min_total_points:
-            return None
-        if self._now_sec() - self._filtered_cloud_recv_sec > self.held_probe_cloud_max_age_sec:
-            return None
-        volume = self._jaw_volume_in_link()
-        if volume is None:
-            return None
-        contact, axis = volume
-
-        tfm = self._lookup_transform(
-            self._filtered_cloud_frame, self.planning_link, self._filtered_cloud_stamp
-        )
-        if tfm is None:
-            return None
-        R = quat_to_matrix(tfm.transform.rotation)
-        t = np.array([
-            float(tfm.transform.translation.x),
-            float(tfm.transform.translation.y),
-            float(tfm.transform.translation.z),
-        ], dtype=np.float64)
-        pts_link = pts_sensor @ R.T + t
-
-        mask = grasp_verification.jaw_region_mask(
-            pts_link,
-            contact,
-            axis,
-            self.held_probe_region_radius_m,
-            self.held_probe_region_along_min_m,
-            self.held_probe_region_along_max_m,
-        )
-
-        # Could this cloud have shown a held probe at all? Express the jaw
-        # volume in the camera's own frame and compare its near end against the
-        # nearest range the self-filter left alive.
-        contact_in_sensor = R.T @ (contact - t)
-        axis_in_sensor = R.T @ axis
-        near_range = grasp_verification.jaw_volume_near_range(
-            contact_in_sensor,
-            axis_in_sensor,
-            self.held_probe_region_radius_m,
-            self.held_probe_region_along_min_m,
-            self.held_probe_region_along_max_m,
-        )
-        blinded, nearest = grasp_verification.self_filter_blinds_jaw_volume(
-            pts_sensor[:, 2],
-            near_range,
-            self.held_probe_cloud_near_field_margin_m,
-        )
-        if blinded:
-            self.get_logger().warning(
-                '[HeldProbe] The self-filtered cloud cannot see the jaw volume: its '
-                f'nearest surviving return is {nearest*1000:.0f}mm out while the jaw '
-                f'volume starts at {near_range*1000:.0f}mm. MoveIt pads the robot model '
-                'along its normals (sensors_3d.yaml padding_scale/padding_offset) and '
-                'drops everything from that inflated surface back to shadow_threshold, '
-                'which on a gripper-mounted camera blanks the entire near field the jaws '
-                'occupy. An empty jaw volume in this cloud is therefore a blind sensor, '
-                'not an empty gripper, so it votes UNKNOWN and never EMPTY.',
-                throttle_duration_sec=30.0,
-            )
-        return int(mask.sum()), int(len(pts_link)), pts_link[mask], bool(blinded)
 
     def _vote_held_probe(self, verdict: str, detail: str) -> None:
         """Record one frame's verdict and log the pooled result when it flips."""
@@ -6270,12 +5758,9 @@ class VisionGraspNode(Node):
         within 400 mm of the gripper link, which in the logged failure
         accepted a fit (rms 1.1 mm, 680 inliers) while the jaws were empty —
         a probe still lying on the floor is exactly that. Both evidence
-        sources therefore answer the same geometric question.
-
-        Otherwise the self-filtered octomap-input cloud decides. Note the
-        asymmetry — a probe-shaped cloud in the jaw volume proves a held
-        probe, but an EMPTY vote additionally requires the cloud to be healthy
-        overall, so "the camera saw nothing at all" stays UNKNOWN.
+        sources therefore answer the same geometric question. Without a fresh
+        fit this function records no vote; absence of a detection is not proof
+        that the gripper is empty.
         """
         if not self.held_probe_verification_enabled:
             return
@@ -6308,50 +5793,7 @@ class VisionGraspNode(Node):
                 )
                 return
 
-        # One vote per cloud message. Callers run at their own rates (the
-        # lift-check ticks ten times a second), and re-voting on the same
-        # cached cloud would let a single frame decide the whole pool.
-        if self._filtered_cloud_recv_sec <= self._held_probe_last_cloud_vote_sec:
-            return
-        self._held_probe_last_cloud_vote_sec = self._filtered_cloud_recv_sec
-
-        occupancy = self._octomap_jaw_occupancy()
-        if occupancy is None:
-            self._vote_held_probe(
-                grasp_verification.UNKNOWN,
-                'octomap-input cloud unavailable/stale/untransformable',
-            )
-            return
-        in_volume, total, region_pts, blinded = occupancy
-        if in_volume < self.held_probe_region_min_points:
-            # Absence of points is only evidence when the cloud could have
-            # carried them. With the jaw volume inside the self-filter's masked
-            # near field this branch is a CONSTANT empty vote: it fires whether
-            # the jaws are full or bare, and it aborted a grasp that the close
-            # stall, the lift check and the raw wrist depth all agreed was good.
-            self._vote_held_probe(
-                grasp_verification.UNKNOWN if blinded else grasp_verification.EMPTY,
-                f'{in_volume} non-robot pts in the jaw volume (of {total} in the '
-                f'filtered cloud); need {self.held_probe_region_min_points}'
-                + (' -- but the self-filter blanked the jaw volume\'s whole range '
-                   'band, so this says nothing about what is held' if blinded else ''),
-            )
-            return
-        probe_like, elongation, extent = grasp_verification.cloud_is_probe_like(
-            region_pts,
-            min_points=self.held_probe_region_min_points,
-            min_elongation=self.held_probe_region_min_elongation,
-            min_extent_m=self.held_probe_region_min_extent_m,
-        )
-        detail = (f'{in_volume} non-robot pts in the jaw volume, '
-                  f'elongation={elongation:.1f}, extent={extent*1000:.0f}mm')
-        if probe_like:
-            self._vote_held_probe(grasp_verification.HELD, detail)
-        else:
-            # Something is there but it is not rod-shaped: the sand box edge or
-            # a mis-filtered finger. Not proof of a held probe, not proof of an
-            # empty gripper either.
-            self._vote_held_probe(grasp_verification.UNKNOWN, detail + ' (not rod-shaped)')
+        return
 
     def _check_held_probe_during_transport(self) -> bool:
         """Stop transport when the pooled evidence says the gripper is empty.
@@ -6376,9 +5818,8 @@ class VisionGraspNode(Node):
         now_sec = self._now_sec()
         failed_stage = self.sequence_stage
         self.get_logger().error(f'[HeldProbe] The gripper is EMPTY during {failed_stage}: '
-            f'{self._held_probe_evidence.summary(now_sec)}. Neither the ProbeRealign box fit nor '
-            'the self-filtered octomap-input cloud finds anything in the jaw volume, so the '
-            'attached probe mesh and the "object held" state are both wrong. Stopping transport '
+            f'{self._held_probe_evidence.summary(now_sec)}. ProbeRealign finds no probe in the '
+            'jaw volume, so the attached probe mesh and the "object held" state are both wrong. Stopping transport '
             'instead of completing an empty pick.')
         self._cancel_active_moveit_goal()
         self._cancel_pending_timers()
@@ -9405,11 +8846,6 @@ class VisionGraspNode(Node):
 
         self.holding_object = True
 
-        # Drop ghost voxels now so the lift-check Cartesian (and any retreat)
-        # does not start inside octomap contacts; close_gripper_extra_wait_sec
-        # gives move_group time to process the clear before the next plan.
-        self._clear_octomap('after-close')
-
         if self.verify_grasp_after_lift:
             self.call_later(
                 self.close_gripper_extra_wait_sec,
@@ -9433,35 +8869,6 @@ class VisionGraspNode(Node):
 
     def _after_lift_verification_success(self, reason: str) -> None:
         self.holding_object = True
-        # The camera lift check has confirmed the grasp, and that is the last
-        # thing the octomap is needed for in this task: from here the probe rides
-        # as an attached mesh and the octomap only contributes scene churn that
-        # aborts transport plans.
-        #
-        # This used to additionally require a HELD held-probe verdict, i.e.
-        # confirmation by BOTH sensors. That gate was unsatisfiable: the
-        # octomap-input cloud cannot see the jaw volume at all (the padded
-        # self-filter blanks the whole near field -- see
-        # grasp_verification.self_filter_blinds_jaw_volume), so HELD only ever
-        # arrives from a ProbeRealign fit, and any run where that fit missed left
-        # the verdict UNKNOWN and the octomap ON. The wrist camera then repainted
-        # voxels onto the probe it was carrying and the transport died on
-        # -10 START_STATE_IN_COLLISION, measured as exactly one contact:
-        # <octomap> vs post_grasp_probe at 2.6 mm. Requiring corroboration from a
-        # blind sensor is not a safety margin, it is a guaranteed stall.
-        #
-        # The pairwise "gripper links and <octomap> may overlap the probe"
-        # allowance does not cover this on its own -- that contact was reported
-        # with the allowance already applied. The ACM DEFAULT entry set here does.
-        if self.octomap_disable_after_grasp_confirmed and self._octomap_collisions_enabled:
-            verdict = self._held_probe_verdict()
-            self._set_octomap_collision_checking(
-                False,
-                f'grasp confirmed ({reason.rstrip(".")}; held-probe verdict={verdict}). '
-                'Octomap collision checking stays off for the rest of this task; '
-                'only a grasp-sequence reset restores it.',
-            )
-            self._clear_octomap('grasp-confirmed-octomap-retired')
         if self.post_grasp_lift_then_pick_home:
             self.get_logger().info(f'{reason} Proceeding to collision-aware pick_home transport with the gripper closed.')
             self.send_post_grasp_vertical_lift()
@@ -9498,11 +8905,6 @@ class VisionGraspNode(Node):
 
         # Attach STL mesh so MoveGroup knows the gripper is holding an object.
         self._attach_probe_object()
-
-        # The lift-verification window leaves the camera close to the ground,
-        # so new ghost voxels can accumulate between the after-close clear and
-        # this transport plan.
-        self._clear_octomap('post-grasp-transport')
 
         # Wait 500 ms for the planning scene monitor to register the attached
         # object before sending the joint goal.
@@ -9681,13 +9083,7 @@ class VisionGraspNode(Node):
             self._base_box_tip_fallback_active = False
             self._base_box_drop_start_collision_retry_index = -1
             self._base_box_drop_candidate_index = -1
-            # The wrist camera paints the held probe (and near-field gripper)
-            # into the octomap throughout transport; those voxels sit inside
-            # the gripper links and fail every release plan at the start
-            # state (START_STATE_IN_COLLISION). Clear and let move_group
-            # settle before the first candidate.
-            self._clear_octomap('base-box-drop')
-            self.call_later(0.5, lambda: self._send_base_box_drop_candidate(0))
+            self.call_later(0.1, lambda: self._send_base_box_drop_candidate(0))
         else:
             self.get_logger().info(f'Moving held probe from pick_home to the base-box joint posture. '
                 f'MoveGroup planning time={self.base_box_planning_time_sec:.1f} s.')
@@ -10074,7 +9470,6 @@ class VisionGraspNode(Node):
             f'{reason} Trying the safe tip-only fallback instead of planning '
             f'known-unreachable probe-centre poses or moving the gripper into the box.'
         )
-        self._clear_octomap('base-box-tip-fallback')
         self.call_later(0.2, lambda: self._send_base_box_drop_candidate(0))
         return True
 
@@ -10443,24 +9838,6 @@ class VisionGraspNode(Node):
     ) -> bool:
         if not self.base_box_auto_drop_enabled:
             return False
-        # START_STATE_IN_COLLISION is not a candidate problem — the current
-        # state is poisoned, usually by held-probe ghost voxels the wrist
-        # camera painted since the last octomap clear. Clear once and retry
-        # the SAME candidate before walking the list.
-        if (
-            moveit_code == MoveItErrorCodes.START_STATE_IN_COLLISION
-            and self._base_box_drop_candidate_index >= 0
-            and self._base_box_drop_start_collision_retry_index
-                != self._base_box_drop_candidate_index
-        ):
-            retry_index = self._base_box_drop_candidate_index
-            self._base_box_drop_start_collision_retry_index = retry_index
-            self.get_logger().warning(
-                f'{reason} Start state is in collision; clearing the octomap and retrying '
-                f'the same release solution ({retry_index + 1}/{len(self._base_box_drop_candidates)}).')
-            self._clear_octomap('base-box-drop-start-collision')
-            self.call_later(0.6, lambda: self._send_base_box_drop_candidate(retry_index))
-            return True
         next_index = self._base_box_drop_candidate_index + 1
         if next_index >= len(self._base_box_drop_candidates):
             return self._start_next_base_box_drop_round(reason)
@@ -10540,10 +9917,7 @@ class VisionGraspNode(Node):
             f'{reason} All release solutions in the previous round failed; escalating to '
             f'round {next_round + 1} with {len(candidates)} candidate(s) '
             f'({"position-only" if self._base_box_drop_position_only_active else "relaxed orientation"}).')
-        # Fresh octomap for the new round: ghost voxels from the held probe
-        # accumulate continuously while candidates are being tried.
-        self._clear_octomap(f'base-box-drop-round-{next_round + 1}')
-        self.call_later(0.5, lambda: self._send_base_box_drop_candidate(0))
+        self.call_later(0.1, lambda: self._send_base_box_drop_candidate(0))
         return True
 
     def _base_box_drop_pose_config_valid(self) -> bool:
@@ -10870,9 +10244,8 @@ class VisionGraspNode(Node):
 
         elapsed = self._now_sec() - self._lift_check_start_sec
 
-        # The probe mesh is not attached yet at this point, so ProbeRealign is
-        # not running; the octomap-input cloud carries the check on its own.
-        self._sample_held_probe_evidence()
+        # The probe mesh is not attached yet, so the lift check uses fresh
+        # detections, the close-gap latch, and trusted gripper contact.
 
         detection = self.detect_target_once(publish_debug=True)
 
@@ -11043,10 +10416,6 @@ class VisionGraspNode(Node):
             self._after_lift_verification_success('Lift-check PASSED by timeout.')
             return
 
-        if self.held_probe_verification_enabled and not self._filtered_cloud_seen:
-            self.get_logger().warning(f'Held-probe verification never received a cloud on '
-                f'{self.held_probe_octomap_cloud_topic}, so it could not weigh in. Check that '
-                'move_group is running with filtered_cloud_topic set in sensors_3d.yaml.')
         self.get_logger().error(f'Lift-check FAILED by timeout: no fresh detection, no trusted jaw contact, and '
             f'held-probe verification is inconclusive ({evidence_txt}). Passing here would be '
             'passing on absence of evidence.')
@@ -11216,19 +10585,16 @@ class VisionGraspNode(Node):
         return True
 
     def _apply_replan_options(self, goal: MoveGroup.Goal) -> None:
-        """Let MoveGroup replan when the live octomap invalidates a running plan.
+        """Let MoveGroup replan when the planning scene invalidates a running plan.
 
         MoveGroup's PlanExecution re-validates the executing trajectory against
         every planning-scene update, and with ``replan`` false (the default) the
         first update that invalidates it aborts the motion outright:
         ``moveit_error_code=-3 MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE``.
 
-        That is guaranteed to happen here. The depth camera repaints the
-        octomap at sensors_3d.yaml's ``max_update_rate: 5.0`` while the arm is
-        moving, and the wrist camera is staring at the probe it is carrying, so
-        the scene changes several times per second throughout transport. The
-        environment is genuinely dynamic; aborting on the first change is the
-        wrong response, replanning from the new scene is the right one.
+        Explicit probe, attachment, and floor objects can legitimately update
+        during transport. Replanning from the latest explicit scene is safer
+        than abandoning the motion on its first invalidation.
         """
         if not self.movegroup_replan_enabled:
             return
@@ -11675,13 +11041,6 @@ class VisionGraspNode(Node):
         # the planning scene only when the gripper is known not to be holding.
         self._remove_post_grasp_collision_objects()
         self._remove_world_probe_object('grasp sequence reset')
-        # A new empty-gripper attempt gets the octomap back: it was only
-        # retired because the previous grasp was already confirmed. Not when the
-        # stack runs with a visualisation-only octomap -- there is nothing of
-        # this task's to restore.
-        if self.octomap_collision_checking and not self._octomap_collisions_enabled:
-            self._set_octomap_collision_checking(True, 'grasp sequence reset.')
-
         self.last_failure_reason = reason
         if reason:
             self.failure_count += 1
@@ -12380,9 +11739,8 @@ class VisionGraspNode(Node):
                 )
                 hint = {
                     -1: 'PLANNING_FAILED: OMPL searched and found nothing.',
-                    -10: 'START_STATE_IN_COLLISION: the arm is already in collision before '
-                         'moving -- with the held probe attached, suspect octomap voxels '
-                         'painted onto the probe itself.',
+                    -10: 'START_STATE_IN_COLLISION: the arm or attached probe is already '
+                         'in collision before moving.',
                     -12: 'GOAL_IN_COLLISION: the transport posture itself is blocked.',
                 }.get(moveit_code if isinstance(moveit_code, int) else None, '')
                 self._hold_closed_after_transport_failure(

@@ -73,6 +73,16 @@
     <xacro:property name="gripper_joint_upper_limit"
                     value="${0.12 if gripper_hardware_protocol == 'gazebo' else 0.07}"/>
 
+    <!-- The fingertip joints mimic the driver with multiplier -1.0, so their
+         limits must be transformed by the same relation.  Reusing the driver
+         limits makes every open pose invalid in MoveIt: driver q=-1.57 maps
+         to fingertip q=+1.57, which used to exceed the fingertip's +0.12
+         Gazebo limit. -->
+    <xacro:property name="gripper_bucket_joint_lower_limit"
+                    value="${-gripper_joint_upper_limit}"/>
+    <xacro:property name="gripper_bucket_joint_upper_limit"
+                    value="${-gripper_joint_lower_limit}"/>
+
     <!-- ZERO POSE.  The bars sit 11.3428 deg off the gripper axis at q = 0,
          which is the one free choice in the whole model: the CAD snapshot is a
          pose, not a datum, and its two jaws are not even symmetric with each
@@ -317,7 +327,7 @@
         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
         <axis xyz="0 1 0"/>
         <limit effort="500" velocity="1.0"
-               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+               lower="${gripper_bucket_joint_lower_limit}" upper="${gripper_bucket_joint_upper_limit}"/>
         <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="-1.0" offset="0.0"/>
     </joint>
@@ -338,7 +348,7 @@
         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
         <axis xyz="0 -1 0"/>
         <limit effort="500" velocity="1.0"
-               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+               lower="${gripper_bucket_joint_lower_limit}" upper="${gripper_bucket_joint_upper_limit}"/>
         <dynamics damping="${fourbar_joint_damping}" friction="${fourbar_joint_friction}"/>
         <mimic joint="gripper_gear_left_joint" multiplier="-1.0" offset="0.0"/>
     </joint>

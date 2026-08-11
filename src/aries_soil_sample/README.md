@@ -123,48 +123,14 @@ which is a 23 mm depth error on every scoop.
   50 mm soil column. Widen it for coarse material, but not to full open, where
   the bucket presents no cutting edge.
 
-## The octomap cannot be checked against soil you intend to dig
+## Collision safety while digging
 
-Measured on the live sim at the surveyed site, with the 30° tilted entry, per
-waypoint:
-
-| waypoint | contact z | reachable | with collision checking |
-|---|---|---|---|
-| approach (60 mm above) | −0.107 | 4/4 | **0/4** |
-| entry (at surface) | −0.159 | 4/4 | **0/4** |
-| penetrate (30 mm deep) | −0.185 | 4/4 | **0/4** |
-
-Every pose is kinematically fine; all are rejected by collision checking. The
-collider is **the ground** — the octomap models the terrain the scoop exists to
-dig into, so a collision-free path into it cannot exist by definition.
-
-So `octomap_disable_during_scoop` (default **true**) suppresses octomap collision
-checking for the scoop, using the same mechanism the grasp package uses for the
-held probe: the ACM **default** entry for `<octomap>` (which covers everything
-not yet in the matrix) plus its explicit row (needed because an explicit pair
-entry beats the default, and `octomap_scene_setup.py` gives `<octomap>` one
-against every robot link). The sensor pipeline keeps running and the octomap
-keeps building — MoveIt just stops colliding against it.
-
-Since `move_group.launch.py` now defaults to `octomap_collision_checking:=false`,
-the octomap is **visualisation only stack-wide** and this per-scoop switch has
-nothing left to do: the disable is redundant and the restore is a deliberate
-no-op, because a stack-wide setting is not the scoop's to put back. Keep
-`octomap_collision_checking` in `soil_sample_params.yaml` matching the launch
-argument. Everything below applies when it is launched with `:=true`.
-
-It covers the whole scoop, not just the strokes below the surface: the approach
-60 mm *above* the ground is 0/4 too, because the 100 mm bucket shells reach into
-ground voxels well before the contact point does. It is restored in a `finally`,
-so it comes back on every exit path — including the buried-bucket abort.
-
-**The trade-off, stated plainly:** while off, the arm will not avoid obstacles
-that exist only in the octomap. What replaces it for the scoop is narrower but
-real: the site was surveyed for roughness and slope, the waypoints are a short
-straight line whose geometry follows from that survey, every one is bounded by
-`absolute_min_contact_z`, and all were IK pre-screened first. Set
-`octomap_disable_during_scoop: false` to keep checking on and accept that scoops
-will not plan.
+MoveIt does not build a live occupancy map from the cameras. That is deliberate
+for digging: the measured ground is the material the bucket must enter, so
+treating it as an obstacle would reject every scoop. Safety instead comes from
+the surveyed work region, slope and roughness checks, short geometry-derived
+strokes, the `absolute_min_contact_z` bound, IK pre-screening, robot
+self-collision, and explicit collision objects.
 
 ## The test world: `aries/worlds/soil_world.sdf`
 

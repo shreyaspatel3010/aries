@@ -28,7 +28,7 @@ Deliberately NOT auto-started: this drives a gripper into the ground. Call the
 import math
 import threading
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from dataclasses import replace
 
@@ -48,18 +48,14 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import (
-    AllowedCollisionEntry,
     Constraints,
     JointConstraint,
     MotionPlanRequest,
     PlanningOptions,
     RobotState,
 )
-from moveit_msgs.msg import PlanningScene, PlanningSceneComponents
 from moveit_msgs.srv import (
-    ApplyPlanningScene,
     GetCartesianPath,
-    GetPlanningScene,
     GetPositionFK,
     GetPositionIK,
 )
@@ -247,13 +243,6 @@ class SoilSampleNode(Node):
         # 300 ms single-shot IK is marginal at these near-limit poses.
         p('ik_prescreen_timeout_sec', 1.0)
         p('max_scoop_attempts', 3)
-        # Required for a scoop to execute at all: see set_octomap_collisions.
-        p('octomap_disable_during_scoop', True)
-        # Mirrors move_group.launch.py's octomap_collision_checking argument,
-        # whose default is false: the octomap is visualisation only stack-wide.
-        # When that is so, the post-scoop restore below must stay a no-op.
-        p('octomap_collision_checking', False)
-
         p('arm_joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
         # pick_home is the START posture, the posture the loaded bucket RETURNS
         # to, and the posture it leaves from to reach the box -- one posture, as
@@ -408,9 +397,6 @@ class SoilSampleNode(Node):
         self.max_attempts = max(1, int(g('max_scoop_attempts').value))
         self.scoop_min_depth_m = max(0.002, float(g('scoop_min_depth_m').value))
         self.scoop_all_cartesian = bool(g('scoop_all_cartesian').value)
-        self.octomap_off_during_scoop = bool(g('octomap_disable_during_scoop').value)
-        self.octomap_collision_checking = bool(g('octomap_collision_checking').value)
-
         self.arm_joints = [str(v) for v in g('arm_joint_names').value]
         self.home_q = [float(v) for v in g('home_joint_positions').value]
         self.survey_q = self.home_q
@@ -514,15 +500,6 @@ class SoilSampleNode(Node):
                                            callback_group=self._cb)
         self.fk_client = self.create_client(GetPositionFK, '/compute_fk',
                                            callback_group=self._cb)
-        self.get_scene_client = self.create_client(
-            GetPlanningScene, '/get_planning_scene', callback_group=self._cb)
-        self.apply_scene_client = self.create_client(
-            ApplyPlanningScene, '/apply_planning_scene', callback_group=self._cb)
-        # Starts wherever the launch-wide switch left it, so a visualisation-only
-        # octomap is never "restored" by this node.
-        self._octomap_collisions_enabled = self.octomap_collision_checking
-        self._octomap_acm_row_backup: Optional[Dict[str, bool]] = None
-
         self.marker_pub = self.create_publisher(MarkerArray, str(g('markers_topic').value), 1)
 
         self.create_service(Trigger, '~/scoop', self._srv_scoop, callback_group=self._cb)
@@ -1180,115 +1157,6 @@ class SoilSampleNode(Node):
         self._sleep(self.grip_settle)
         return True
 
-    # ---------------------------------------------------- octomap vs digging
-
-    def set_octomap_collisions(self, enabled: bool, reason: str) -> bool:
-        """Turn octomap collision checking on or off for the whole robot.
-
-        A digging task cannot be planned against an octomap of the ground it is
-        digging into. Measured on the live scene: at the surveyed site with the
-        30 deg tilted entry, approach/entry/penetrate are all 4/4 reachable and
-        all 0/4 once collision checking is on, because the terrain the scoop
-        exists to cut is modelled as an obstacle. There is no collision-free path
-        into the material, by definition.
-
-        Implemented exactly as the grasp package does it: the ACM DEFAULT entry
-        for ``<octomap>``, which covers every element that is not in the matrix
-        yet, plus its explicit row, which is needed because an explicit pair
-        entry BEATS the default and octomap_scene_setup.py gives ``<octomap>``
-        one against every robot link. It is a planning-scene switch, so the
-        sensor pipeline keeps running and the octomap keeps building -- MoveIt
-        just stops colliding against it -- and it is fully reversible.
-
-        Enabling does nothing when ``octomap_collision_checking`` is false: the
-        octomap is then visualisation only stack-wide, not this task's to
-        restore.
-
-        TRADE-OFF, stated plainly: while off the arm will NOT avoid obstacles
-        that exist only in the octomap. What replaces it for the scoop strokes is
-        narrower but real -- the site was surveyed for roughness and slope, the
-        waypoints are a short straight line whose geometry follows from that
-        survey, every one is bounded by absolute_min_contact_z, and all of them
-        were IK pre-screened. It is re-enabled the moment the stroke is done.
-        """
-        if not self.octomap_collision_checking:
-            # Off stack-wide: nothing to suppress for the scoop and nothing to
-            # restore afterwards, so skip the planning-scene round-trip entirely.
-            self._octomap_collisions_enabled = False
-            self.get_logger().debug(
-                'Octomap collision checking stays off: it is disabled stack-wide '
-                'by octomap_collision_checking.')
-            return True
-        if not (self.get_scene_client.wait_for_service(timeout_sec=3.0)
-                and self.apply_scene_client.wait_for_service(timeout_sec=3.0)):
-            self.get_logger().error(
-                'get/apply_planning_scene unavailable; cannot '
-                f'{"enable" if enabled else "disable"} octomap collision checking.')
-            return False
-        req = GetPlanningScene.Request()
-        req.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
-        res = self._wait(self.get_scene_client.call_async(req), 8.0)
-        if res is None:
-            self.get_logger().error('get_planning_scene did not answer.')
-            return False
-
-        acm = res.scene.allowed_collision_matrix
-        names = list(acm.default_entry_names)
-        values = list(acm.default_entry_values)
-        # An ACM entry means "collision ALLOWED", i.e. checking is OFF.
-        allowed = not bool(enabled)
-        if '<octomap>' in names:
-            values[names.index('<octomap>')] = allowed
-        else:
-            names.append('<octomap>')
-            values.append(allowed)
-        acm.default_entry_names = names
-        acm.default_entry_values = values
-
-        # ...and the explicit row, which overrides the default for every pair it
-        # covers. Backed up on the way down so the restore reinstates exactly the
-        # per-link allowances octomap_scene_setup.py seeded, rather than guessing.
-        entry_names = list(acm.entry_names)
-        rows = [list(entry.enabled) for entry in acm.entry_values]
-        if '<octomap>' in entry_names:
-            oct_i = entry_names.index('<octomap>')
-            if allowed:
-                if self._octomap_acm_row_backup is None:
-                    self._octomap_acm_row_backup = {
-                        name: bool(rows[oct_i][i]) for i, name in enumerate(entry_names)}
-                for i in range(len(entry_names)):
-                    rows[oct_i][i] = True
-                    rows[i][oct_i] = True
-            elif self._octomap_acm_row_backup is not None:
-                for i, name in enumerate(entry_names):
-                    previous = self._octomap_acm_row_backup.get(name)
-                    if previous is None:
-                        continue
-                    rows[oct_i][i] = previous
-                    rows[i][oct_i] = previous
-                self._octomap_acm_row_backup = None
-            acm.entry_names = entry_names
-            acm.entry_values = [AllowedCollisionEntry(enabled=row) for row in rows]
-
-        scene = PlanningScene()
-        scene.is_diff = True
-        scene.allowed_collision_matrix = acm
-        apply_req = ApplyPlanningScene.Request()
-        apply_req.scene = scene
-        if self._wait(self.apply_scene_client.call_async(apply_req), 8.0) is None:
-            self.get_logger().error('apply_planning_scene did not answer.')
-            return False
-        self._octomap_collisions_enabled = bool(enabled)
-        if enabled:
-            self.get_logger().info(f'[CollisionWorld] Octomap collision checking ON: {reason}')
-        else:
-            self.get_logger().warning(
-                f'[CollisionWorld] Octomap collision checking OFF: {reason} The arm will '
-                'not avoid octomap-only obstacles until it is restored.')
-        # The scene needs a moment to propagate before the next plan is requested.
-        self._sleep(0.4)
-        return True
-
     # --------------------------------------------------------- verification
 
     def verify_capture(self, site: terrain.ScoopSite,
@@ -1556,14 +1424,6 @@ class SoilSampleNode(Node):
             # different ground rather than re-cutting the same failed patch.
             site = sites[min(attempt - 1, len(sites) - 1)]
 
-            # The octomap models the ground this scoop exists to cut, so nothing
-            # in the scoop can be collision-checked against it -- including the
-            # wrist-roll IK search inside scoop_link_poses, which is why this is
-            # disabled BEFORE that call and not after it. Restored in the finally
-            # below however this attempt ends.
-            if self.octomap_off_during_scoop and not self.set_octomap_collisions(
-                    False, f'scoop attempt {attempt}: the octomap models the soil being cut.'):
-                return False, 'could not suppress octomap collisions for the scoop'
             try:
                 built = self.scoop_link_poses(site)
                 if built is None:
@@ -1640,11 +1500,9 @@ class SoilSampleNode(Node):
                     self.get_logger().warning('close command failed; extracted anyway.')
                     continue
             finally:
-                # Restore on every path, including the buried-bucket return: the
-                # next thing anyone plans must see the obstacles again.
-                if self.octomap_off_during_scoop:
-                    self.set_octomap_collisions(
-                        True, 'scoop stroke finished; obstacle avoidance restored.')
+                # Keep the extraction block structurally exception-safe; there
+                # is no live occupancy map to toggle around the soil stroke.
+                pass
 
             verdict, reason = self.verify_capture(site, before)
             if verdict == scoop_lib.CAPTURED:
@@ -1933,18 +1791,7 @@ class SoilSampleNode(Node):
         if not sites:
             res.success, res.message = False, 'no site passed the terrain gates'
             return res
-        # Screen under the same collision settings a real scoop runs under,
-        # otherwise this reports a failure the scoop would never hit (or misses
-        # one it would).
-        restore = False
-        if self.octomap_off_during_scoop:
-            restore = self.set_octomap_collisions(
-                False, 'dry run: screening under scoop collision settings.')
-        try:
-            built = self.scoop_link_poses(sites[0])
-        finally:
-            if restore:
-                self.set_octomap_collisions(True, 'dry run finished.')
+        built = self.scoop_link_poses(sites[0])
         if built is None:
             res.success, res.message = False, (
                 'rejected by the safety floor or no wrist roll has IK for the whole '

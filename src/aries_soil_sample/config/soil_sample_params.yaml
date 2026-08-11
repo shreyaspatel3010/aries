@@ -102,7 +102,7 @@ soil_sample_node:
     #   scoop_depth_m              = 0.030  -> bucket ends 30 mm below the surface
     # STRAIGHT DOWN, as the sequence requires. This only became possible once
     # the soil was raised onto a 60 mm plinth: measured at the raised surface
-    # (collisions ON, octomap suppressed, whole stroke must solve),
+    # (self-collision ON, whole stroke must solve),
     #        surf z=-0.100  -0.120  -0.138  -0.160
     #   x=0.45     3/4        2/4     2/4     2/4
     #   x=0.50     3/4        2/4     2/4     0/4
@@ -232,16 +232,6 @@ soil_sample_node:
     # 300 ms single-shot IK is marginal at these near-limit poses and was part of
     # the same flakiness.
     ik_prescreen_timeout_sec: 1.0
-    # Required for a scoop to execute at all -- the octomap models the soil being
-    # cut, so nothing in the scoop (including the wrist-roll IK search) can be
-    # collision-checked against it. See the README for the trade-off.
-    octomap_disable_during_scoop: true
-    # Must MATCH move_group.launch.py's octomap_collision_checking argument.
-    # false (the launch default) means the octomap is visualisation only for the
-    # whole stack -- still built from the depth camera and still drawn in RViz,
-    # but never collision-checked. The post-scoop restore above then stays a
-    # no-op: the setting is stack-wide and not this task's to put back.
-    octomap_collision_checking: false
     max_scoop_attempts: 3
 
     # ── Postures (radians, joint1..joint6) ─────────────────────────────────

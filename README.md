@@ -88,42 +88,15 @@ source install/setup.bash
 
 Use your installed ROS distro in place of `jazzy` if needed.
 
-## Octomap Collision Checking
+## Camera DepthClouds
 
-**The Octomap is visualisation only by default.** `octomap_collision_checking`
-defaults to `false`, so the gripper depth camera still builds the Octomap and
-RViz still draws it, but MoveIt never collision-checks against it. Stated
-plainly: the arm will **not** avoid an obstacle that exists only in the
-Octomap. What still protects it is self-collision against the robot model,
-explicit collision objects such as the detected-probe mesh, and each task's own
-height and reach guards.
+RViz displays two independent colored `DepthCloud` views. Each camera uses its
+own depth aligned to its own RGB image, CameraInfo, optical frame, and TF:
 
-`octomap_scene_setup.py` applies this once at startup by writing both halves of
-the allowance — the ACM **default** entry for `<octomap>`, which covers objects
-and attached bodies that appear later, and its explicit row against every robot
-link, because an explicit pair entry beats the default. The same one-shot also
-clears voxels inserted before TF and the self-filter were ready, which is what
-otherwise puts the wheels-on-mapped-floor start state in collision.
+- `rover_DepthCloud`: `/camera/aligned_depth_to_color/image_raw`
+- `gripper_DepthCloud`: `/gripper_camera/aligned_depth_to_color/image_raw`
 
-Turn real avoidance on with:
-
-```bash
-# Simulation / any move_group launch
-ros2 launch aries_moveit move_group.launch.py octomap_collision_checking:=true
-
-# Arm + gripper hardware
-ros2 launch aries_moveit aries_hardware.launch.py octomap_collision_checking:=true
-```
-
-The `aries_bringup` wrappers and `aries my_robot.launch.py` do not forward this
-argument, so set it on the `aries_moveit` launch directly.
-
-Both manipulation tasks carry a matching `octomap_collision_checking` flag in
-their params file that must be kept equal to the launch argument. While it is
-`false`, their per-task octomap switches
-(`octomap_disable_after_grasp_confirmed`, `octomap_disable_during_scoop`) have
-nothing left to turn off, and neither task turns checking back on at the end of
-a sequence — the setting is stack-wide and not a task's to restore.
+The camera paths do not publish a `PointCloud2` or build an occupancy map.
 
 ## Autonomous Manipulation
 
@@ -206,14 +179,8 @@ re-surveying and differencing the height map — a scoop that collected soil
 leaves a hole — because the gripper reports its command rather than a measured
 position and MoveIt's self-filter blanks the near field inside the jaws.
 
-Note that `octomap_disable_during_scoop` defaults to **true**. The octomap
-models the ground the scoop exists to dig into, so a collision-free path into
-it cannot exist. With the stack-wide default of
-`octomap_collision_checking:=false` this per-scoop switch is already redundant
-and its post-scoop restore is a deliberate no-op; it matters only when you
-launch with checking on. Either way the arm does not avoid obstacles that exist
-only in the octomap during a scoop — see the package README for the safeguards
-that replace it.
+MoveIt does not build a live occupancy map from the camera data. Soil safety is
+provided by the task's height-map, roughness, slope, reach, and motion guards.
 
 ## Firmware
 
@@ -672,8 +639,8 @@ is the right topic for the default gamepad path. `/servo_node/status` only
 describes the MoveIt Servo chain, which the gamepad does not use — check it when
 debugging the keyboard teleop.
 
-Remember that an Octomap obstacle is not a reason for the arm to stop by
-default; see [Octomap Collision Checking](#octomap-collision-checking).
+Camera depth is visualized through the two independent DepthCloud displays; it
+is not inserted into MoveIt's collision world.
 
 ## Development Notes
 
