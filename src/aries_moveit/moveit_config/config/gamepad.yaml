@@ -72,7 +72,10 @@
     # trigger mid-move cannot silently change what the sticks do.
     # LB/button 4 belongs to rover and blocks arm output
     # Hold X/button 2 = manual gripper open; hold B/button 1 = manual gripper close
-    # Hold Y/button 3 = real-arm physical hand guiding (ZeroTorque)
+    # Hold RB + Y/button 3 = real-arm physical hand guiding (ZeroTorque)
+    # Hold LT + press Y/button 3 = planned move to pick_home
+    # Hold LT + press A/button 0 = planned move to probe_drop
+    # Hold LT + press B/button 1 = planned move to soil_drop
     button_enable: 5
     button_rover_enable: 4
 
@@ -94,6 +97,36 @@
     button_gripper_open: 2
     button_gripper_close: 1
     button_gripper_toggle: 0
+
+    # arm_preset_pose_joystick: LT (canonical axis 2, 0.0 released -> 1.0
+    # pressed) plus a face button sends a planned move to a named joint preset.
+    #   LT + Y/button 3 -> pick_home
+    #   LT + A/button 0 -> probe_drop
+    #   LT + B/button 1 -> soil_drop
+    # No face button is taken with LT held: RB + Y is hand guiding, A is
+    # button_gripper_toggle and B is button_gripper_close, but the teleop node
+    # only reads the gripper buttons after its arm_enabled gate (RB or RT held)
+    # and the preset node refuses to fire in exactly that case. The two sets
+    # never overlap.
+    #
+    # preset_joint_positions_flat is row-major, one row of preset_joint_names
+    # per entry in preset_pose_names. Rows must stay in step with the SRDF
+    # group states of the same names (and pick_home with vision_grasp_node's
+    # pick_home_joint_positions).
+    preset_modifier_axis: 2
+    preset_modifier_threshold: 0.5
+    preset_modifier_release: 0.35
+    preset_buttons: [3, 0, 1]
+    preset_pose_names: ["pick_home", "probe_drop", "soil_drop"]
+    preset_joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    preset_joint_positions_flat: [
+      0.0,     0.366519,  1.18682, 0.0349066,  1.55334, 1.50098,
+      1.81514, -1.18682,  1.97222, 0.0349066,  1.51844, 1.58825,
+      1.29154, -0.331613, 1.8326,  -0.0698132, 1.53589, 2.84489,
+    ]
+    preset_velocity_scale: 0.25
+    preset_acceleration_scale: 0.25
+    preset_status_topic: "/arm_preset_pose/status"
 
     axis_linear_x: 1
     axis_linear_y: 0

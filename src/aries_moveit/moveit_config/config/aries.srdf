@@ -179,6 +179,29 @@
         <joint name="joint6" value="1.43117" />
         <joint name="gripper_gear_left_joint" value="-1.57" />
     </group_state>
+    <!-- Arm joints only, deliberately: with no gripper_gear_left_joint entry
+         MoveIt leaves the jaw wherever it is instead of driving it to a stored
+         opening, so this pose can be commanded while holding a probe. Same
+         partial-state trick as gripper_open/gripper_close below, mirrored.
+         Dialled in from RViz: 104, -68, 113, 2, 87, 91 degrees. -->
+    <group_state name="probe_drop" group="arm_with_gripper">
+        <joint name="joint1" value="1.81514" />
+        <joint name="joint2" value="-1.18682" />
+        <joint name="joint3" value="1.97222" />
+        <joint name="joint4" value="0.0349066" />
+        <joint name="joint5" value="1.51844" />
+        <joint name="joint6" value="1.58825" />
+    </group_state>
+    <!-- Arm joints only, same reasoning as probe_drop above.
+         Dialled in from RViz: 74, -19, 105, -4, 88, 163 degrees. -->
+    <group_state name="soil_drop" group="arm_with_gripper">
+        <joint name="joint1" value="1.29154" />
+        <joint name="joint2" value="-0.331613" />
+        <joint name="joint3" value="1.8326" />
+        <joint name="joint4" value="-0.0698132" />
+        <joint name="joint5" value="1.53589" />
+        <joint name="joint6" value="2.84489" />
+    </group_state>
     <group_state name="pick_home2" group="arm_with_gripper">
         <joint name="joint1" value="0.0349066" />
         <joint name="joint2" value="0.0872665" />

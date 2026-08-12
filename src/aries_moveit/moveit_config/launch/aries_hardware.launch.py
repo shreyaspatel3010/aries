@@ -629,6 +629,20 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # LT + Y -> pick_home, LT + A -> probe_drop, LT + B -> soil_drop, all as
+    # planned MoveGroup moves.
+    # Runs in both joystick modes: it only ever sends a MoveGroup goal, and
+    # refuses while RB/RT/LB are held, so it never competes with whichever
+    # teleop node owns the arm.
+    arm_preset_pose_node = Node(
+        condition=IfCondition(use_joystick),
+        package="aries_moveit",
+        executable="arm_preset_pose_joystick.py",
+        name="arm_preset_pose_joystick",
+        parameters=[gamepad_file, teleop_speeds_file],
+        output="screen",
+    )
+
     # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
     # Geometry tables model the 85.563 mm four-bar of gripper_new only, so this
     # stays off for v2 (50 mm parallelogram, 83 mm stroke) rather than drawing a
@@ -674,6 +688,7 @@ def launch_setup(context, *args, **kwargs):
         joy_layout_normalizer_node,
         gamepad_node,
         move_group_joystick_node,
+        arm_preset_pose_node,
         rviz_node,
     ]
     if gripper_spawner_event:
