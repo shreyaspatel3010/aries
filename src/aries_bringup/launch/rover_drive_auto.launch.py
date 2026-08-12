@@ -46,12 +46,9 @@ def generate_launch_description():
             "start_imu_driver": LaunchConfiguration("start_imu_driver"),
             "use_imu": LaunchConfiguration("use_imu"),
             "imu_port": LaunchConfiguration("imu_port"),
-            "ybimu_port": LaunchConfiguration("ybimu_port"),
             "imu_baudrate": LaunchConfiguration("imu_baudrate"),
             "imu_frame": LaunchConfiguration("imu_frame"),
-            "ybimu_frame": LaunchConfiguration("ybimu_frame"),
-            "bno055_topic": LaunchConfiguration("imu_topic"),
-            "ybimu_topic": LaunchConfiguration("ybimu_topic"),
+            "imu_topic": LaunchConfiguration("imu_topic"),
         }.items(),
     )
 
@@ -97,20 +94,14 @@ def generate_launch_description():
                     "auto",
                     "true",
                     "false",
-                    "ybimu",
-                    "bno055",
+                    "microstrain",
                 ],
             ),
-            DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0"),
-            DeclareLaunchArgument(
-                "ybimu_port", default_value="/dev/imu_ybimu"
-            ),
+            DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
             DeclareLaunchArgument("imu_baudrate", default_value="115200"),
-            DeclareLaunchArgument("imu_frame", default_value="bno055"),
-            DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
-            DeclareLaunchArgument("imu_topic", default_value="/bno055/imu"),
+            DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
             DeclareLaunchArgument(
-                "ybimu_topic", default_value="/ybimu/imu"
+                "imu_topic", default_value="/microstrain/imu/data"
             ),
             rover,
         ]

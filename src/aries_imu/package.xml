@@ -3,7 +3,7 @@
 <package format="3">
   <name>aries_imu</name>
   <version>0.1.0</version>
-  <description>YaBoom and BNO055 IMU selection for the Aries rover.</description>
+  <description>MicroStrain by HBK 3DM-GX5-AHRS integration for the Aries rover.</description>
 
   <maintainer email="shreyaspatel517@gmail.com">shreyas</maintainer>
   <license>BSD-3-Clause</license>
@@ -13,11 +13,8 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>aries_common</exec_depend>
-  <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>bno055</exec_depend>
-  <exec_depend>ybimu_ros2</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>microstrain_inertial_driver</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -35,14 +35,14 @@ ros2 run rtabmap_odom rgbd_odometry \
   align_depth.enable:=true
   
   
-ros2 run bno055 bno055 --ros-args --params-file ./src/bno055/bno055/params/bno055_params.yaml
+ros2 launch aries_imu imu.launch.py
 
 
 ros2 run robot_localization ekf_node --ros-args --params-file ~/colcon_ws/src/rover_nav/config/ekf_config.yaml
 
 
 
-ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link bno055
+# base_link -> imu_frame is a fixed joint in aries_base.xacro; no static TF needed.
 
 
 colcon build --packages-skip cmrosutils carmaker_rsds_client hellocm hellocm_cmnode hellocm_msgs

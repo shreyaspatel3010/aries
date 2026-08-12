@@ -6,11 +6,10 @@ This package fuses; it does not drive sensors. The IMU node itself is started by
 aries_imu, and this file only needs to know which source won, because that
 decides which EKF config is loaded:
 
-  ybimu     YaBoom ybimu on its serial port -> ekf_config.yaml
-  bno055    BNO055 on its serial port        -> ekf_config.yaml
-  none      no IMU, wheel odometry only     -> ekf_odom_only.yaml
+  microstrain  3DM-GX5-AHRS on its serial port -> ekf_config.yaml
+  none         no IMU, wheel odometry only     -> ekf_odom_only.yaml
 
-It resolves the source with the same aries_common probes aries_imu uses, so both
+It resolves the source with the same aries_common probe aries_imu uses, so both
 packages reach the same answer from the same arguments without having to agree
 out of band.
 
@@ -89,58 +88,73 @@ def _start_localization(context, *args, **kwargs):
         LaunchConfiguration("rover_hardware_protocol").perform(context),
         LaunchConfiguration("can_interface").perform(context),
     )
-    if backend != "odrive":
+    use_imu = LaunchConfiguration("use_imu").perform(context)
+    imu_port = LaunchConfiguration("imu_port").perform(context)
+    imu_frame = LaunchConfiguration("imu_frame").perform(context)
+    imu_topic = LaunchConfiguration("imu_topic").perform(context)
+
+    imu_source, imu_present = resolve_imu_source(use_imu, imu_port)
+
+    # On the mock backend with no IMU there is nothing to fuse and no encoders
+    # to read, so mock_rover_drive keeps /odom and the transform to itself.
+    if backend != "odrive" and imu_source != "microstrain":
         return [LogInfo(msg=(
-            "[rover localization] mock backend — skipping Odom.py/EKF; "
+            "[rover localization] mock backend and no IMU — skipping Odom.py/EKF; "
             "mock_rover_drive owns /odom and the odom->base_footprint TF."
         ))]
 
-    use_imu = LaunchConfiguration("use_imu").perform(context)
-    imu_port = LaunchConfiguration("imu_port").perform(context)
-    ybimu_port = LaunchConfiguration("ybimu_port").perform(context)
-    imu_frame = LaunchConfiguration("imu_frame").perform(context)
-    bno055_topic = LaunchConfiguration("bno055_topic").perform(context)
-    ybimu_topic = LaunchConfiguration("ybimu_topic").perform(context)
-
-    imu_source, ybimu_available, bno_available = resolve_imu_source(
-        use_imu,
-        imu_port,
-        ybimu_port,
-    )
-
     ekf_overrides = {"base_link_frame": "base_footprint"}
 
-    if imu_source == "ybimu":
-        ekf_overrides["imu0"] = ybimu_topic
-        ekf_config = _ekf_config("ekf_config.yaml")
-    elif imu_source == "bno055":
-        ekf_overrides["imu0"] = bno055_topic
+    if imu_source == "microstrain":
+        ekf_overrides["imu0"] = imu_topic
         ekf_config = _ekf_config("ekf_config.yaml")
     else:
         ekf_overrides["odom0_config"] = ODOM_ONLY_CONFIG
         ekf_config = _ekf_config("ekf_odom_only.yaml")
 
-    return [
+    actions = [
         LogInfo(msg=(
             "[rover localization] "
-            f"use_imu={use_imu} selected={imu_source} "
-            f"ybimu_available={ybimu_available} "
-            f"bno_available={bno_available} imu_frame={imu_frame}"
-        )),
-        Node(
-            package="rover_nav",
-            executable="Odom.py",
-            name="odom_node",
-            output="screen",
-        ),
+            f"backend={backend} use_imu={use_imu} selected={imu_source} "
+            f"microstrain_available={imu_present} "
+            f"imu_frame={imu_frame} imu_topic={imu_topic}"
+        ))
+    ]
+
+    if backend == "odrive":
+        # Wheel odometry off the ODrive encoders over CAN.
+        actions.append(
+            Node(
+                package="rover_nav",
+                executable="Odom.py",
+                name="odom_node",
+                output="screen",
+            )
+        )
+    else:
+        # Odom.py would find no CAN bus here. mock_rover_drive already
+        # publishes /odom from the joystick command, so the EKF fuses that for
+        # forward speed and the real IMU for heading. drive.launch.py starts
+        # the mock with publish_tf false so this EKF is the only owner of
+        # odom -> base_footprint.
+        actions.append(
+            LogInfo(msg=(
+                "[rover localization] mock backend with IMU — fusing "
+                "mock_rover_drive /odom with the real IMU; EKF owns "
+                "odom->base_footprint"
+            ))
+        )
+
+    actions.append(
         Node(
             package="robot_localization",
             executable="ekf_node",
             name="ekf_filter_node",
             output="screen",
             parameters=[ekf_config, ekf_overrides],
-        ),
-    ]
+        )
+    )
+    return actions
 
 
 def generate_launch_description():
@@ -157,12 +171,10 @@ def generate_launch_description():
         DeclareLaunchArgument("can_interface", default_value="can0"),
 
         DeclareLaunchArgument("use_imu", default_value="auto",
-                              choices=["auto", "true", "false", "ybimu", "bno055"]),
-        DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0"),
-        DeclareLaunchArgument("ybimu_port", default_value="/dev/imu_ybimu"),
-        DeclareLaunchArgument("imu_frame", default_value="bno055"),
-        DeclareLaunchArgument("bno055_topic", default_value="/bno055/imu"),
-        DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
+                              choices=["auto", "true", "false", "microstrain"]),
+        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+        DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
+        DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
 
         OpaqueFunction(function=_start_localization),
     ])

@@ -6,7 +6,7 @@ This file only declares arguments, starts the robot model and the hardware
 checker, and forwards everything else to the subsystem packages. Each of them
 has one launch file and runs standalone:
 
-  aries_imu          imu.launch.py           YaBoom or BNO055 IMU
+  aries_imu          imu.launch.py           MicroStrain 3DM-GX5-AHRS
   aries_localization localization.launch.py  Odom.py + EKF
   aries_drive        drive.launch.py         ODrive cmd_vel bridge, or mock drive
   aries_teleop       joystick.launch.py      joy driver, layout normalizer, rover controller
@@ -20,8 +20,8 @@ bench and on the real rover without extra arguments.
 
   - drive   : ODrive over CAN if the CAN interface exists, else mock_rover_drive
               (rover_hardware_protocol=auto)
-  - IMU     : YaBoom ybimu if present, then BNO055, otherwise wheel-odom only
-              (use_imu=auto)
+  - IMU     : MicroStrain 3DM-GX5-AHRS if /dev/microstrain_main exists, else
+              wheel-odom only (use_imu=auto)
   - localization: Odom.py + EKF on the real drive; skipped in mock (mock owns
               /odom and the odom->base_footprint TF)
 
@@ -184,15 +184,12 @@ def generate_launch_description():
                               description="auto starts the driver for whichever IMU hardware is "
                                           "present, on any drive backend; false disables it."),
         DeclareLaunchArgument("use_imu", default_value="auto",
-                              choices=["auto", "true", "false", "ybimu", "bno055"]),
-        DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0",
-                              description="BNO055 serial port."),
-        DeclareLaunchArgument("ybimu_port", default_value="/dev/imu_ybimu"),
+                              choices=["auto", "true", "false", "microstrain"]),
+        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main",
+                              description="3DM-GX5-AHRS serial port."),
         DeclareLaunchArgument("imu_baudrate", default_value="115200"),
-        DeclareLaunchArgument("imu_frame", default_value="bno055"),
-        DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
-        DeclareLaunchArgument("bno055_topic", default_value="/bno055/imu"),
-        DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
+        DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
+        DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
 
         *_robot_model_nodes(),
 
@@ -219,12 +216,9 @@ def generate_launch_description():
                 "start_imu_driver",
                 "use_imu",
                 "imu_port",
-                "ybimu_port",
                 "imu_baudrate",
                 "imu_frame",
-                "ybimu_frame",
-                "bno055_topic",
-                "ybimu_topic",
+                "imu_topic",
             ],
         ),
         _include(
@@ -235,10 +229,8 @@ def generate_launch_description():
                 "can_interface",
                 "use_imu",
                 "imu_port",
-                "ybimu_port",
                 "imu_frame",
-                "bno055_topic",
-                "ybimu_topic",
+                "imu_topic",
             ],
         ),
         _include("aries_drive", "drive.launch.py", [
@@ -260,5 +252,9 @@ def generate_launch_description():
             "drive_max_wheel_rps",
             "drive_wheel_accel_rps2",
             "use_cmd_vel_relay",
+            # Lets the mock backend work out whether the EKF will claim
+            # odom -> base_footprint; no IMU driver is started there.
+            "use_imu",
+            "imu_port",
         ]),
     ])

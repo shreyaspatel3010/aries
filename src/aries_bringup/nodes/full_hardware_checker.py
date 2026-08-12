@@ -9,7 +9,7 @@ Checks:
   • Arm controller/joint-state activity
   • Gripper serial or mock fallback
   • Rover CAN / ODrive axes
-  • Rover BNO055 or YaBoom IMU, when forced or auto-detected
+  • Rover MicroStrain 3DM-GX5-AHRS, when forced or auto-detected
   • Mock rover fallback heartbeat
   • Joystick /joy
   • Optional RealSense USB detection and image stream activity
@@ -122,12 +122,9 @@ class FullHardwareChecker(Node):
         )
         self.declare_parameter("can_interface", "can0")
         self.declare_parameter("use_imu", "auto")
-        self.declare_parameter("imu_port", "/dev/ttyUSB0")
-        self.declare_parameter("ybimu_port", "/dev/imu_ybimu")
-        self.declare_parameter("imu_topic", "/bno055/imu")
-        self.declare_parameter("ybimu_topic", "/ybimu/imu")
-        self.declare_parameter("imu_frame", "bno055")
-        self.declare_parameter("ybimu_frame", "imu_frame")
+        self.declare_parameter("imu_port", "/dev/microstrain_main")
+        self.declare_parameter("imu_topic", "/microstrain/imu/data")
+        self.declare_parameter("imu_frame", "imu_frame")
         self.declare_parameter("expected_odrive_axes", 6)
         self.declare_parameter("realsense_color_topic", "/gripper_camera/color/image_raw")
 
@@ -155,11 +152,8 @@ class FullHardwareChecker(Node):
         self.can_interface = str(self.get_parameter("can_interface").value)
         self.use_imu = str(self.get_parameter("use_imu").value).strip().lower()
         self.imu_port = str(self.get_parameter("imu_port").value)
-        self.ybimu_port = str(self.get_parameter("ybimu_port").value)
         self.imu_topic = str(self.get_parameter("imu_topic").value)
-        self.ybimu_topic = str(self.get_parameter("ybimu_topic").value)
         self.imu_frame = str(self.get_parameter("imu_frame").value)
-        self.ybimu_frame = str(self.get_parameter("ybimu_frame").value)
         self.expected_odrive_axes = int(self.get_parameter("expected_odrive_axes").value)
         self.realsense_color_topic = str(self.get_parameter("realsense_color_topic").value)
 
@@ -184,8 +178,6 @@ class FullHardwareChecker(Node):
         self.realsense_color_time = None
         self.imu_time = None
         self.imu_frame_id = ""
-        self.ybimu_time = None
-        self.ybimu_frame_id = ""
 
         self.prev_snapshot = None
         self.initial_check_done = False
@@ -233,9 +225,6 @@ class FullHardwareChecker(Node):
         self.create_subscription(String, "/arm_joystick/status", self._arm_joystick_cb, sensor_qos)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_vel_cb, sensor_qos)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, sensor_qos)
-        self.create_subscription(
-            Imu, self.ybimu_topic, self._ybimu_cb, sensor_qos
-        )
         self.create_subscription(Image, self.realsense_color_topic, self._realsense_color_cb, sensor_qos)
 
         # ── Manual service ────────────────────────────────────────────────────
@@ -296,10 +285,6 @@ class FullHardwareChecker(Node):
         self.imu_time = self.get_clock().now()
         self.imu_frame_id = msg.header.frame_id
 
-    def _ybimu_cb(self, msg: Imu):
-        self.ybimu_time = self.get_clock().now()
-        self.ybimu_frame_id = msg.header.frame_id
-
     def _realsense_color_cb(self, msg: Image):
         self.realsense_color_time = self.get_clock().now()
 
@@ -338,27 +323,12 @@ class FullHardwareChecker(Node):
     def _imu_port_present(self) -> bool:
         return Path(self.imu_port).exists()
 
-    def _ybimu_port_present(self) -> bool:
-        return Path(self.ybimu_port).exists()
-
-    def _bno055_package_present(self) -> bool:
+    def _microstrain_package_present(self) -> bool:
         try:
-            get_package_share_directory("bno055")
+            get_package_share_directory("microstrain_inertial_driver")
             return True
         except PackageNotFoundError:
             return False
-
-    def _ybimu_package_present(self) -> bool:
-        try:
-            get_package_share_directory("ybimu_ros2")
-            return True
-        except PackageNotFoundError:
-            return False
-
-    def _imu_expected(self, imu_port_present: bool, bno055_package_present: bool) -> bool:
-        if self.use_imu in ("auto", "detect"):
-            return imu_port_present and bno055_package_present
-        return _as_bool(self.use_imu)
 
     def _realsense_present(self) -> bool:
         for dev_path in glob.glob("/sys/bus/usb/devices/*/"):
@@ -418,36 +388,23 @@ class FullHardwareChecker(Node):
             for i in range(NUM_AXES)
         ]
         imu_port_present = self._imu_port_present() if self.check_imu else False
-        ybimu_port_present = (
-            self._ybimu_port_present() if self.check_imu else False
+        microstrain_package_present = (
+            self._microstrain_package_present() if self.check_imu else False
         )
-        bno055_package_present = self._bno055_package_present() if self.check_imu else False
-        ybimu_package_present = (
-            self._ybimu_package_present() if self.check_imu else False
-        )
-        ybimu_publishers = self.count_publishers(self.ybimu_topic)
 
         selected_imu = "none"
         selected_imu_topic = ""
         selected_imu_time = None
         selected_imu_frame = ""
         if self.check_imu and self.use_imu not in ("false", "0", "no", "off", "none", "odom_only", "wheel_odom"):
-            if self.use_imu in ("ybimu", "yaboom"):
-                selected_imu = "ybimu"
-            elif self.use_imu == "bno055":
-                selected_imu = "bno055"
-            elif ybimu_port_present and ybimu_package_present:
-                selected_imu = "ybimu"
-            elif imu_port_present and bno055_package_present:
-                selected_imu = "bno055"
-            elif ybimu_publishers > 0:
-                selected_imu = "ybimu"
+            # Mirrors aries_common.detect.resolve_imu_source: the device node
+            # and the driver package must both be there, however use_imu was
+            # spelled, so the checker and the launch stack agree on whether an
+            # IMU was expected at all.
+            if imu_port_present and microstrain_package_present:
+                selected_imu = "microstrain"
 
-        if selected_imu == "ybimu":
-            selected_imu_topic = self.ybimu_topic
-            selected_imu_time = self.ybimu_time
-            selected_imu_frame = self.ybimu_frame_id
-        elif selected_imu == "bno055":
+        if selected_imu == "microstrain":
             selected_imu_topic = self.imu_topic
             selected_imu_time = self.imu_time
             selected_imu_frame = self.imu_frame_id
@@ -460,9 +417,7 @@ class FullHardwareChecker(Node):
             "selected_imu": selected_imu,
             "selected_imu_topic": selected_imu_topic,
             "imu_port_present": imu_port_present,
-            "ybimu_port_present": ybimu_port_present,
-            "bno055_package_present": bno055_package_present,
-            "ybimu_package_present": ybimu_package_present,
+            "microstrain_package_present": microstrain_package_present,
             "imu_ok": self._is_recent(selected_imu_time) if self.check_imu else False,
             "imu_publishers": self.count_publishers(selected_imu_topic) if selected_imu_topic else 0,
             "imu_frame_id": selected_imu_frame,
@@ -661,31 +616,10 @@ class FullHardwareChecker(Node):
         print(f"\n{B}  Rover IMU:{RST}", flush=True)
 
         if s["imu_expected"]:
-            if s["selected_imu"] == "ybimu":
-                if s["ybimu_port_present"]:
-                    print(
-                        f"  {G}✓{RST} YaBoom IMU port {self.ybimu_port} — "
-                        f"{G}present{RST}",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        f"  {R}✗{RST} YaBoom IMU port {self.ybimu_port} — "
-                        f"{R}missing but ybimu selected{RST}",
-                        flush=True,
-                    )
-                if not s["ybimu_package_present"]:
-                    print(
-                        f"  {R}✗{RST} ybimu_ros2 package — {R}not found{RST}",
-                        flush=True,
-                    )
-            elif s["selected_imu"] == "bno055":
-                if s["imu_port_present"]:
-                    print(f"  {G}✓{RST} IMU port {self.imu_port} — {G}present{RST}", flush=True)
-                else:
-                    print(f"  {R}✗{RST} IMU port {self.imu_port} — {R}missing but BNO055 selected{RST}", flush=True)
-                if not s["bno055_package_present"]:
-                    print(f"  {R}✗{RST} bno055 package — {R}not found{RST}", flush=True)
+            print(
+                f"  {G}✓{RST} MicroStrain port {self.imu_port} — {G}present{RST}",
+                flush=True,
+            )
 
             if s["imu_ok"]:
                 frame_detail = f" frame={s['imu_frame_id']}" if s["imu_frame_id"] else ""
@@ -700,10 +634,11 @@ class FullHardwareChecker(Node):
                 print(f"  {R}✗{RST} {s['selected_imu_topic']} — {R}no publisher/data{RST}", flush=True)
         elif self.check_imu:
             mode = f"use_imu:={self.use_imu}"
-            if s["ybimu_port_present"] or s["imu_port_present"]:
+            if s["imu_port_present"] and not s["microstrain_package_present"]:
                 print(
-                    f"  {Y}~{RST} serial IMU present but not selected "
-                    f"({mode}){RST}",
+                    f"  {R}✗{RST} MicroStrain at {self.imu_port} but "
+                    f"{R}microstrain_inertial_driver not installed{RST} "
+                    f"— wheel-odom EKF fallback ({mode})",
                     flush=True,
                 )
             else:

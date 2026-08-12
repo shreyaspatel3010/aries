@@ -25,8 +25,11 @@ ekf_filter_node:
     
     # ============================================
     # IMU - Orientation ONLY
+    # MicroStrain 3DM-GX5-AHRS. Overridden by aries_localization from the
+    # imu_topic launch argument; the value here is the default that argument
+    # carries, kept in sync so the file also works standalone.
     # ============================================
-    imu0: /bno055/imu
+    imu0: /microstrain/imu/data
     imu0_config: [false, false, false,   # x, y, z
                   false, false, true,    # roll, pitch, yaw - ONLY yaw in 2D mode!
                   false, false, false,   # vx, vy, vz

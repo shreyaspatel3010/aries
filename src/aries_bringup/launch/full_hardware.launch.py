@@ -54,22 +54,16 @@ def generate_launch_description():
                 "auto",
                 "true",
                 "false",
-                "ybimu",
-                "bno055",
+                "microstrain",
             ],
         ),
-        DeclareLaunchArgument("rover_imu_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument(
-            "rover_ybimu_port", default_value="/dev/imu_ybimu"
+            "rover_imu_port", default_value="/dev/microstrain_main"
         ),
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
-        DeclareLaunchArgument("rover_imu_frame", default_value="bno055"),
+        DeclareLaunchArgument("rover_imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument(
-            "rover_ybimu_frame", default_value="imu_frame"
-        ),
-        DeclareLaunchArgument("rover_imu_topic", default_value="/bno055/imu"),
-        DeclareLaunchArgument(
-            "rover_ybimu_topic", default_value="/ybimu/imu"
+            "rover_imu_topic", default_value="/microstrain/imu/data"
         ),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
@@ -141,12 +135,9 @@ def generate_launch_description():
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "use_imu": LaunchConfiguration("use_rover_imu"),
                 "imu_port": LaunchConfiguration("rover_imu_port"),
-                "ybimu_port": LaunchConfiguration("rover_ybimu_port"),
                 "imu_baudrate": LaunchConfiguration("rover_imu_baudrate"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
-                "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
-                "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
             }.items(),
         ),
 
@@ -168,11 +159,8 @@ def generate_launch_description():
                 "can_interface": LaunchConfiguration("can_interface"),
                 "use_imu": LaunchConfiguration("use_rover_imu"),
                 "imu_port": LaunchConfiguration("rover_imu_port"),
-                "ybimu_port": LaunchConfiguration("rover_ybimu_port"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
-                "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
-                "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
             }.items(),
         ),
     ])

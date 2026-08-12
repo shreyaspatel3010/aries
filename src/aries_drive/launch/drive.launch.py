@@ -49,7 +49,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
-from aries_common.detect import as_bool, resolve_rover_backend
+from aries_common.detect import as_bool, resolve_imu_source, resolve_rover_backend
 
 ODRIVE_AXES = 6
 ODRIVE_STARTUP_DELAY = 2.0
@@ -70,19 +70,32 @@ def _joystick_launch(use_joystick_controller):
     )
 
 
-def _mock_actions():
+def _mock_actions(imu_present):
+    """Mock drive backend.
+
+    ``mock_rover_drive`` normally owns odom -> base_footprint, but when an IMU
+    is connected aries_localization runs the EKF on this backend too and takes
+    that transform over. Only one node may publish it, so the mock drops its
+    own. The decision is not passed between the packages: both reach it from
+    the same aries_common probe on the same launch arguments.
+    """
     joystick_config = os.path.join(
         get_package_share_directory("aries_teleop"), "config", "joystick.yaml"
     )
+    if imu_present:
+        tf_note = "EKF owns odom->base_footprint (IMU present)"
+    else:
+        tf_note = "mock_rover_drive owns odom->base_footprint (no IMU)"
     return [
         LogInfo(msg="[rover drive] using mock_rover_drive because rover hardware is unavailable or disabled"),
+        LogInfo(msg=f"[rover drive] {tf_note}"),
         _joystick_launch("false"),
         Node(
             package="aries_drive",
             executable="mock_rover_drive.py",
             name="mock_rover_drive",
             output="screen",
-            parameters=[joystick_config],
+            parameters=[joystick_config, {"publish_tf": not imu_present}],
         ),
     ]
 
@@ -208,7 +221,11 @@ def _start_rover_hardware(context, *args, **kwargs):
     actions = [LogInfo(msg=f"[rover drive] rover_hardware_protocol={protocol} resolved={resolved}")]
 
     if resolved != "odrive":
-        actions.extend(_mock_actions())
+        imu_source, _ = resolve_imu_source(
+            LaunchConfiguration("use_imu").perform(context),
+            LaunchConfiguration("imu_port").perform(context),
+        )
+        actions.extend(_mock_actions(imu_source == "microstrain"))
         return actions
 
     start_nodes = _odrive_actions(can_interface)
@@ -291,5 +308,15 @@ def generate_launch_description():
                 "Keep false when launching the waypoint stack."
             ),
         ),
+        # Only used to work out whether the EKF will claim
+        # odom -> base_footprint on the mock backend; this launch file never
+        # starts an IMU driver itself.
+        DeclareLaunchArgument(
+            "use_imu",
+            default_value="auto",
+            choices=["auto", "true", "false", "microstrain"],
+        ),
+        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+
         OpaqueFunction(function=_start_rover_hardware),
     ])

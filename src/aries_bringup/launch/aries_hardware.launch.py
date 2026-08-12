@@ -361,10 +361,12 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rover_joystick", default_value="true"),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
         DeclareLaunchArgument("use_rover_imu", default_value="auto"),
-        DeclareLaunchArgument("rover_imu_port", default_value="/dev/ttyUSB0"),
+        DeclareLaunchArgument("rover_imu_port", default_value="/dev/microstrain_main"),
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
-        DeclareLaunchArgument("rover_imu_frame", default_value="bno055"),
-        DeclareLaunchArgument("rover_imu_topic", default_value="/bno055/imu"),
+        DeclareLaunchArgument("rover_imu_frame", default_value="imu_frame"),
+        DeclareLaunchArgument(
+            "rover_imu_topic", default_value="/microstrain/imu/data"
+        ),
         DeclareLaunchArgument("can_interface", default_value="can0"),
         DeclareLaunchArgument("setup_rover_can", default_value="true"),
 

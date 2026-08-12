@@ -1,0 +1,59 @@
+# MicroStrain by HBK 3DM-GX5-AHRS overrides.
+#
+# Layered on top of the driver's own params.yml, which imu.launch.py loads
+# first exactly the way microstrain_launch.py does. Only settings that differ
+# from the driver defaults belong here; port, baudrate and frame_id are
+# overridden again from launch arguments after this file.
+#
+# Keyed to the fully-qualified node name rather than "/**" on purpose: a
+# wildcard block is inherited by every node that loads the file, so a shared
+# parameter name silently retunes an unrelated node. The launch file must keep
+# namespace=microstrain and name=microstrain_inertial_driver in sync with this
+# key. Verified against microstrain_inertial_driver 4.8.0.
+/microstrain/microstrain_inertial_driver:
+  ros__parameters:
+    # Configure the device on connect rather than trusting whatever was last
+    # written to non-volatile memory by SensorConnect, but do not persist it.
+    device_setup: true
+    save_settings: false
+
+    # REP-103. The device talks NED natively; leaving this false would flip yaw
+    # for robot_localization and TF, and would also append "_ned" to frame_id.
+    use_enu_frame: true
+
+    # base_link -> imu_frame is a fixed joint in aries_base.xacro, so
+    # robot_state_publisher already owns that transform. The driver default is
+    # true, which would publish a competing base_link -> frame_id transform;
+    # the driver's own docs recommend defining it in the URDF instead.
+    publish_mount_to_frame_id_transform: false
+
+    # imu/data carries the raw sensor data set.
+    imu_data_rate: 100
+
+    # ekf/imu/data carries the estimation-filter output, which is where the
+    # AHRS absolute heading lives. Off by default (0); enabled so the topic is
+    # available to switch the EKF over to without restarting the stack.
+    filter_imu_data_rate: 100
+
+    # Heading source 1 = magnetometer. The GX5-AHRS has no GNSS, so the
+    # magnetometer is the only absolute yaw reference available.
+    filter_heading_source: 1
+
+    # GNSS-derived global odometry. Meaningless on an AHRS and on by default at
+    # 25 Hz, so silence both rather than pay for topics that never populate.
+    filter_odometry_earth_data_rate: 0
+    filter_odometry_map_data_rate: 0
+
+    # Diagonal covariances published on sensor_msgs/Imu. The GX5-25 datasheet
+    # gives +/-0.25 deg static roll/pitch and +/-0.8 deg heading; these are
+    # deliberately looser than spec so the EKF does not over-trust the IMU
+    # while the rover drives and the magnetometer sees motor current.
+    imu_orientation_cov: [0.0004, 0.0,    0.0,
+                          0.0,    0.0004, 0.0,
+                          0.0,    0.0,    0.0025]
+    imu_angular_cov: [0.00004, 0.0,     0.0,
+                      0.0,     0.00004, 0.0,
+                      0.0,     0.0,     0.00004]
+    imu_linear_cov: [0.002, 0.0,   0.0,
+                     0.0,   0.002, 0.0,
+                     0.0,   0.0,   0.002]

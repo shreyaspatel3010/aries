@@ -8,6 +8,8 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 TRUE_VALUES = ("1", "true", "yes", "on")
 FALSE_VALUES = ("0", "false", "no", "off", "none")
 AUTO_VALUES = ("auto", "detect")
+# Persistent symlink from aries_imu/setup/99-microstrain.rules.
+MICROSTRAIN_PORT = "/dev/microstrain_main"
 
 
 def as_bool(value):
@@ -33,12 +35,9 @@ def can_interface_exists(interface):
     return Path(f"/sys/class/net/{interface}").exists()
 
 
-def bno055_available(imu_port):
-    return Path(imu_port).exists() and package_exists("bno055")
-
-
-def ybimu_available(imu_port):
-    return Path(imu_port).exists() and package_exists("ybimu_ros2")
+def microstrain_available(imu_port):
+    """True when the 3DM-GX5-AHRS is plugged in and its driver is installed."""
+    return Path(imu_port).exists() and package_exists("microstrain_inertial_driver")
 
 
 def resolve_rover_backend(protocol, can_interface):
@@ -49,34 +48,19 @@ def resolve_rover_backend(protocol, can_interface):
     return mode
 
 
-def resolve_imu_source(
-    use_imu,
-    imu_port,
-    ybimu_port="/dev/imu_ybimu",
-):
-    """Select ybimu, BNO055, or no IMU.
+def resolve_imu_source(use_imu, imu_port=MICROSTRAIN_PORT):
+    """Select the MicroStrain 3DM-GX5-AHRS or no IMU.
 
-    ``imu_port`` remains the BNO055 port for compatibility with existing
-    launches.  The YaBoom driver uses its own persistent ``ybimu_port``.
-    Returns ``(source, ybimu_present, bno055_present)``.
+    The rover carries one IMU, so this is a presence check rather than a
+    preference order.  Naming the device explicitly still fails closed when it
+    is unplugged: a forced ``use_imu:=microstrain`` must not start a driver
+    against a port that does not exist, because robot_localization would then
+    wait on a topic that never publishes instead of falling back to wheel
+    odometry.  Returns ``(source, microstrain_present)``.
     """
     mode = str(use_imu).strip().lower()
-    bno_available = bno055_available(imu_port)
-    yb_available = ybimu_available(ybimu_port)
+    present = microstrain_available(imu_port)
 
     if mode in FALSE_VALUES or mode in ("odom_only", "wheel_odom"):
-        return "none", yb_available, bno_available
-    if mode in ("ybimu", "yaboom"):
-        return ("ybimu" if yb_available else "none"), yb_available, bno_available
-    if mode == "bno055":
-        return ("bno055" if bno_available else "none"), yb_available, bno_available
-    if mode == "serial":
-        if yb_available:
-            return "ybimu", yb_available, bno_available
-        return ("bno055" if bno_available else "none"), yb_available, bno_available
-
-    if yb_available:
-        return "ybimu", yb_available, bno_available
-    if bno_available:
-        return "bno055", yb_available, bno_available
-    return "none", yb_available, bno_available
+        return "none", present
+    return ("microstrain" if present else "none"), present

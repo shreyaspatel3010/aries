@@ -13,8 +13,7 @@ rover_nav/
 ├── config/
 │   └── ekf_config.yaml                  # EKF localisation config
 ├── launch/
-│   ├── LeapOne_Safety_launch.py
-│   └── localization.launch.py
+│   └── LeapOne_Safety_launch.py
 ├── msg/                                 # Custom ROS 2 message definitions
 ├── scripts/
 │   ├── Rover_control_Joy.py             # Joystick teleop control node

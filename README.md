@@ -19,14 +19,13 @@ aries/
 │   ├── aries_bringup/      Recommended launch wrappers and hardware checker
 │   ├── aries_common/       Shared hardware auto-detection
 │   ├── aries_drive/        Fail-safe cmd_vel-to-ODrive backend
-│   ├── aries_imu/          YaBoom / BNO055 selection
+│   ├── aries_imu/          MicroStrain 3DM-GX5-AHRS driver integration
 │   ├── aries_localization/ Wheel odometry and EKF orchestration
 │   ├── aries_moveit/       Arm, gripper, and MoveIt packages
 │   ├── aries_soil_sample/  Autonomous soil scooping and deposit
 │   ├── aries_teleop/       Rover joystick normalization and Twist output
 │   ├── aries_vision_grasp/ Vision grasp nodes, launch, and model
 │   ├── rover_nav/          Rover odometry and localization
-│   ├── ybimu_ros2/         YaBoom 10-axis serial IMU driver
 │   └── vendor/             Vendored upstream ROS dependencies
 └── workspace.repos        Optional vcstool dependency manifest
 ```
@@ -41,10 +40,9 @@ datasets and runs belong in `data/`.
 - `aries`: main robot description, Gazebo launch files, sensors, and base model.
 - `aries_bringup`: recommended launch wrappers for simulation, hardware, rover drive, joystick, and hardware checking.
 - `aries_drive`: fail-safe `/cmd_vel` conversion, ODrive arming, command timeout, acceleration limiting, and mock fallback.
-- `aries_imu`: YaBoom and BNO055 IMU selection.
+- `aries_imu`: MicroStrain by HBK 3DM-GX5-AHRS driver integration, params, and udev rule.
 - `aries_localization`: physical wheel-odometry/EKF and simulation ground-truth/EKF orchestration.
 - `aries_teleop`: rover joystick normalization and `/cmd_vel/teleop` output.
-- `ybimu_ros2`: YaBoom 10-axis serial driver with planar gyro/magnetometer filtering.
 - `aries_common`: shared hardware auto-detection used by rover launch files.
 - `aries_moveit`: MoveIt 2 configuration, arm/gripper controllers, Servo teleop, and gripper hardware plugins.
 - `aries_vision_grasp`: camera tools, YOLO inference, and autonomous MoveIt grasping of the probe.
@@ -62,6 +60,7 @@ recursively, so this grouping does not change package or launch names.
 - `ros2_control`
 - `joy` package for gamepad input
 - `odrive_can` for real rover ODrive/CAN hardware
+- `microstrain_inertial_driver` for the 3DM-GX5-AHRS IMU
 - `realsense2_camera` only when using the RealSense camera
 - `ultralytics` (pulls in `torch`) for `aries_vision_grasp`. There is no rosdep
   key for it, so install it with pip into the same Python environment the nodes
@@ -534,6 +533,58 @@ Quick checks:
 ip link show can0
 ros2 topic list | grep odrive
 ros2 topic echo /odrive_axis0/controller_status
+```
+
+## IMU (MicroStrain 3DM-GX5-AHRS)
+
+The rover carries one IMU: a MicroStrain by HBK 3DM-GX5-AHRS. It is an attitude
+and heading reference, so its onboard estimation filter supplies absolute roll,
+pitch and heading rather than rates alone, and the EKF fuses yaw directly.
+
+No udev rule ships in this repo. `ros-jazzy-microstrain-inertial-driver` already
+installs `60-ros-jazzy-microstrain-inertial-driver.rules`, which creates
+`/dev/microstrain_main` — that is the path the whole stack uses. Note it is
+*not* `/dev/microstrain`: the rule that would create that plain symlink is
+commented out upstream, because it gets overridden when several devices are
+attached.
+
+```bash
+sudo apt install ros-jazzy-microstrain-inertial-driver
+ls -l /dev/microstrain_main    # -> ../../ttyACM0
+```
+
+The driver starts automatically when that device node exists and the driver
+package is installed; otherwise the stack falls back to a wheel-odometry-only
+EKF. Topics land under the `microstrain` namespace, so the physical IMU never
+collides with Gazebo's simulated `/imu`:
+
+```bash
+ros2 topic echo /microstrain/imu/data     # orientation + rates, 100 Hz
+ros2 topic echo /microstrain/ekf/imu/data # estimation filter, tighter covariance
+```
+
+Run only the IMU, or force/disable it:
+
+```bash
+ros2 launch aries_imu imu.launch.py
+ros2 launch aries_bringup rover_drive.launch.py use_imu:=false
+```
+
+Two settings in `src/aries_imu/config/microstrain.yaml` are load-bearing and
+should not be flipped without reading why:
+
+- `use_enu_frame: true` — the device talks NED natively and the driver default
+  is NED, which would silently invert yaw for `robot_localization` and TF.
+- `publish_mount_to_frame_id_transform: false` — `base_link -> imu_frame` is a
+  fixed joint in `aries_base.xacro`, so `robot_state_publisher` owns it. The
+  driver default is `true` and would publish a competing transform.
+
+To fuse the estimation-filter output instead of the raw IMU topic, repoint the
+whole stack with one argument:
+
+```bash
+ros2 launch aries_bringup rover_drive.launch.py \
+  imu_topic:=/microstrain/ekf/imu/data
 ```
 
 ## Teensy Gripper Serial
