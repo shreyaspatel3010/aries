@@ -1,5 +1,6 @@
 import glob
 import os
+import subprocess
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -15,6 +16,55 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+def _serials_from_librealsense():
+    """Camera serials as librealsense reports them, or None if it could not be asked.
+
+    This has to come from librealsense, NOT from the USB descriptor in sysfs. On
+    the D435i the sysfs `serial` is the *ASIC* serial, which is a different
+    number from the camera serial the driver matches on -- the wrist camera
+    fitted on 2026-08-12 reads 221123061847 in sysfs and 216322070216 in
+    librealsense. Pinning the sysfs value makes rs_launch retry
+    "The requested device with serial number ... is NOT found" forever against a
+    camera that is plugged in and healthy. Older units happened to report the
+    same number in both places, which is why sysfs looked correct for so long.
+
+    Enumeration runs in a subprocess so the launch process never holds a handle
+    on a device the driver is about to open.
+    """
+    try:
+        out = subprocess.run(
+            ["rs-enumerate-devices", "-s"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = None
+
+    if out:
+        serials = []
+        for line in out.splitlines()[1:]:  # first line is the column header
+            # "Intel RealSense D435I   216322070216   5.17.3.10" -- the serial is
+            # the only all-digit field; firmware versions carry dots.
+            for field in line.split():
+                if field.isdigit() and len(field) >= 8 and field not in serials:
+                    serials.append(field)
+                    break
+        if serials:
+            return sorted(serials)
+
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        return None
+    try:
+        found = [
+            dev.get_info(rs.camera_info.serial_number)
+            for dev in rs.context().query_devices()
+        ]
+    except RuntimeError:
+        return None
+    return sorted(set(found)) if found else None
+
+
 def _find_realsense_devices():
     """Serial numbers of every Intel RealSense D4xx currently on USB, sorted.
 
@@ -25,11 +75,14 @@ def _find_realsense_devices():
     /gripper_camera/* and the whole grasp stack would be looking at the wrong end
     of the robot.
 
-    A device whose sysfs node has no readable serial is still reported, as an
-    empty string, so it is never silently dropped from detection -- it just
-    cannot be pinned, and its driver runs the way it did before serials were
-    read at all.
+    Falls back to counting devices in sysfs when librealsense cannot be reached.
+    Those serials are reported as empty strings rather than the ASIC serial that
+    lives there: an unpinnable camera still runs, a mis-pinned one never starts.
     """
+    serials = _serials_from_librealsense()
+    if serials is not None:
+        return serials
+
     serials = []
     for dev_path in glob.glob("/sys/bus/usb/devices/*/"):
         try:
@@ -40,14 +93,8 @@ def _find_realsense_devices():
                 continue
         except (OSError, ValueError):
             continue
-        try:
-            serial = open(os.path.join(dev_path, "serial")).read().strip()
-        except OSError:
-            serial = ""
-        if serial and serial in serials:
-            continue
-        serials.append(serial)
-    return sorted(serials)
+        serials.append("")
+    return serials
 
 
 def _realsense_driver(camera_name, serial):

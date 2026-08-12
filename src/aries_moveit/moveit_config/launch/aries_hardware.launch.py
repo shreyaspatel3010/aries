@@ -11,6 +11,7 @@ because controller_manager expects the multi-node YAML layout
 (controller_manager + per-controller sections).
 """
 
+import glob
 import os
 import socket
 import tempfile
@@ -31,6 +32,37 @@ from launch_ros.substitutions import FindPackageShare
 
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 GRIPPER_JOINTS = ["gripper_gear_left_joint"]
+
+# The board ID is baked into the by-id path, so swapping the Teensy changes it
+# (16739090 -> 20379650 on 2026-08-12) and an exact-path check then resolves to
+# mock_hardware against a perfectly healthy board. Treat the configured path as
+# a preference and accept any Teensy. full_hardware_checker globs the same way,
+# which is why it kept reporting "Gripper serial connected" while this probe
+# fell back to mock and no command reached the servo.
+TEENSY_BY_ID_GLOB = "/dev/serial/by-id/*Teensy*-if00"
+
+
+def resolve_gripper_serial(configured: str, detect_timeout: float):
+    """Find the Teensy to talk to. Returns (port_or_None, note_for_the_log).
+
+    Waits up to detect_timeout for the device: a Teensy reset re-enumerates over
+    USB, which takes 1-2 s, so relaunching straight after a reset loses the race.
+    Observed one probe at 17:10:58 with the by-id link appearing at 17:10:59.2 --
+    a one-shot check ran the whole session on a simulated gripper.
+    """
+    deadline = time.monotonic() + detect_timeout
+    while True:
+        if Path(configured).exists():
+            return configured, ""
+        found = sorted(glob.glob(TEENSY_BY_ID_GLOB))
+        if found:
+            note = f"  -- {configured} is absent, using the Teensy that IS present: {found[0]}"
+            if len(found) > 1:
+                note += f" ({len(found)} Teensys connected: {', '.join(found)})"
+            return found[0], note
+        if time.monotonic() >= deadline:
+            return None, ""
+        time.sleep(0.1)
 
 
 def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
@@ -241,26 +273,24 @@ def launch_setup(context, *args, **kwargs):
         except OSError:
             arm_hardware_protocol = "mock_hardware"
 
+    # Resolve the device before choosing the backend, so an explicit
+    # gripper_hardware_protocol:=rebel also survives a board swap. Only spend the
+    # detect timeout when we actually intend to drive the Teensy.
+    detect_timeout = float(
+        LaunchConfiguration("gripper_detect_timeout").perform(context)
+    ) if gripper_hardware_protocol in ("auto", "rebel") else 0.0
+    teensy_port, serial_note = resolve_gripper_serial(serial_port, detect_timeout)
+    if teensy_port:
+        serial_port = teensy_port
+
     if gripper_hardware_protocol == "auto":
-        # Wait for the device rather than probing once. A Teensy reset re-enumerates
-        # over USB, which takes 1-2 s, so relaunching straight after a reset loses
-        # the race: observed this probe at 17:10:58 with
-        # /dev/serial/by-id/... appearing at 17:10:59.2. The one-shot check
-        # resolved to mock_hardware and the whole session ran a simulated gripper
-        # against real hardware, with no message saying so — the arm and rover
-        # log their auto-detect result, this one was silent.
-        detect_timeout = float(
-            LaunchConfiguration("gripper_detect_timeout").perform(context)
-        )
-        deadline = time.monotonic() + detect_timeout
-        while not Path(serial_port).exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        gripper_hardware_protocol = "rebel" if Path(serial_port).exists() else "mock_hardware"
+        gripper_hardware_protocol = "rebel" if teensy_port else "mock_hardware"
 
     # Always say which backend won. Silent fallback to mock is indistinguishable
     # from a dead gripper from the outside.
     gripper_detect_note = LogInfo(
         msg=f"[gripper auto] serial_port={serial_port} resolved={gripper_hardware_protocol}"
+        + serial_note
         + ("" if gripper_hardware_protocol == "rebel"
            else "  -- SIMULATED gripper: no command will reach the servo")
     )

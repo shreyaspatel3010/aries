@@ -12,7 +12,19 @@ from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from launch_param_builder import load_yaml
 from moveit_configs_utils import MoveItConfigsBuilder
+import glob
 import os
+
+
+def default_teensy_device():
+    """Whichever Teensy is plugged in, not the one we happened to own first.
+
+    The board ID is part of the by-id path, so a swapped board silently points
+    micro_ros_agent at a device that no longer exists. See the same fallback in
+    aries_hardware.launch.py.
+    """
+    found = sorted(glob.glob("/dev/serial/by-id/*Teensy*-if00"))
+    return found[0] if found else "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
 
 
 def generate_launch_description():
@@ -45,7 +57,7 @@ def generate_launch_description():
 
     micro_ros_device_arg = DeclareLaunchArgument(
         'micro_ros_device',
-        default_value='/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00',
+        default_value=default_teensy_device(),
         description='USB-serial device for the micro-ROS agent (Teensy)'
     )
     
