@@ -21,26 +21,41 @@ PASSIVE_JOINTS = (
     "aux_R_Rocker_joint",
 )
 
-# Encoder-to-URDF contract used only for wheel joint states / TF:
-# right axes 0..2 = rear, mid, front
-# left axes  3..5 = front, mid, rear
+# CAN node id -> URDF wheel joint. TF needs the exact joint, unlike drive
+# commands and odometry, which only care which side an axis is on.
 #
-# Drive commands and odometry retain their existing physical axis ordering.
-# The right-front/right-rear correction belongs here because those consumers
-# treat all three wheels on a side equivalently, while TF needs exact joints.
+# Established physically on 2026-08-12 after the chassis was reassembled, by
+# arming one axis at a time and seeing which wheel resisted turning:
+#
+#   axis 0 Right-Front   axis 1 Left-Mid     axis 2 Left-Rear
+#   axis 3 Right-Rear    axis 4 Right-Mid    axis 5 Left-Front
+#
+# _3 = FRONT, _2 = mid, _1 = REAR on both sides. Do not try to read that order
+# off the joint origins in right_link.xacro / left_link.xacro: _1 and _2 hang
+# off the boggie link while _3 hangs off the rocker, so their origin x values
+# are expressed in different parent frames and comparing them directly gives
+# the front/rear order backwards. Measured instead from base_link through TF:
+#
+#   _3 x = +0.230   _2 x = -0.067   _1 x = -0.323     (+x forward, confirmed
+#   by the forward-facing D435i at x = +0.276)
+#
+# This supersedes an earlier hand-derived "right axes 0..2 = rear, mid, front"
+# contract that disagreed with AXIS_LABELS about where axis 0 was.
 AXIS_JOINTS = (
     "R_3_Wheel_Joint",
-    "R_2_Wheel_Joint",
-    "R_1_Wheel_Joint",
-    "L_1_Wheel_Joint",
     "L_2_Wheel_Joint",
+    "L_1_Wheel_Joint",
+    "R_1_Wheel_Joint",
+    "R_2_Wheel_Joint",
     "L_3_Wheel_Joint",
 )
 
 # The physical left motors/encoders are mounted opposite to the right side.
 # Odom.py corrects this when calculating travel; apply the same convention to
 # URDF wheel rotation so forward rover motion animates forward on both sides.
-DEFAULT_AXIS_SIGNS = (1.0, 1.0, 1.0, -1.0, -1.0, -1.0)
+# Indexed by axis, so this follows the mapping above rather than a 0..2 / 3..5
+# split: right axes 0, 4, 3 keep +1 and left axes 5, 1, 2 take -1.
+DEFAULT_AXIS_SIGNS = (1.0, -1.0, -1.0, 1.0, 1.0, -1.0)
 
 
 def encoder_to_joint(
