@@ -25,7 +25,8 @@ def generate_launch_description():
 
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='new',
+        default_value='v2',
+        choices=['old', 'new', 'v2'],
         description='Which gripper URDF to load'
     )
 
@@ -239,7 +240,9 @@ def generate_launch_description():
     )
     
     # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
-    # Geometry tables model the new four-bar gripper only.
+    # Geometry tables model the 85.563 mm four-bar of gripper_new only, so this
+    # stays off for v2 (50 mm parallelogram, 83 mm stroke) rather than drawing a
+    # sweep that is wrong by 100 mm. Re-enable once the tables are re-fitted.
     gripper_arc_visualizer_node = Node(
         package="aries_moveit",
         executable="gripper_arc_visualizer.py",

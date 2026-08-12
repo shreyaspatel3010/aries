@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <launch>
-  <arg name="gripper_type" default="new"/>
+  <arg name="gripper_type" default="v2"/>
   <arg name="finger_type" default="maintenance"/>
   <let name="urdf_path" value="$(find-pkg-share aries)/urdf/my_robot.urdf.xacro"/>
   <let name="rviz_config_path" value="$(find-pkg-share aries)/rviz/display_config.rviz"/>

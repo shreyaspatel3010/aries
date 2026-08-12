@@ -396,9 +396,10 @@ def generate_launch_description():
     # builds the bucket rather than silently falling back to the probe.
     gripper_type_arg = DeclareLaunchArgument(
         "gripper_type",
-        default_value="new",
-        description="Gripper type: 'new' or 'old'. Must match the model Gazebo "
-                    "and robot_state_publisher were launched with.",
+        default_value="v2",
+        choices=["old", "new", "v2"],
+        description="Gripper type: 'v2', 'new' or 'old'. Must match the model "
+                    "Gazebo and robot_state_publisher were launched with.",
     )
     finger_type_arg = DeclareLaunchArgument(
         "finger_type",

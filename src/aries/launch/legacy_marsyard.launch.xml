@@ -8,7 +8,7 @@
   <arg name="aries_share" default="$(find-pkg-share aries)"/>
   
   <!-- Gripper type: 'new' or 'old' -->
-  <arg name="gripper_type" default="new"/>
+  <arg name="gripper_type" default="v2"/>
   
   <!-- Hardware protocol for ros2_control -->
   <arg name="hardware_protocol" default="gazebo"/>

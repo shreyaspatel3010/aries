@@ -58,8 +58,9 @@ def generate_launch_description():
     # have. The contact point differs by up to 23 mm between the three jaws.
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='new',
-        description="Gripper type: 'new' or 'old'")
+        default_value='v2',
+        choices=['old', 'new', 'v2'],
+        description="Gripper type: 'v2', 'new' or 'old'")
     finger_type_arg = DeclareLaunchArgument(
         'finger_type',
         default_value='bucket',

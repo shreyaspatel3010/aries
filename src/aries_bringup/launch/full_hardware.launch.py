@@ -21,7 +21,7 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
 
-        DeclareLaunchArgument("gripper_type", default_value="new", choices=["old", "new"]),
+        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["old", "new", "v2"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),

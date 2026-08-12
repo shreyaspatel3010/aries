@@ -255,7 +255,7 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
-        DeclareLaunchArgument("gripper_type", default_value="new", choices=["old", "new"]),
+        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["old", "new", "v2"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),

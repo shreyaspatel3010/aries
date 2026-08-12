@@ -49,8 +49,9 @@ def generate_launch_description():
     # Declare arguments
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='new',
-        description='Gripper type: "new" or "old"'
+        default_value='v2',
+        choices=['old', 'new', 'v2'],
+        description='Gripper type: "v2", "new" or "old"'
     )
 
     world_arg = DeclareLaunchArgument(

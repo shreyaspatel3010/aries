@@ -600,7 +600,9 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
-    # Geometry tables model the new four-bar gripper only.
+    # Geometry tables model the 85.563 mm four-bar of gripper_new only, so this
+    # stays off for v2 (50 mm parallelogram, 83 mm stroke) rather than drawing a
+    # sweep that is wrong by 100 mm. Re-enable once the tables are re-fitted.
     gripper_arc_visualizer_node = None
     if gripper_type == "new":
         gripper_arc_visualizer_node = Node(
@@ -659,8 +661,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
-            DeclareLaunchArgument("gripper_type", default_value="new", choices=["old", "new"], description="Which gripper URDF to load"),
-            DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new gripper)"),
+            DeclareLaunchArgument("gripper_type", default_value="v2", choices=["old", "new", "v2"], description="Which gripper URDF to load"),
+            DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new/v2 gripper)"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
             DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend"),
