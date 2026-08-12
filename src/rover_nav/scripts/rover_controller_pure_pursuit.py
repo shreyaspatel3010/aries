@@ -35,8 +35,9 @@ ACCEL_LIMIT       = 3.0
 
 path = [[2.0, 0.0]]
 
-right_wheels = [0, 1, 2]
-left_wheels  = [3, 4, 5]
+# Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
+right_wheels = [0, 4, 3]
+left_wheels  = [5, 1, 2]
 
 try:
     _SOUND_DIR = os.path.join(get_package_share_directory("rover_nav"), "sounds", "Sounds")

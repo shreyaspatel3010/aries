@@ -44,15 +44,18 @@ AXIS_STATE_NAMES = {
 }
 CLOSED_LOOP = 8
 
-# ── Wheel layout (from Rover_control_Joy.py) ─────────────────────────────────
-# right_wheels = [0, 1, 2]   left_wheels = [3, 4, 5]
+# ── Wheel layout ─────────────────────────────────────────────────────────────
+# CAN node id -> physical wheel, identified by arming one axis at a time after
+# the 2026-08-12 chassis reassembly. Keep in step with right_wheels/left_wheels
+# in aries_drive/config/cmd_vel_odrive_bridge.yaml.
+# right_wheels = [0, 4, 3]   left_wheels = [5, 1, 2]
 AXIS_LABELS = {
     0: "Right-Front",
-    1: "Right-Mid  ",
-    2: "Right-Rear ",
-    3: "Left-Front ",
-    4: "Left-Mid   ",
-    5: "Left-Rear  ",
+    1: "Left-Mid   ",
+    2: "Left-Rear  ",
+    3: "Right-Rear ",
+    4: "Right-Mid  ",
+    5: "Left-Front ",
 }
 NUM_AXES = 6
 

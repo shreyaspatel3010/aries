@@ -10,8 +10,9 @@ class EncoderTest(Node):
         super().__init__('encoder_test')
         
         self.num_axes = 6
-        self.right_wheels = [0, 1, 2]
-        self.left_wheels = [3, 4, 5]
+        # Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
+        self.right_wheels = [0, 4, 3]
+        self.left_wheels = [5, 1, 2]
         
         self.axis_clients = []
         self.axis_pubs = []

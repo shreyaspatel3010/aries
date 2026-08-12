@@ -66,6 +66,26 @@ class OdometryNode(Node):
             float(self.get_parameter("slip_covariance_multiplier").value),
         )
         
+        # Which CAN node id drives which side, front -> rear. These were block
+        # allocated ([0,1,2] right, [3,4,5] left) until the chassis was
+        # reassembled on 2026-08-12 and the node ids stopped following the
+        # sides. Keep them equal to the identically named parameters in
+        # aries_drive/config/cmd_vel_odrive_bridge.yaml: if commanding and
+        # odometry disagree about which side an axis is on, the rover still
+        # drives correctly while reporting a mirrored twist, which the EKF then
+        # fuses as real motion.
+        self.declare_parameter("right_wheels", [0, 4, 3])
+        self.declare_parameter("left_wheels", [5, 1, 2])
+        self.right_wheels = [int(a) for a in self.get_parameter("right_wheels").value]
+        self.left_wheels = [int(a) for a in self.get_parameter("left_wheels").value]
+
+        # axis id -> (side, slot within that side's arrays)
+        self.axis_side = {}
+        for slot, axis in enumerate(self.right_wheels):
+            self.axis_side[axis] = ("right", slot)
+        for slot, axis in enumerate(self.left_wheels):
+            self.axis_side[axis] = ("left", slot)
+
         # Pose state
         self.x = 0.0
         self.y = 0.0
@@ -128,10 +148,19 @@ class OdometryNode(Node):
         self.encoder_seen[axis] = True
         self.encoder_generation[axis] += 1
         
-        if axis in [0, 1, 2]:  # Right wheels
-            self.current_right_pos[axis] = current_pos
-        else:  # Left wheels (3, 4, 5)
-            self.current_left_pos[axis - 3] = current_pos
+        side_slot = self.axis_side.get(axis)
+        if side_slot is None:
+            self.get_logger().warn(
+                f"Encoder from axis {axis}, which is in neither right_wheels "
+                f"{self.right_wheels} nor left_wheels {self.left_wheels}; ignoring",
+                throttle_duration_sec=10.0,
+            )
+            return
+        side, slot = side_slot
+        if side == "right":
+            self.current_right_pos[slot] = current_pos
+        else:
+            self.current_left_pos[slot] = current_pos
     
     def update_odometry(self):
         """Calculate and publish odometry at fixed rate"""
@@ -191,8 +220,11 @@ class OdometryNode(Node):
             self.slip_absolute_threshold_m,
             self.slip_relative_threshold,
         )
-        suspected_axes = [index + 3 for index in left_outliers]
-        suspected_axes.extend(right_outliers)
+        # Map the per-side slot back to the CAN node id it came from, so the
+        # reported axis numbers stay meaningful now that the sides are not
+        # contiguous blocks.
+        suspected_axes = [self.left_wheels[index] for index in left_outliers]
+        suspected_axes.extend(self.right_wheels[index] for index in right_outliers)
         self.slip_detected = bool(suspected_axes)
         self.suspected_slip_axes = sorted(suspected_axes)
         self.last_left_distances = left_distances
