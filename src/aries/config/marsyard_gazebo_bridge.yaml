@@ -107,20 +107,6 @@
 
 
 
-# LaserScan (nice for a quick sanity check in RViz)
-- ros_topic_name: "/scan"
-  gz_topic_name: "/lidar_scan"
-  ros_type_name: "sensor_msgs/msg/LaserScan"
-  gz_type_name: "gz.msgs.LaserScan"
-  direction: GZ_TO_ROS
-
-# 3D point cloud
-- ros_topic_name: "/points"
-  gz_topic_name: "/lidar/points"
-  ros_type_name: "sensor_msgs/msg/PointCloud2"
-  gz_type_name: "gz.msgs.PointCloudPacked"
-  direction: GZ_TO_ROS
-
 # (Recommended) Odometry from DiffDrive → ROS
 - ros_topic_name: "/odom"
   gz_topic_name: "/odom"

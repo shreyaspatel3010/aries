@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select one rover IMU while preserving BNO055 and picoScan compatibility."""
+"""Select one rover IMU while preserving BNO055 compatibility."""
 
 import os
 
@@ -14,7 +14,6 @@ from aries_common.detect import (
     as_bool,
     as_int,
     resolve_imu_source,
-    resolve_lidar_enabled,
 )
 
 
@@ -27,14 +26,9 @@ def _start_imu(context, *args, **kwargs):
     bno_port = LaunchConfiguration("imu_port").perform(context)
     ybimu_port = LaunchConfiguration("ybimu_port").perform(context)
     ybimu_topic = LaunchConfiguration("ybimu_topic").perform(context)
-    lidar_available = resolve_lidar_enabled(
-        LaunchConfiguration("use_lidar").perform(context),
-        LaunchConfiguration("lidar_sensor_ip").perform(context),
-    )
     source, yb_available, bno_available = resolve_imu_source(
         use_imu,
         bno_port,
-        lidar_available,
         ybimu_port,
     )
     if not driver_enabled:
@@ -46,7 +40,6 @@ def _start_imu(context, *args, **kwargs):
                 f"[rover imu] use_imu={use_imu} selected={source}; "
                 f"ybimu_available={yb_available}, "
                 f"bno_available={bno_available}, "
-                f"lidar_available={lidar_available}, "
                 f"driver_enabled={driver_enabled}"
             )
         )
@@ -125,28 +118,6 @@ def _start_imu(context, *args, **kwargs):
                 ),
             ]
         )
-    elif source == "picoscan":
-        actions.append(
-            Node(
-                package="aries_imu",
-                executable="picoscan_imu_relay.py",
-                name="picoscan_imu_relay",
-                output="screen",
-                parameters=[
-                    {
-                        "input_topic": LaunchConfiguration(
-                            "picoscan_raw_imu_topic"
-                        ),
-                        "output_topic": LaunchConfiguration(
-                            "picoscan_imu_topic"
-                        ),
-                        # Preserve the sensor frame. robot_localization applies
-                        # the existing URDF transform to vector measurements.
-                        "target_frame": "",
-                    }
-                ],
-            )
-        )
     return actions
 
 
@@ -167,7 +138,6 @@ def generate_launch_description():
                     "false",
                     "ybimu",
                     "bno055",
-                    "picoscan",
                 ],
             ),
             # Existing BNO055 interface is retained for compatibility.
@@ -184,21 +154,6 @@ def generate_launch_description():
             DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
             DeclareLaunchArgument(
                 "ybimu_topic", default_value="/ybimu/imu"
-            ),
-            DeclareLaunchArgument(
-                "use_lidar",
-                default_value="auto",
-                choices=["auto", "true", "false"],
-            ),
-            DeclareLaunchArgument(
-                "lidar_sensor_ip", default_value="169.254.136.69"
-            ),
-            DeclareLaunchArgument(
-                "picoscan_raw_imu_topic",
-                default_value="/picoscan/imu_raw",
-            ),
-            DeclareLaunchArgument(
-                "picoscan_imu_topic", default_value="/picoscan/imu"
             ),
             OpaqueFunction(function=_start_imu),
         ]

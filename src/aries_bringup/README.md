@@ -94,25 +94,6 @@ without torque. Joint-module firmware must report product `0x42`, firmware
    ros2 launch aries_bringup full_hardware.launch.py
    ```
 
-The full hardware launch also auto-detects the SICK picoScan150. It publishes
-the cleaned scan on `/scan`, raw driver data under `/picoscan`, and uses the
-picoScan yaw-rate IMU as a localization fallback when neither the YaBoom IMU
-nor the serial BNO055 is available. Override the link-local addresses when
-needed:
-
-```bash
-ros2 launch aries_bringup full_hardware.launch.py \
-  use_rover_lidar:=true \
-  rover_lidar_sensor_ip:=169.254.136.69 \
-  rover_lidar_host_ip:=169.254.180.121
-```
-
-LiDAR-only bringup:
-
-```bash
-ros2 launch aries_lidar lidar.launch.py use_lidar:=true
-```
-
 ### Arm Simulation Only
 
 1. Terminal 1:

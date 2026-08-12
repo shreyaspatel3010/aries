@@ -19,8 +19,7 @@ aries/
 │   ├── aries_bringup/      Recommended launch wrappers and hardware checker
 │   ├── aries_common/       Shared hardware auto-detection
 │   ├── aries_drive/        Fail-safe cmd_vel-to-ODrive backend
-│   ├── aries_imu/          YaBoom / BNO055 / picoScan selection
-│   ├── aries_lidar/        SICK picoScan150 driver wrapper
+│   ├── aries_imu/          YaBoom / BNO055 selection
 │   ├── aries_localization/ Wheel odometry and EKF orchestration
 │   ├── aries_moveit/       Arm, gripper, and MoveIt packages
 │   ├── aries_soil_sample/  Autonomous soil scooping and deposit
@@ -42,8 +41,7 @@ datasets and runs belong in `data/`.
 - `aries`: main robot description, Gazebo launch files, sensors, and base model.
 - `aries_bringup`: recommended launch wrappers for simulation, hardware, rover drive, joystick, and hardware checking.
 - `aries_drive`: fail-safe `/cmd_vel` conversion, ODrive arming, command timeout, acceleration limiting, and mock fallback.
-- `aries_lidar`: real SICK picoScan150 driver wrapper and `/scan` relay.
-- `aries_imu`: YaBoom, BNO055, and picoScan IMU selection.
+- `aries_imu`: YaBoom and BNO055 IMU selection.
 - `aries_localization`: physical wheel-odometry/EKF and simulation ground-truth/EKF orchestration.
 - `aries_teleop`: rover joystick normalization and `/cmd_vel/teleop` output.
 - `ybimu_ros2`: YaBoom 10-axis serial driver with planar gyro/magnetometer filtering.
@@ -64,7 +62,6 @@ recursively, so this grouping does not change package or launch names.
 - `ros2_control`
 - `joy` package for gamepad input
 - `odrive_can` for real rover ODrive/CAN hardware
-- `sick_scan_xd` for the real SICK picoScan150 LiDAR
 - `realsense2_camera` only when using the RealSense camera
 - `ultralytics` (pulls in `torch`) for `aries_vision_grasp`. There is no rosdep
   key for it, so install it with pip into the same Python environment the nodes
@@ -242,7 +239,6 @@ ros2 launch aries_bringup full_hardware.launch.py \
   use_joystick:=true \
   rover_hardware_protocol:=auto \
   can_interface:=can0 \
-  use_rover_lidar:=auto \
   serial_port:=/dev/ttyACM0
 ```
 
@@ -263,40 +259,6 @@ the rover is clear, enable it explicitly:
 ```bash
 ros2 service call /aries_drive/enable std_srvs/srv/SetBool "{data: true}"
 ```
-
-## SICK picoScan150 LiDAR
-
-Real rover launches now auto-detect the picoScan on its SOPAS TCP port. When
-available, `sick_scan_xd` publishes raw data under `/picoscan`, the Aries relay
-publishes the cleaned planar scan on `/scan`, and the built-in IMU is available
-as `/picoscan/imu`. Auto selection prefers a YaBoom IMU at
-`/dev/imu_ybimu`, then the existing BNO055, and finally the picoScan IMU.
-
-The default rover network values are:
-
-```text
-sensor: 169.254.136.69
-host:   169.254.180.121
-```
-
-Override or force them with:
-
-```bash
-ros2 launch aries_bringup full_hardware.launch.py \
-  use_rover_lidar:=true \
-  rover_lidar_sensor_ip:=169.254.136.69 \
-  rover_lidar_host_ip:=169.254.180.121
-```
-
-Run only the sensor wrapper with:
-
-```bash
-ros2 launch aries_lidar lidar.launch.py use_lidar:=true
-```
-
-Use `use_rover_lidar:=false` to disable it. Only the EKF publishes
-`odom -> base_footprint`; the picoScan IMU integration does not publish a
-competing odometry transform.
 
 ### Arm And Gripper Hardware Only
 
@@ -674,7 +636,7 @@ waypoints, and deposit poses.
   `wheel_radius` rather than hard-coded, so `base_footprint` sits exactly on
   the wheel contact plane. The old hard-coded 0.165 left the wheels 41 mm below
   it, and everything treating that frame as ground (EKF,
-  `odom -> base_footprint`, nav ground filtering, LiDAR height) inherited the
+  `odom -> base_footprint`, nav ground filtering) inherited the
   error.
 - Arm visuals are `.glb`, and the gripper carries the near plates and pivot
   pins of the double-plate four-bar as visual-only geometry. Superseded meshes

@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ARIES Gamepad Map</title>
+<style>
+  @page { size: A4 landscape; margin: 9mm 10mm; }
+
+  :root {
+    --ground: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f1f3f5;
+    --ink: #10141a;
+    --ink-2: #3d4650;
+    --muted: #6b7580;
+    --rule: #c4cbd3;
+    --rule-2: #e0e5ea;
+    --live: #d94f06;
+    --live-soft: #fdf0e8;
+    --block: #a2313a;
+    --block-soft: #faecee;
+    --chassis: #aeb6bf;
+
+    --mono: ui-monospace, "SF Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
+    --sans: "Helvetica Neue", Helvetica, "Liberation Sans", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  html, body { margin: 0; padding: 0; background: var(--ground); }
+
+  body {
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 9.6pt;
+    line-height: 1.42;
+  }
+
+  .page {
+    width: 277mm;
+    height: 192mm;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 4mm;
+    break-after: page;
+    page-break-after: always;
+    overflow: hidden;
+  }
+  .page:last-child { break-after: auto; page-break-after: auto; }
+
+  /* ---------- header ---------- */
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 5mm;
+    border-bottom: 1.6pt solid var(--ink);
+    padding-bottom: 2.6mm;
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 19pt;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #ffffff;
+    background: var(--live);
+    padding: 1.2mm 4mm 1.6mm;
+    line-height: 1;
+  }
+
+  .head-txt { display: flex; flex-direction: column; gap: 0.6mm; }
+
+  .head-txt h1 {
+    margin: 0;
+    font-size: 17pt;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+
+  .head-txt .sub {
+    font-family: var(--mono);
+    font-size: 7.4pt;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .head-meta {
+    margin-left: auto;
+    text-align: right;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6mm;
+  }
+
+  .head-meta .doc {
+    font-family: var(--mono);
+    font-size: 7.4pt;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .head-meta .pg {
+    font-family: var(--mono);
+    font-size: 11pt;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  /* ---------- body ---------- */
+
+  /* Diagram is the hero across the full page width; the bindings sit beneath it
+     in columns. A two-column split left a third of an A4 landscape sheet empty
+     and shrank the pad to the point the axis labels stopped being readable at
+     arm's length, which is the distance this card is actually read from. */
+  .main {
+    display: flex;
+    flex-direction: column;
+    gap: 4.5mm;
+    min-height: 0;
+    justify-content: space-between;
+  }
+
+  figure {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.4mm;
+  }
+  figure svg { width: 100%; max-width: 194mm; height: auto; display: block; }
+  figcaption { font-size: 8.6pt; color: var(--muted); line-height: 1.35; text-align: center; }
+
+  .bindings {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3mm 7mm;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .bindings .note { grid-column: 1 / -1; }
+
+  .bind-group { display: flex; flex-direction: column; gap: 1.5mm; min-width: 0; }
+
+  .bind-label {
+    font-family: var(--mono);
+    font-size: 7pt;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: 1mm;
+    border-bottom: 0.5pt solid var(--rule-2);
+  }
+
+  .bind {
+    display: grid;
+    grid-template-columns: 21mm 1fr;
+    gap: 2mm;
+    align-items: baseline;
+  }
+
+  .bind-key {
+    font-family: var(--mono);
+    font-size: 8pt;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  .bind-val { color: var(--ink-2); font-size: 9.2pt; }
+  .bind-val b { color: var(--ink); font-weight: 700; }
+  .axis { font-family: var(--mono); font-size: 7.6pt; color: var(--muted); }
+  .dead { color: var(--muted); }
+
+  .note {
+    padding: 2mm 2.6mm;
+    font-size: 8.6pt;
+    line-height: 1.4;
+    background: var(--live-soft);
+    border-left: 1.4pt solid var(--live);
+    color: var(--ink-2);
+  }
+  .note.blocked { background: var(--block-soft); border-left-color: var(--block); }
+  .note b { color: var(--ink); font-weight: 700; }
+
+  code { font-family: var(--mono); font-size: 8pt; color: var(--ink-2); }
+
+  /* ---------- footer: repeated on every page so a loose sheet still works ---------- */
+
+  .foot {
+    border-top: 0.5pt solid var(--rule);
+    padding-top: 2mm;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4mm;
+  }
+
+  .foot-cell { display: flex; flex-direction: column; gap: 0.4mm; }
+
+  .foot-k {
+    font-family: var(--mono);
+    font-size: 6.6pt;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .foot-v { font-size: 8pt; color: var(--ink-2); line-height: 1.35; }
+  .foot-v b { color: var(--ink); font-weight: 700; }
+
+  /* ---------- svg control classes ---------- */
+
+  .pad-body { fill: none; stroke: var(--chassis); stroke-width: 2.5; }
+  .pad-part { fill: none; stroke: var(--chassis); stroke-width: 1.8; }
+  .pad-fill { fill: var(--chassis); opacity: 0.22; }
+  .pad-letter {
+    fill: var(--chassis);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+  .on { stroke: var(--live); stroke-width: 2.6; fill: var(--live-soft); }
+  .on-letter { fill: var(--live); font-weight: 700; }
+  .no { stroke: var(--block); stroke-width: 2.2; fill: none; stroke-dasharray: 4 3; }
+  .lead { stroke: var(--live); stroke-width: 1.2; fill: none; }
+  .lead-no { stroke: var(--block); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; }
+  .tag { fill: var(--live); font-family: var(--mono); font-size: 12.5px; font-weight: 700; letter-spacing: 0.04em; }
+  .tag-sub { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.05em; }
+  .tag-no { fill: var(--block); font-family: var(--mono); font-size: 12.5px; font-weight: 700; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <g id="pad">
+      <path class="pad-body" d="M248 62 C212 62 188 82 180 122 C168 182 176 244 202 288
+                                 C220 318 254 320 272 294 C294 262 314 248 352 246
+                                 L368 246 C406 248 426 262 448 294 C466 320 500 318 518 288
+                                 C544 244 552 182 540 122 C532 82 508 62 472 62 Z"/>
+      <rect class="pad-part" x="216" y="66" width="72" height="20" rx="9"/>
+      <rect class="pad-part" x="432" y="66" width="72" height="20" rx="9"/>
+      <path class="pad-part" d="M228 60 L232 38 L272 38 L276 60 Z"/>
+      <path class="pad-part" d="M444 60 L448 38 L488 38 L492 60 Z"/>
+      <circle class="pad-part" cx="252" cy="140" r="30"/>
+      <circle class="pad-fill" cx="252" cy="140" r="16"/>
+      <circle class="pad-part" cx="412" cy="218" r="30"/>
+      <circle class="pad-fill" cx="412" cy="218" r="16"/>
+      <path class="pad-part" d="M276 210 L300 210 L300 220 L310 220 L310 244 L300 244
+                                L300 254 L276 254 L276 244 L266 244 L266 220 L276 220 Z"/>
+      <circle class="pad-part" cx="458" cy="110" r="18"/>
+      <circle class="pad-part" cx="426" cy="142" r="18"/>
+      <circle class="pad-part" cx="490" cy="142" r="18"/>
+      <circle class="pad-part" cx="458" cy="174" r="18"/>
+      <circle class="pad-part" cx="344" cy="132" r="7"/>
+      <circle class="pad-part" cx="372" cy="132" r="7"/>
+    </g>
+    <g id="pad-letters">
+      <text class="pad-letter" x="252" y="76">LB</text>
+      <text class="pad-letter" x="468" y="76">RB</text>
+      <text class="pad-letter" x="252" y="49">LT</text>
+      <text class="pad-letter" x="468" y="49">RT</text>
+      <text class="pad-letter" x="458" y="110">Y</text>
+      <text class="pad-letter" x="426" y="142">X</text>
+      <text class="pad-letter" x="490" y="142">B</text>
+      <text class="pad-letter" x="458" y="174">A</text>
+    </g>
+  </defs>
+</svg>
+
+<!-- ============================ PAGE 1 · LB ============================ -->
+<section class="page">
+  <div class="head">
+    <span class="badge">LB</span>
+    <div class="head-txt">
+      <h1>Rover drive</h1>
+      <div class="sub">mock_rover_drive &middot; rover_cmd_vel_joystick</div>
+    </div>
+    <div class="head-meta">
+      <div class="doc">ARIES gamepad map</div>
+      <div class="pg">1 / 4</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <figure>
+      <svg viewBox="0 0 760 360" role="img"
+           aria-label="Gamepad with LB held: only the left stick is live, driving and steering the rover. The whole arm is blocked.">
+        <use href="#pad"/>
+        <rect class="on" x="216" y="66" width="72" height="20" rx="9"/>
+        <circle class="on" cx="252" cy="140" r="30"/>
+        <use href="#pad-letters"/>
+        <text class="on-letter pad-letter" x="252" y="76">LB</text>
+        <path class="lead" d="M222 140 L150 140"/>
+        <text class="tag" x="144" y="136" text-anchor="end">DRIVE</text>
+        <text class="tag-sub" x="144" y="151" text-anchor="end">axis 1 &middot; fwd / rev</text>
+        <path class="lead" d="M252 170 L252 196 L150 196"/>
+        <text class="tag" x="144" y="192" text-anchor="end">TURN</text>
+        <text class="tag-sub" x="144" y="207" text-anchor="end">axis 0 &middot; left / right</text>
+        <rect class="no" x="374" y="84" width="146" height="172" rx="14"/>
+        <path class="lead-no" d="M520 170 L560 170"/>
+        <text class="tag-no" x="566" y="166">ARM BLOCKED</text>
+        <text class="tag-sub" x="566" y="181">sticks, d-pad, all four</text>
+        <text class="tag-sub" x="566" y="195">face buttons, gripper</text>
+      </svg>
+      <figcaption>Only the left stick is live. Holding LB hard-stops the arm before anything else is read.</figcaption>
+    </figure>
+
+    <div class="bindings">
+      <div class="bind-group">
+        <div class="bind-label">Live controls</div>
+        <div class="bind"><span class="bind-key">L stick &#9650;&#9660;</span><span class="bind-val"><b>Drive forward / reverse</b><br><span class="axis">axis 1 &middot; 0.55 m/s mock, 0.45 m/s ODrive</span></span></div>
+        <div class="bind"><span class="bind-key">L stick &#9664;&#9654;</span><span class="bind-val"><b>Turn</b><br><span class="axis">axis 0 &middot; 1.60 rad/s mock, 1.40 rad/s ODrive</span></span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">Inert while LB is held</div>
+        <div class="bind"><span class="bind-key">Everything</span><span class="bind-val dead">Right stick, d-pad, A / B / X / Y and the whole arm do nothing.</span></div>
+      </div>
+      <div class="note blocked">
+        <b>The arm is actively blocked, not just idle.</b> The teleop node checks LB first, commands a hard
+        zero stop, and returns before reading any other control &mdash; it logs
+        <code>LB rover mode active: arm blocked</code>. Stick deadzone here is 0.08, wider than the arm's 0.04.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="foot-cell"><div class="foot-k">No modifier</div><div class="foot-v">Nothing moves. Teleop publishes <b>silence</b>, not zeros.</div></div>
+    <div class="foot-cell"><div class="foot-k">Both RB + RT</div><div class="foot-v"><b>RB wins.</b> A brushed trigger can't change the sticks.</div></div>
+    <div class="foot-cell"><div class="foot-k">Trigger threshold</div><div class="foot-v">LT / RT engage past <b>0.50</b>, release below <b>0.35</b>.</div></div>
+    <div class="foot-cell"><div class="foot-k">Signal loss</div><div class="foot-v"><code>/joy</code> silent <b>0.35 s</b> &rarr; arm stops.</div></div>
+  </div>
+</section>
+
+<!-- ============================ PAGE 2 · RB ============================ -->
+<section class="page">
+  <div class="head">
+    <span class="badge">RB</span>
+    <div class="head-txt">
+      <h1>Arm &mdash; tool space</h1>
+      <div class="sub">Cartesian in base_link &middot; rebel_servo_teleop_gamepad</div>
+    </div>
+    <div class="head-meta">
+      <div class="doc">ARIES gamepad map</div>
+      <div class="pg">2 / 4</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <figure>
+      <svg viewBox="0 0 760 360" role="img"
+           aria-label="Gamepad with RB held: both sticks and the d-pad move the tool in Cartesian space, X and B work the gripper, Y starts hand guiding.">
+        <use href="#pad"/>
+        <rect class="on" x="432" y="66" width="72" height="20" rx="9"/>
+        <circle class="on" cx="252" cy="140" r="30"/>
+        <circle class="on" cx="412" cy="218" r="30"/>
+        <path class="on" d="M276 210 L300 210 L300 220 L310 220 L310 244 L300 244
+                            L300 254 L276 254 L276 244 L266 244 L266 220 L276 220 Z"/>
+        <circle class="on" cx="458" cy="110" r="18"/>
+        <circle class="on" cx="426" cy="142" r="18"/>
+        <circle class="on" cx="490" cy="142" r="18"/>
+        <circle class="on" cx="458" cy="174" r="18"/>
+        <use href="#pad-letters"/>
+        <text class="on-letter pad-letter" x="468" y="76">RB</text>
+        <text class="on-letter pad-letter" x="458" y="110">Y</text>
+        <text class="on-letter pad-letter" x="426" y="142">X</text>
+        <text class="on-letter pad-letter" x="490" y="142">B</text>
+        <text class="on-letter pad-letter" x="458" y="174">A</text>
+        <path class="lead" d="M222 140 L150 140"/>
+        <text class="tag" x="144" y="136" text-anchor="end">TOOL X / Y</text>
+        <text class="tag-sub" x="144" y="151" text-anchor="end">axis 1 / axis 0</text>
+        <path class="lead" d="M266 232 L170 232"/>
+        <text class="tag" x="164" y="228" text-anchor="end">TOOL Z / YAW</text>
+        <text class="tag-sub" x="164" y="243" text-anchor="end">axis 7 / axis 6</text>
+        <path class="lead" d="M412 248 L412 300 L560 300"/>
+        <text class="tag" x="566" y="296">ROLL / PITCH</text>
+        <text class="tag-sub" x="566" y="311">axis 3 / axis 4</text>
+        <path class="lead" d="M476 110 L560 110"/>
+        <text class="tag" x="566" y="106">HAND GUIDE</text>
+        <text class="tag-sub" x="566" y="121">real arm only</text>
+        <path class="lead" d="M408 142 L340 142 L340 96 L300 96"/>
+        <text class="tag" x="294" y="92" text-anchor="end">OPEN</text>
+        <path class="lead" d="M508 142 L590 142"/>
+        <text class="tag" x="596" y="146">CLOSE</text>
+        <path class="lead" d="M476 174 L560 174"/>
+        <text class="tag" x="566" y="178">TOGGLE</text>
+      </svg>
+      <figcaption>Translation on the left stick, rotation on the right, Z and yaw on the d-pad. The whole face cluster is gripper work, except Y.</figcaption>
+    </figure>
+
+    <div class="bindings">
+      <div class="bind-group">
+        <div class="bind-label">Translate &mdash; 0.10 m/s at full deflection</div>
+        <div class="bind"><span class="bind-key">L stick &#9650;&#9660;</span><span class="bind-val"><b>Tool X</b> <span class="axis">axis 1</span></span></div>
+        <div class="bind"><span class="bind-key">L stick &#9664;&#9654;</span><span class="bind-val"><b>Tool Y</b> <span class="axis">axis 0</span></span></div>
+        <div class="bind"><span class="bind-key">D-pad &#9650;&#9660;</span><span class="bind-val"><b>Tool Z</b> <span class="axis">axis 7</span></span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">Rotate &mdash; 0.18 rad/s, about 10&deg;/s</div>
+        <div class="bind"><span class="bind-key">R stick &#9664;&#9654;</span><span class="bind-val"><b>Roll</b> <span class="axis">axis 3</span></span></div>
+        <div class="bind"><span class="bind-key">R stick &#9650;&#9660;</span><span class="bind-val"><b>Pitch</b> <span class="axis">axis 4</span></span></div>
+        <div class="bind"><span class="bind-key">D-pad &#9664;&#9654;</span><span class="bind-val"><b>Yaw</b> <span class="axis">axis 6</span></span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">Gripper &amp; hand guiding</div>
+        <div class="bind"><span class="bind-key">X &middot; hold</span><span class="bind-val"><b>Open</b> <span class="axis">2.0 rad/s, full stroke ~0.82 s</span></span></div>
+        <div class="bind"><span class="bind-key">B &middot; hold</span><span class="bind-val"><b>Close</b></span></div>
+        <div class="bind"><span class="bind-key">A &middot; press</span><span class="bind-val"><b>Toggle</b> open &harr; closed</span></div>
+        <div class="bind"><span class="bind-key">Y &middot; hold</span><span class="bind-val"><b>Hand guiding</b> &mdash; ZeroTorque, real arm only</span></div>
+      </div>
+      <div class="note">
+        <b>Release overshoot is real.</b> The arm keeps travelling roughly 0.25 s after you let go &mdash;
+        transport delay plus the ReBeL's own firmware deceleration, neither reachable from ROS. Release
+        slower to stop shorter.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="foot-cell"><div class="foot-k">No modifier</div><div class="foot-v">Nothing moves. Teleop publishes <b>silence</b>, not zeros.</div></div>
+    <div class="foot-cell"><div class="foot-k">Both RB + RT</div><div class="foot-v"><b>RB wins.</b> A brushed trigger can't change the sticks.</div></div>
+    <div class="foot-cell"><div class="foot-k">Trigger threshold</div><div class="foot-v">LT / RT engage past <b>0.50</b>, release below <b>0.35</b>.</div></div>
+    <div class="foot-cell"><div class="foot-k">Signal loss</div><div class="foot-v"><code>/joy</code> silent <b>0.35 s</b> &rarr; arm stops.</div></div>
+  </div>
+</section>
+
+<!-- ============================ PAGE 3 · RT ============================ -->
+<section class="page">
+  <div class="head">
+    <span class="badge">RT</span>
+    <div class="head-txt">
+      <h1>Arm &mdash; joint jog</h1>
+      <div class="sub">one joint per stick axis &middot; rebel_servo_teleop_gamepad</div>
+    </div>
+    <div class="head-meta">
+      <div class="doc">ARIES gamepad map</div>
+      <div class="pg">3 / 4</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <figure>
+      <svg viewBox="0 0 760 360" role="img"
+           aria-label="Gamepad with RT held: each stick axis and d-pad direction drives one arm joint, X B and A work the gripper, Y does nothing.">
+        <use href="#pad"/>
+        <path class="on" d="M444 60 L448 38 L488 38 L492 60 Z"/>
+        <circle class="on" cx="252" cy="140" r="30"/>
+        <circle class="on" cx="412" cy="218" r="30"/>
+        <path class="on" d="M276 210 L300 210 L300 220 L310 220 L310 244 L300 244
+                            L300 254 L276 254 L276 244 L266 244 L266 220 L276 220 Z"/>
+        <circle class="on" cx="426" cy="142" r="18"/>
+        <circle class="on" cx="490" cy="142" r="18"/>
+        <circle class="on" cx="458" cy="174" r="18"/>
+        <circle class="no" cx="458" cy="110" r="18"/>
+        <use href="#pad-letters"/>
+        <text class="on-letter pad-letter" x="468" y="49">RT</text>
+        <text class="on-letter pad-letter" x="426" y="142">X</text>
+        <text class="on-letter pad-letter" x="490" y="142">B</text>
+        <text class="on-letter pad-letter" x="458" y="174">A</text>
+        <path class="lead" d="M222 140 L150 140"/>
+        <text class="tag" x="144" y="136" text-anchor="end">J1 &#9664;&#9654; / J2 &#9650;&#9660;</text>
+        <text class="tag-sub" x="144" y="151" text-anchor="end">axis 0 / axis 1</text>
+        <path class="lead" d="M266 232 L170 232"/>
+        <text class="tag" x="164" y="228" text-anchor="end">J5 &#9664;&#9654; / J6 &#9650;&#9660;</text>
+        <text class="tag-sub" x="164" y="243" text-anchor="end">axis 6 / axis 7</text>
+        <path class="lead" d="M412 248 L412 300 L560 300"/>
+        <text class="tag" x="566" y="296">J4 &#9664;&#9654; / J3 &#9650;&#9660;</text>
+        <text class="tag-sub" x="566" y="311">axis 3 / axis 4</text>
+        <path class="lead-no" d="M476 110 L560 110"/>
+        <text class="tag-no" x="566" y="106">NOTHING</text>
+        <text class="tag-sub" x="566" y="121">hand guiding is RB + Y</text>
+        <path class="lead" d="M408 142 L340 142 L340 96 L300 96"/>
+        <text class="tag" x="294" y="92" text-anchor="end">OPEN</text>
+        <path class="lead" d="M508 142 L590 142"/>
+        <text class="tag" x="596" y="146">CLOSE</text>
+        <path class="lead" d="M476 174 L560 174"/>
+        <text class="tag" x="566" y="178">TOGGLE</text>
+      </svg>
+      <figcaption>Same sticks, different meaning: six joints instead of a tool frame. Y goes dead here &mdash; hand guiding needs RB.</figcaption>
+    </figure>
+
+    <div class="bindings">
+      <div class="bind-group">
+        <div class="bind-label">Sticks &mdash; 0.38 rad/s per joint</div>
+        <div class="bind"><span class="bind-key">L stick &#9664;&#9654;</span><span class="bind-val"><b>joint1</b> <span class="axis">axis 0 &middot; base yaw</span></span></div>
+        <div class="bind"><span class="bind-key">L stick &#9650;&#9660;</span><span class="bind-val"><b>joint2</b> <span class="axis">axis 1 &middot; shoulder</span></span></div>
+        <div class="bind"><span class="bind-key">R stick &#9650;&#9660;</span><span class="bind-val"><b>joint3</b> <span class="axis">axis 4 &middot; elbow</span></span></div>
+        <div class="bind"><span class="bind-key">R stick &#9664;&#9654;</span><span class="bind-val"><b>joint4</b> <span class="axis">axis 3 &middot; forearm roll</span></span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">D-pad &mdash; the wrist</div>
+        <div class="bind"><span class="bind-key">D-pad &#9664;&#9654;</span><span class="bind-val"><b>joint5</b> <span class="axis">axis 6 &middot; wrist pitch</span></span></div>
+        <div class="bind"><span class="bind-key">D-pad &#9650;&#9660;</span><span class="bind-val"><b>joint6</b> <span class="axis">axis 7 &middot; wrist roll</span></span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">Gripper &mdash; identical to RB</div>
+        <div class="bind"><span class="bind-key">X &middot; hold</span><span class="bind-val"><b>Open</b></span></div>
+        <div class="bind"><span class="bind-key">B &middot; hold</span><span class="bind-val"><b>Close</b></span></div>
+        <div class="bind"><span class="bind-key">A &middot; press</span><span class="bind-val"><b>Toggle</b></span></div>
+        <div class="bind"><span class="bind-key">Y</span><span class="bind-val dead">Nothing. Hand guiding is RB + Y, never RT + Y.</span></div>
+      </div>
+      <div class="note">
+        <b>0.28 rad/s is a ceiling, not the speed.</b> If any joint exceeds it the whole velocity vector
+        scales down uniformly, so direction is preserved &mdash; but near a singularity the tool moves
+        visibly slower than the number suggests.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="foot-cell"><div class="foot-k">No modifier</div><div class="foot-v">Nothing moves. Teleop publishes <b>silence</b>, not zeros.</div></div>
+    <div class="foot-cell"><div class="foot-k">Both RB + RT</div><div class="foot-v"><b>RB wins.</b> A brushed trigger can't change the sticks.</div></div>
+    <div class="foot-cell"><div class="foot-k">Trigger threshold</div><div class="foot-v">LT / RT engage past <b>0.50</b>, release below <b>0.35</b>.</div></div>
+    <div class="foot-cell"><div class="foot-k">Signal loss</div><div class="foot-v"><code>/joy</code> silent <b>0.35 s</b> &rarr; arm stops.</div></div>
+  </div>
+</section>
+
+<!-- ============================ PAGE 4 · LT ============================ -->
+<section class="page">
+  <div class="head">
+    <span class="badge">LT</span>
+    <div class="head-txt">
+      <h1>Arm &mdash; stored poses</h1>
+      <div class="sub">planned MoveGroup moves &middot; arm_preset_pose_joystick</div>
+    </div>
+    <div class="head-meta">
+      <div class="doc">ARIES gamepad map</div>
+      <div class="pg">4 / 4</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <figure>
+      <svg viewBox="0 0 760 360" role="img"
+           aria-label="Gamepad with LT held: Y, A and B each send the arm to a stored pose. Sticks and d-pad are inert, and the combo is refused if another shoulder is held.">
+        <use href="#pad"/>
+        <path class="on" d="M228 60 L232 38 L272 38 L276 60 Z"/>
+        <circle class="on" cx="458" cy="110" r="18"/>
+        <circle class="on" cx="490" cy="142" r="18"/>
+        <circle class="on" cx="458" cy="174" r="18"/>
+        <circle class="no" cx="426" cy="142" r="18"/>
+        <use href="#pad-letters"/>
+        <text class="on-letter pad-letter" x="252" y="49">LT</text>
+        <text class="on-letter pad-letter" x="458" y="110">Y</text>
+        <text class="on-letter pad-letter" x="490" y="142">B</text>
+        <text class="on-letter pad-letter" x="458" y="174">A</text>
+        <path class="lead" d="M476 110 L560 110"/>
+        <text class="tag" x="566" y="106">pick_home</text>
+        <text class="tag-sub" x="566" y="121">0&deg; 21&deg; 68&deg; 2&deg; 89&deg; 86&deg;</text>
+        <path class="lead" d="M508 142 L560 142 L560 152"/>
+        <text class="tag" x="566" y="156">soil_drop</text>
+        <text class="tag-sub" x="566" y="171">74&deg; -19&deg; 105&deg; -4&deg; 88&deg; 163&deg;</text>
+        <path class="lead" d="M476 174 L520 174 L520 202 L560 202"/>
+        <text class="tag" x="566" y="206">probe_drop</text>
+        <text class="tag-sub" x="566" y="221">104&deg; -68&deg; 113&deg; 2&deg; 87&deg; 91&deg;</text>
+        <path class="lead-no" d="M408 142 L340 142 L340 96 L300 96"/>
+        <text class="tag-no" x="294" y="92" text-anchor="end">UNUSED</text>
+        <path class="lead-no" d="M222 152 L150 152"/>
+        <text class="tag-no" x="144" y="148" text-anchor="end">STICKS INERT</text>
+        <text class="tag-sub" x="144" y="163" text-anchor="end">d-pad too</text>
+      </svg>
+      <figcaption>Three stored poses on the face buttons. Each is a planned move, collision-checked the same way RViz Plan &amp; Execute is.</figcaption>
+    </figure>
+
+    <div class="bindings">
+      <div class="bind-group">
+        <div class="bind-label">Stored poses &mdash; press, don't hold</div>
+        <div class="bind"><span class="bind-key">Y</span><span class="bind-val"><b>pick_home</b> <span class="axis">0&deg; 21&deg; 68&deg; 2&deg; 89&deg; 86&deg;</span></span></div>
+        <div class="bind"><span class="bind-key">A</span><span class="bind-val"><b>probe_drop</b> <span class="axis">104&deg; -68&deg; 113&deg; 2&deg; 87&deg; 91&deg;</span></span></div>
+        <div class="bind"><span class="bind-key">B</span><span class="bind-val"><b>soil_drop</b> <span class="axis">74&deg; -19&deg; 105&deg; -4&deg; 88&deg; 163&deg;</span></span></div>
+        <div class="bind"><span class="bind-key">X</span><span class="bind-val dead">Unassigned.</span></div>
+        <div class="bind"><span class="bind-key">Sticks</span><span class="bind-val dead">Inert. Presets are the only thing LT does.</span></div>
+      </div>
+      <div class="bind-group">
+        <div class="bind-label">Refused &mdash; logged, never silent</div>
+        <div class="bind"><span class="bind-key">RB held</span><span class="bind-val">That combo is hand guiding.</span></div>
+        <div class="bind"><span class="bind-key">RT held</span><span class="bind-val">Arm is under joint jog.</span></div>
+        <div class="bind"><span class="bind-key">LB held</span><span class="bind-val">Rover has the sticks.</span></div>
+        <div class="bind"><span class="bind-key">Mid-move</span><span class="bind-val">A preset is already running.</span></div>
+        <div class="bind"><span class="bind-key">Two at once</span><span class="bind-val">Refuses rather than picking one arbitrarily.</span></div>
+      </div>
+      <div class="note">
+        <b>The gripper is left alone.</b> None of the three poses commands the jaw, so a preset can be used
+        while holding a probe. Moves run at 0.25 velocity and acceleration scale. Watch
+        <code>/arm_preset_pose/status</code>.
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="foot-cell"><div class="foot-k">Canonical layout</div><div class="foot-v">As <code>joy_layout_normalizer</code> republishes it &mdash; driver-independent.</div></div>
+    <div class="foot-cell"><div class="foot-k">Triggers are axes</div><div class="foot-v">LT = axis 2, RT = axis 5, <b>0.0</b> released to <b>1.0</b> pressed.</div></div>
+    <div class="foot-cell"><div class="foot-k">Mapping &amp; speeds</div><div class="foot-v"><code>gamepad.yaml</code>, <code>teleop_speeds.yaml</code></div></div>
+    <div class="foot-cell"><div class="foot-k">Stored poses</div><div class="foot-v"><code>aries.srdf</code></div></div>
+  </div>
+</section>
+
+</body>
+</html>

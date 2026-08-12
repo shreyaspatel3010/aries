@@ -52,21 +52,6 @@ def generate_launch_description():
             "ybimu_frame": LaunchConfiguration("ybimu_frame"),
             "bno055_topic": LaunchConfiguration("imu_topic"),
             "ybimu_topic": LaunchConfiguration("ybimu_topic"),
-            "use_lidar": LaunchConfiguration("use_lidar"),
-            "lidar_sensor_ip": LaunchConfiguration("lidar_sensor_ip"),
-            "lidar_host_ip": LaunchConfiguration("lidar_host_ip"),
-            "lidar_frame": LaunchConfiguration("lidar_frame"),
-            "lidar_scan_topic": LaunchConfiguration("lidar_scan_topic"),
-            "lidar_raw_scan_topic": LaunchConfiguration(
-                "lidar_raw_scan_topic"
-            ),
-            "lidar_restamp": LaunchConfiguration("lidar_restamp"),
-            "picoscan_localization_imu_raw_topic": LaunchConfiguration(
-                "picoscan_raw_imu_topic"
-            ),
-            "picoscan_localization_imu_topic": LaunchConfiguration(
-                "picoscan_imu_topic"
-            ),
         }.items(),
     )
 
@@ -114,7 +99,6 @@ def generate_launch_description():
                     "false",
                     "ybimu",
                     "bno055",
-                    "picoscan",
                 ],
             ),
             DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0"),
@@ -128,33 +112,6 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "ybimu_topic", default_value="/ybimu/imu"
             ),
-            DeclareLaunchArgument(
-                "use_lidar",
-                default_value="auto",
-                choices=["auto", "true", "false"],
-            ),
-            DeclareLaunchArgument(
-                "lidar_sensor_ip", default_value="169.254.136.69"
-            ),
-            DeclareLaunchArgument(
-                "lidar_host_ip", default_value="169.254.180.121"
-            ),
-            DeclareLaunchArgument(
-                "lidar_frame", default_value="Lidar_Scan_Link"
-            ),
-            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan"),
-            DeclareLaunchArgument(
-                "lidar_raw_scan_topic",
-                default_value="/picoscan/scan_raw",
-            ),
-            DeclareLaunchArgument(
-                "picoscan_raw_imu_topic",
-                default_value="/picoscan/imu_raw",
-            ),
-            DeclareLaunchArgument(
-                "picoscan_imu_topic", default_value="/picoscan/imu"
-            ),
-            DeclareLaunchArgument("lidar_restamp", default_value="true"),
             rover,
         ]
     )

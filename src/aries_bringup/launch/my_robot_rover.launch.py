@@ -99,7 +99,7 @@ def generate_launch_description():
     )
 
     robot_description_content = ParameterValue(
-        Command(["xacro ", urdf_path, " enable_lidar_gazebo:=true"]),
+        Command(["xacro ", urdf_path]),
         value_type=str,
     )
 

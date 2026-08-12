@@ -1,6 +1,5 @@
 """Consistent hardware auto-detection for Aries launch files."""
 
-import socket
 from pathlib import Path
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -9,8 +8,6 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 TRUE_VALUES = ("1", "true", "yes", "on")
 FALSE_VALUES = ("0", "false", "no", "off", "none")
 AUTO_VALUES = ("auto", "detect")
-LIDAR_PROBE_PORT = 2111
-LIDAR_PROBE_TIMEOUT = 0.4
 
 
 def as_bool(value):
@@ -36,14 +33,6 @@ def can_interface_exists(interface):
     return Path(f"/sys/class/net/{interface}").exists()
 
 
-def lidar_reachable(sensor_ip, port=LIDAR_PROBE_PORT, timeout=LIDAR_PROBE_TIMEOUT):
-    try:
-        with socket.create_connection((sensor_ip, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
 def bno055_available(imu_port):
     return Path(imu_port).exists() and package_exists("bno055")
 
@@ -60,20 +49,12 @@ def resolve_rover_backend(protocol, can_interface):
     return mode
 
 
-def resolve_lidar_enabled(mode, sensor_ip):
-    mode = str(mode).strip().lower()
-    if mode in AUTO_VALUES:
-        return package_exists("sick_scan_xd") and lidar_reachable(sensor_ip)
-    return mode in TRUE_VALUES
-
-
 def resolve_imu_source(
     use_imu,
     imu_port,
-    lidar_available,
     ybimu_port="/dev/imu_ybimu",
 ):
-    """Select ybimu, BNO055, picoScan, or no IMU.
+    """Select ybimu, BNO055, or no IMU.
 
     ``imu_port`` remains the BNO055 port for compatibility with existing
     launches.  The YaBoom driver uses its own persistent ``ybimu_port``.
@@ -93,17 +74,9 @@ def resolve_imu_source(
         if yb_available:
             return "ybimu", yb_available, bno_available
         return ("bno055" if bno_available else "none"), yb_available, bno_available
-    if mode in ("picoscan", "picoscan150", "sick", "lidar"):
-        return (
-            "picoscan" if lidar_available else "none",
-            yb_available,
-            bno_available,
-        )
 
     if yb_available:
         return "ybimu", yb_available, bno_available
     if bno_available:
         return "bno055", yb_available, bno_available
-    if lidar_available:
-        return "picoscan", yb_available, bno_available
     return "none", yb_available, bno_available

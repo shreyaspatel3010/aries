@@ -8,7 +8,6 @@ decides which EKF config is loaded:
 
   ybimu     YaBoom ybimu on its serial port -> ekf_config.yaml
   bno055    BNO055 on its serial port        -> ekf_config.yaml
-  picoscan  picoScan150 IMU (fallback)      -> ekf_picoscan_imu.yaml
   none      no IMU, wheel odometry only     -> ekf_odom_only.yaml
 
 It resolves the source with the same aries_common probes aries_imu uses, so both
@@ -29,7 +28,7 @@ from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from aries_common.detect import resolve_imu_source, resolve_lidar_enabled, resolve_rover_backend
+from aries_common.detect import resolve_imu_source, resolve_rover_backend
 
 ODOM_ONLY_CONFIG = [
     False, False, False,  # x, y, z
@@ -102,16 +101,10 @@ def _start_localization(context, *args, **kwargs):
     imu_frame = LaunchConfiguration("imu_frame").perform(context)
     bno055_topic = LaunchConfiguration("bno055_topic").perform(context)
     ybimu_topic = LaunchConfiguration("ybimu_topic").perform(context)
-    picoscan_topic = LaunchConfiguration("picoscan_imu_topic").perform(context)
 
-    lidar_available = resolve_lidar_enabled(
-        LaunchConfiguration("use_lidar").perform(context),
-        LaunchConfiguration("lidar_sensor_ip").perform(context),
-    )
     imu_source, ybimu_available, bno_available = resolve_imu_source(
         use_imu,
         imu_port,
-        lidar_available,
         ybimu_port,
     )
 
@@ -123,9 +116,6 @@ def _start_localization(context, *args, **kwargs):
     elif imu_source == "bno055":
         ekf_overrides["imu0"] = bno055_topic
         ekf_config = _ekf_config("ekf_config.yaml")
-    elif imu_source == "picoscan":
-        ekf_overrides["imu0"] = picoscan_topic
-        ekf_config = _ekf_config("ekf_picoscan_imu.yaml")
     else:
         ekf_overrides["odom0_config"] = ODOM_ONLY_CONFIG
         ekf_config = _ekf_config("ekf_odom_only.yaml")
@@ -135,8 +125,7 @@ def _start_localization(context, *args, **kwargs):
             "[rover localization] "
             f"use_imu={use_imu} selected={imu_source} "
             f"ybimu_available={ybimu_available} "
-            f"bno_available={bno_available} "
-            f"lidar_imu_available={lidar_available} imu_frame={imu_frame}"
+            f"bno_available={bno_available} imu_frame={imu_frame}"
         )),
         Node(
             package="rover_nav",
@@ -168,18 +157,12 @@ def generate_launch_description():
         DeclareLaunchArgument("can_interface", default_value="can0"),
 
         DeclareLaunchArgument("use_imu", default_value="auto",
-                              choices=["auto", "true", "false", "ybimu", "bno055", "picoscan"]),
+                              choices=["auto", "true", "false", "ybimu", "bno055"]),
         DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("ybimu_port", default_value="/dev/imu_ybimu"),
         DeclareLaunchArgument("imu_frame", default_value="bno055"),
         DeclareLaunchArgument("bno055_topic", default_value="/bno055/imu"),
         DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
-        DeclareLaunchArgument("picoscan_imu_topic", default_value="/picoscan/imu",
-                              description="Clean picoScan IMU topic published by aries_imu."),
-
-        DeclareLaunchArgument("use_lidar", default_value="auto", choices=["auto", "true", "false"],
-                              description="Only used to decide whether the picoScan IMU is available."),
-        DeclareLaunchArgument("lidar_sensor_ip", default_value="169.254.136.69"),
 
         OpaqueFunction(function=_start_localization),
     ])

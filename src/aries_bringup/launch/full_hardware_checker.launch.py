@@ -19,8 +19,6 @@ def generate_launch_description():
         DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/bno055/imu"),
         DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
-        DeclareLaunchArgument("picoscan_imu_topic", default_value="/picoscan/imu"),
-        DeclareLaunchArgument("lidar_topic", default_value="/scan"),
         DeclareLaunchArgument("check_imu", default_value="true"),
         DeclareLaunchArgument("require_all_rover_axes", default_value="true"),
         DeclareLaunchArgument(
@@ -52,8 +50,6 @@ def generate_launch_description():
                 "ybimu_frame": LaunchConfiguration("ybimu_frame"),
                 "imu_topic": LaunchConfiguration("imu_topic"),
                 "ybimu_topic": LaunchConfiguration("ybimu_topic"),
-                "picoscan_imu_topic": LaunchConfiguration("picoscan_imu_topic"),
-                "lidar_topic": LaunchConfiguration("lidar_topic"),
                 "check_imu": LaunchConfiguration("check_imu"),
                 "require_all_rover_axes": LaunchConfiguration("require_all_rover_axes"),
                 "require_closed_loop": LaunchConfiguration("require_closed_loop"),

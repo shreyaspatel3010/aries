@@ -108,11 +108,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        Lidar_Link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         Link Tree Style: Links in Alphabetic Order
         R_1_Wheel_Link:
           Alpha: 1

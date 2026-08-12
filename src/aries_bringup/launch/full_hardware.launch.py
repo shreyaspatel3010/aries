@@ -56,7 +56,6 @@ def generate_launch_description():
                 "false",
                 "ybimu",
                 "bno055",
-                "picoscan",
             ],
         ),
         DeclareLaunchArgument("rover_imu_port", default_value="/dev/ttyUSB0"),
@@ -72,13 +71,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "rover_ybimu_topic", default_value="/ybimu/imu"
         ),
-        DeclareLaunchArgument("use_rover_lidar", default_value="auto", choices=["auto", "true", "false"]),
-        DeclareLaunchArgument("rover_lidar_sensor_ip", default_value="169.254.136.69"),
-        DeclareLaunchArgument("rover_lidar_host_ip", default_value="169.254.180.121"),
-        DeclareLaunchArgument("rover_lidar_frame", default_value="Lidar_Scan_Link"),
-        DeclareLaunchArgument("rover_lidar_topic", default_value="/scan"),
-        DeclareLaunchArgument("rover_picoscan_raw_imu_topic", default_value="/picoscan/imu_raw"),
-        DeclareLaunchArgument("rover_picoscan_imu_topic", default_value="/picoscan/imu"),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
         DeclareLaunchArgument("start_checker", default_value="true"),
@@ -155,13 +147,6 @@ def generate_launch_description():
                 "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
                 "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
-                "use_lidar": LaunchConfiguration("use_rover_lidar"),
-                "lidar_sensor_ip": LaunchConfiguration("rover_lidar_sensor_ip"),
-                "lidar_host_ip": LaunchConfiguration("rover_lidar_host_ip"),
-                "lidar_frame": LaunchConfiguration("rover_lidar_frame"),
-                "lidar_scan_topic": LaunchConfiguration("rover_lidar_topic"),
-                "picoscan_raw_imu_topic": LaunchConfiguration("rover_picoscan_raw_imu_topic"),
-                "picoscan_imu_topic": LaunchConfiguration("rover_picoscan_imu_topic"),
             }.items(),
         ),
 
@@ -188,8 +173,6 @@ def generate_launch_description():
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
                 "ybimu_frame": LaunchConfiguration("rover_ybimu_frame"),
                 "ybimu_topic": LaunchConfiguration("rover_ybimu_topic"),
-                "picoscan_imu_topic": LaunchConfiguration("rover_picoscan_imu_topic"),
-                "lidar_topic": LaunchConfiguration("rover_lidar_topic"),
             }.items(),
         ),
     ])

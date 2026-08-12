@@ -20,7 +20,7 @@
        this must place the bottom of the wheels at exactly z = 0. It was
        hard-coded to 0.165, which left the wheels 41 mm BELOW base_footprint —
        everything treating that frame as ground (EKF, odom->base_footprint,
-       nav ground filtering, the LiDAR height) inherited that error.
+       nav ground filtering) inherited that error.
        Forward kinematics through the rocker/bogie chain puts the front and
        middle wheel centres 0.0964 m below base_link, so the base must stand
        one wheel radius above that. Derived rather than hard-coded so the two
@@ -31,11 +31,6 @@
   <xacro:property name="mesh_location" value="package://aries/meshes"/>
   <!-- Enable Mimic joints -->
   <xacro:property name="enable_mimic" value="true"/>
-  <!-- Enable Lidar -->
-  <xacro:property name="enable_lidar" value="true"/>
-  <!-- Keep real LiDAR frames/visuals in every robot description without
-         automatically enabling the expensive Gazebo sensors. -->
-  <xacro:property name="enable_lidar_gazebo" value="false"/>
   <!-- Enable D435i -->
   <xacro:property name="enable_D435i" value="true"/>
   <!-- Enable Gazebo extras used by the full robot description -->

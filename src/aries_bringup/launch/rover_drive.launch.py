@@ -6,8 +6,7 @@ This file only declares arguments, starts the robot model and the hardware
 checker, and forwards everything else to the subsystem packages. Each of them
 has one launch file and runs standalone:
 
-  aries_lidar        lidar.launch.py         SICK picoScan150 driver, scan relay, lidar joint
-  aries_imu          imu.launch.py           YaBoom, BNO055, or picoScan IMU
+  aries_imu          imu.launch.py           YaBoom or BNO055 IMU
   aries_localization localization.launch.py  Odom.py + EKF
   aries_drive        drive.launch.py         ODrive cmd_vel bridge, or mock drive
   aries_teleop       joystick.launch.py      joy driver, layout normalizer, rover controller
@@ -21,10 +20,8 @@ bench and on the real rover without extra arguments.
 
   - drive   : ODrive over CAN if the CAN interface exists, else mock_rover_drive
               (rover_hardware_protocol=auto)
-  - IMU     : YaBoom ybimu if present, then BNO055, then picoScan, otherwise
-              wheel-odom only (use_imu=auto)
-  - lidar   : SICK picoScan150 if it answers on its IP, else skipped
-              (use_lidar=auto); driver console output silenced
+  - IMU     : YaBoom ybimu if present, then BNO055, otherwise wheel-odom only
+              (use_imu=auto)
   - localization: Odom.py + EKF on the real drive; skipped in mock (mock owns
               /odom and the odom->base_footprint TF)
 
@@ -187,7 +184,7 @@ def generate_launch_description():
                               description="auto starts the driver for whichever IMU hardware is "
                                           "present, on any drive backend; false disables it."),
         DeclareLaunchArgument("use_imu", default_value="auto",
-                              choices=["auto", "true", "false", "ybimu", "bno055", "picoscan"]),
+                              choices=["auto", "true", "false", "ybimu", "bno055"]),
         DeclareLaunchArgument("imu_port", default_value="/dev/ttyUSB0",
                               description="BNO055 serial port."),
         DeclareLaunchArgument("ybimu_port", default_value="/dev/imu_ybimu"),
@@ -196,30 +193,6 @@ def generate_launch_description():
         DeclareLaunchArgument("ybimu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("bno055_topic", default_value="/bno055/imu"),
         DeclareLaunchArgument("ybimu_topic", default_value="/ybimu/imu"),
-        DeclareLaunchArgument("picoscan_localization_imu_raw_topic", default_value="/picoscan/imu_raw",
-                              description="Raw IMU topic from SICK picoScan150."),
-        DeclareLaunchArgument("picoscan_localization_imu_topic", default_value="/picoscan/imu",
-                              description="Fallback localization IMU topic from picoScan, used only "
-                                          "when the ybimu is unavailable."),
-
-        # --- lidar -----------------------------------------------------------
-        DeclareLaunchArgument(
-            "use_lidar",
-            default_value="auto",
-            choices=["auto", "true", "false"],
-            description="auto starts the SICK picoScan150 driver only if the sensor answers on "
-                        "its IP; true forces it; false disables it.",
-        ),
-        DeclareLaunchArgument("lidar_sensor_ip", default_value="169.254.136.69",
-                              description="IP address of the picoScan150."),
-        DeclareLaunchArgument("lidar_host_ip", default_value="169.254.180.121",
-                              description="This PC's IP on the lidar subnet (UDP receiver)."),
-        DeclareLaunchArgument("lidar_frame", default_value="Lidar_Scan_Link"),
-        DeclareLaunchArgument("lidar_raw_scan_topic", default_value="scan_raw",
-                              description="Raw LaserScan topic from SICK driver before frame cleanup."),
-        DeclareLaunchArgument("lidar_scan_topic", default_value="scan",
-                              description="Clean LaserScan topic with frame_id matching the URDF."),
-        DeclareLaunchArgument("lidar_restamp", default_value="true"),
 
         *_robot_model_nodes(),
 
@@ -239,15 +212,6 @@ def generate_launch_description():
             }],
         ),
 
-        _include("aries_lidar", "lidar.launch.py", [
-            "use_lidar",
-            "lidar_sensor_ip",
-            "lidar_host_ip",
-            "lidar_frame",
-            "lidar_raw_scan_topic",
-            "lidar_scan_topic",
-            "lidar_restamp",
-        ]),
         _include(
             "aries_imu",
             "imu.launch.py",
@@ -261,11 +225,7 @@ def generate_launch_description():
                 "ybimu_frame",
                 "bno055_topic",
                 "ybimu_topic",
-                "use_lidar",
-                "lidar_sensor_ip",
             ],
-            picoscan_raw_imu_topic="picoscan_localization_imu_raw_topic",
-            picoscan_imu_topic="picoscan_localization_imu_topic",
         ),
         _include(
             "aries_localization",
@@ -279,10 +239,7 @@ def generate_launch_description():
                 "imu_frame",
                 "bno055_topic",
                 "ybimu_topic",
-                "use_lidar",
-                "lidar_sensor_ip",
             ],
-            picoscan_imu_topic="picoscan_localization_imu_topic",
         ),
         _include("aries_drive", "drive.launch.py", [
             "rover_hardware_protocol",
@@ -303,5 +260,5 @@ def generate_launch_description():
             "drive_max_wheel_rps",
             "drive_wheel_accel_rps2",
             "use_cmd_vel_relay",
-        ], literals={"use_picoscan_base_odom": "false"}),
+        ]),
     ])

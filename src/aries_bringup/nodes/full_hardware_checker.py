@@ -9,8 +9,7 @@ Checks:
   • Arm controller/joint-state activity
   • Gripper serial or mock fallback
   • Rover CAN / ODrive axes
-  • Rover BNO055 or picoScan IMU, when forced or auto-detected
-  • SICK picoScan LaserScan freshness
+  • Rover BNO055 or YaBoom IMU, when forced or auto-detected
   • Mock rover fallback heartbeat
   • Joystick /joy
   • Optional RealSense USB detection and image stream activity
@@ -29,7 +28,7 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, Imu, Joy, JointState, LaserScan
+from sensor_msgs.msg import Image, Imu, Joy, JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -127,10 +126,8 @@ class FullHardwareChecker(Node):
         self.declare_parameter("ybimu_port", "/dev/imu_ybimu")
         self.declare_parameter("imu_topic", "/bno055/imu")
         self.declare_parameter("ybimu_topic", "/ybimu/imu")
-        self.declare_parameter("picoscan_imu_topic", "/picoscan/imu")
         self.declare_parameter("imu_frame", "bno055")
         self.declare_parameter("ybimu_frame", "imu_frame")
-        self.declare_parameter("lidar_topic", "/scan")
         self.declare_parameter("expected_odrive_axes", 6)
         self.declare_parameter("realsense_color_topic", "/gripper_camera/color/image_raw")
 
@@ -161,10 +158,8 @@ class FullHardwareChecker(Node):
         self.ybimu_port = str(self.get_parameter("ybimu_port").value)
         self.imu_topic = str(self.get_parameter("imu_topic").value)
         self.ybimu_topic = str(self.get_parameter("ybimu_topic").value)
-        self.picoscan_imu_topic = str(self.get_parameter("picoscan_imu_topic").value)
         self.imu_frame = str(self.get_parameter("imu_frame").value)
         self.ybimu_frame = str(self.get_parameter("ybimu_frame").value)
-        self.lidar_topic = str(self.get_parameter("lidar_topic").value)
         self.expected_odrive_axes = int(self.get_parameter("expected_odrive_axes").value)
         self.realsense_color_topic = str(self.get_parameter("realsense_color_topic").value)
 
@@ -191,10 +186,6 @@ class FullHardwareChecker(Node):
         self.imu_frame_id = ""
         self.ybimu_time = None
         self.ybimu_frame_id = ""
-        self.picoscan_imu_time = None
-        self.picoscan_imu_frame_id = ""
-        self.lidar_time = None
-        self.lidar_frame_id = ""
 
         self.prev_snapshot = None
         self.initial_check_done = False
@@ -245,10 +236,6 @@ class FullHardwareChecker(Node):
         self.create_subscription(
             Imu, self.ybimu_topic, self._ybimu_cb, sensor_qos
         )
-        self.create_subscription(
-            Imu, self.picoscan_imu_topic, self._picoscan_imu_cb, sensor_qos
-        )
-        self.create_subscription(LaserScan, self.lidar_topic, self._lidar_cb, sensor_qos)
         self.create_subscription(Image, self.realsense_color_topic, self._realsense_color_cb, sensor_qos)
 
         # ── Manual service ────────────────────────────────────────────────────
@@ -312,14 +299,6 @@ class FullHardwareChecker(Node):
     def _ybimu_cb(self, msg: Imu):
         self.ybimu_time = self.get_clock().now()
         self.ybimu_frame_id = msg.header.frame_id
-
-    def _picoscan_imu_cb(self, msg: Imu):
-        self.picoscan_imu_time = self.get_clock().now()
-        self.picoscan_imu_frame_id = msg.header.frame_id
-
-    def _lidar_cb(self, msg: LaserScan):
-        self.lidar_time = self.get_clock().now()
-        self.lidar_frame_id = msg.header.frame_id
 
     def _realsense_color_cb(self, msg: Image):
         self.realsense_color_time = self.get_clock().now()
@@ -447,17 +426,13 @@ class FullHardwareChecker(Node):
             self._ybimu_package_present() if self.check_imu else False
         )
         ybimu_publishers = self.count_publishers(self.ybimu_topic)
-        picoscan_publishers = self.count_publishers(self.picoscan_imu_topic)
-        lidar_publishers = self.count_publishers(self.lidar_topic)
 
         selected_imu = "none"
         selected_imu_topic = ""
         selected_imu_time = None
         selected_imu_frame = ""
         if self.check_imu and self.use_imu not in ("false", "0", "no", "off", "none", "odom_only", "wheel_odom"):
-            if self.use_imu in ("picoscan", "picoscan150", "sick", "lidar"):
-                selected_imu = "picoscan"
-            elif self.use_imu in ("ybimu", "yaboom"):
+            if self.use_imu in ("ybimu", "yaboom"):
                 selected_imu = "ybimu"
             elif self.use_imu == "bno055":
                 selected_imu = "bno055"
@@ -467,8 +442,6 @@ class FullHardwareChecker(Node):
                 selected_imu = "bno055"
             elif ybimu_publishers > 0:
                 selected_imu = "ybimu"
-            elif picoscan_publishers > 0:
-                selected_imu = "picoscan"
 
         if selected_imu == "ybimu":
             selected_imu_topic = self.ybimu_topic
@@ -478,10 +451,6 @@ class FullHardwareChecker(Node):
             selected_imu_topic = self.imu_topic
             selected_imu_time = self.imu_time
             selected_imu_frame = self.imu_frame_id
-        elif selected_imu == "picoscan":
-            selected_imu_topic = self.picoscan_imu_topic
-            selected_imu_time = self.picoscan_imu_time
-            selected_imu_frame = self.picoscan_imu_frame_id
 
         return {
             "arm_tcp": self._arm_tcp_reachable() if self.check_arm else False,
@@ -497,9 +466,6 @@ class FullHardwareChecker(Node):
             "imu_ok": self._is_recent(selected_imu_time) if self.check_imu else False,
             "imu_publishers": self.count_publishers(selected_imu_topic) if selected_imu_topic else 0,
             "imu_frame_id": selected_imu_frame,
-            "lidar_ok": self._is_recent(self.lidar_time),
-            "lidar_publishers": lidar_publishers,
-            "lidar_frame_id": self.lidar_frame_id,
             "realsense": self._realsense_present() if self.check_realsense else False,
             "realsense_color_ok": self._is_recent(self.realsense_color_time),
             "realsense_color_publishers": self.count_publishers(self.realsense_color_topic),
@@ -720,8 +686,6 @@ class FullHardwareChecker(Node):
                     print(f"  {R}✗{RST} IMU port {self.imu_port} — {R}missing but BNO055 selected{RST}", flush=True)
                 if not s["bno055_package_present"]:
                     print(f"  {R}✗{RST} bno055 package — {R}not found{RST}", flush=True)
-            elif s["selected_imu"] == "picoscan":
-                print(f"  {G}✓{RST} IMU source — {G}picoScan fallback selected{RST}", flush=True)
 
             if s["imu_ok"]:
                 frame_detail = f" frame={s['imu_frame_id']}" if s["imu_frame_id"] else ""
@@ -804,14 +768,6 @@ class FullHardwareChecker(Node):
             print(f"  {G}✓{RST} /joy — {G}Connected{RST}", flush=True)
         elif self.check_joystick:
             print(f"  {Y}○{RST} /joy — Not detected yet", flush=True)
-
-        if s["lidar_ok"]:
-            frame_detail = f" frame={s['lidar_frame_id']}" if s["lidar_frame_id"] else ""
-            print(f"  {G}✓{RST} {self.lidar_topic} — {G}fresh picoScan data{frame_detail}{RST}", flush=True)
-        elif s["lidar_publishers"] > 0:
-            print(f"  {Y}~{RST} {self.lidar_topic} — {Y}publisher present, no recent scans{RST}", flush=True)
-        else:
-            print(f"  {Y}○{RST} {self.lidar_topic} — picoScan not detected / optional", flush=True)
 
         if s["realsense"]:
             print(f"  {G}✓{RST} RealSense USB — {G}present{RST}", flush=True)

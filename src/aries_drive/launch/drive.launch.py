@@ -16,9 +16,8 @@ The real backend has one motor command owner:
 The legacy joystick-to-ODrive controller is deliberately not started because
 it would bypass the waypoint arbiter and collision supervisor.
 
-In mock mode the joystick still runs, but the rover controller does not — and
-mock_rover_drive is left out when aries_imu's picoscan_base_yaw_odom already
-owns odom -> base_footprint, so the two never fight over that transform.
+In mock mode the joystick still runs, but the rover controller does not.
+mock_rover_drive owns odom -> base_footprint there.
 
 CAN setup is automatic by default. Install the limited sudoers rule to avoid a
 password prompt:
@@ -43,7 +42,7 @@ from launch.actions import (
     RegisterEventHandler,
     TimerAction,
 )
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -79,7 +78,6 @@ def _mock_actions():
         LogInfo(msg="[rover drive] using mock_rover_drive because rover hardware is unavailable or disabled"),
         _joystick_launch("false"),
         Node(
-            condition=UnlessCondition(LaunchConfiguration("use_picoscan_base_odom")),
             package="aries_drive",
             executable="mock_rover_drive.py",
             name="mock_rover_drive",
@@ -291,14 +289,6 @@ def generate_launch_description():
             description=(
                 "Relay manual /cmd_vel/teleop when no arbiter is running. "
                 "Keep false when launching the waypoint stack."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "use_picoscan_base_odom",
-            default_value="false",
-            description=(
-                "When true, the legacy selected-IMU yaw node owns "
-                "odom->base_footprint and mock_rover_drive is not started."
             ),
         ),
         OpaqueFunction(function=_start_rover_hardware),

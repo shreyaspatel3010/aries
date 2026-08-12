@@ -1,16 +1,11 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="aries">
-  <xacro:arg name="enable_lidar_gazebo" default="false"/>
   <xacro:include filename="common_properties.xacro"/>
-  <xacro:property
-      name="enable_lidar_gazebo"
-      value="$(arg enable_lidar_gazebo)"/>
   <xacro:property name="enable_full_robot_gazebo_extras" value="false"/>
   <xacro:include filename="aries_gazebo.xacro"/>
   <xacro:include filename="aries_base.xacro"/>
   <xacro:include filename="differential_link.xacro"/>
   <xacro:include filename="left_link.xacro"/>
   <xacro:include filename="right_link.xacro"/>
-  <xacro:include filename="lidar.xacro"/>
   <xacro:include filename="d435i.xacro"/>
 </robot>

@@ -24,7 +24,6 @@
   <xacro:include filename="differential_link.xacro"/>
   <xacro:include filename="left_link.xacro"/>
   <xacro:include filename="right_link.xacro"/>
-  <xacro:include filename="lidar.xacro"/>
   <xacro:include filename="d435i.xacro"/>
   <!-- <xacro:include filename="arm.xacro" /> -->
   <xacro:include filename="igus_rebel_robot2.urdf.xacro"/>

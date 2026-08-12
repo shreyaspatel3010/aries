@@ -118,10 +118,6 @@
     <fdir1>1 0 0</fdir1>
   </gazebo>
   
-  <gazebo reference="Lidar_Link">
-    
-  </gazebo>
-
   <!-- Gazebo Plugin for Joint State Publisher -->
   <!-- Only publish rover wheel joints here -->
   <gazebo>
