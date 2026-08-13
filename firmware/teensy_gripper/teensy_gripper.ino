@@ -54,7 +54,7 @@ void cmd_callback(const void *msg_in);
 // --- CONFIGURE THESE ---
 const int   SERVO_PIN    = 9;
 const int   SERVO_MIN_US = 800;
-const int   SERVO_MAX_US = 2300;
+const int   SERVO_MAX_US = 2500;
 const bool  USE_SERVO_FEEDBACK = false;
 const int   SERVO_FEEDBACK_PIN = A0;
 const int   FEEDBACK_MIN_ADC   = 200;
