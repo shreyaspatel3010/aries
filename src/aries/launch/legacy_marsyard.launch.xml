@@ -4,7 +4,12 @@
   <let name="rviz_config_path" value="$(find-pkg-share aries_moveit)/launch/moveit.rviz"/>
   <let name="gazebo_config_path" value="$(find-pkg-share aries)/config/marsyard_gazebo_bridge.yaml"/>
   <let name="gz_gui_config_path" value="$(find-pkg-share aries)/config/gz_gui_config.config"/>
-  <let name="world_path" value="$(find-pkg-share aries)/worlds/marsyard.sdf"/>
+  <!-- Which yard to drive. Both worlds are named 'leo_marsyard' internally, so
+       marsyard_gazebo_bridge.yaml works against either without edits.
+       marsyard2026.sdf is the current competition terrain, built from the
+       official 2026 survey package; marsyard.sdf is the 2022 yard. -->
+  <arg name="world" default="marsyard2026.sdf"/>
+  <let name="world_path" value="$(find-pkg-share aries)/worlds/$(var world)"/>
   <arg name="aries_share" default="$(find-pkg-share aries)"/>
   
   <!-- Gripper type: 'new' or 'old' -->
@@ -22,7 +27,11 @@
    <!-- spawn position (you can tweak these at launch time) -->
   <arg name="spawn_x" default="0.0"/>
   <arg name="spawn_y" default="0.0"/>
-  <arg name="spawn_z" default="1.666"/>  <!-- start 1.65 m above terrain for marsyard-->
+  <!-- marsyard2026.sdf is on the yard's surveyed height datum, so the ground at
+       S1 (the origin, and a starting point for Traverse/Probing) is z ~ 0 and
+       the rover only needs to clear its own wheels. The 2022 yard's heightmap
+       has its own datum and needs 1.666 there. -->
+  <arg name="spawn_z" default="0.35"/>
 
  
   <!-- Prefer GZ_SIM_RESOURCE_PATH for Gazebo Sim. You can prepend multiple dirs. -->

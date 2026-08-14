@@ -62,6 +62,43 @@
                 <size>50 50 4.8208032735659998</size>
               </heightmap>
             </geometry>
+            <surface>
+              <!-- Driving surface: compacted sandy regolith / Mars-yard soil.
+                   mu = tan(phi), phi ~ 37 deg internal friction angle for a
+                   compacted sand-gravel simulant under a lugged wheel.  Kept
+                   isotropic on purpose: the soil has no preferred direction, so
+                   any tread anisotropy belongs on the wheel
+                   (aries_gazebo.xacro), not here.  This collision previously
+                   carried no <surface> at all, so the whole terrain ran on the
+                   SDF default mu=mu2=1.0 - closer to rubber on dry asphalt than
+                   to regolith, which flattered climbs on the steep DEM faces.
+                   Matches the ground planes in sandbox_world.sdf /
+                   soil_world.sdf / test_world.sdf so a drive tuned in one world
+                   transfers to the others.
+
+                   This stack runs gz-sim 8 on dartsim (<dart> above only picks
+                   DART's internal collision detector; the dynamics stay DART).
+                   Consequences for what may go in this block:
+                     * dartsim reads mu / mu2 / fdir1 / slip1 / slip2 from the
+                       <ode> element and restitution_coefficient from <bounce>.
+                     * kp, kd, min_depth and max_vel are soft-contact terms that
+                       dartsim ignores, so they are deliberately absent.
+                     * torsional and rolling friction are rejected outright
+                       ("DART doesn't support torsional friction setting").
+                     * the two surfaces in a contact are combined with min(), so
+                       this value is the traction ceiling for anything driving
+                       on the terrain regardless of that body's own mu. -->
+              <friction>
+                <ode>
+                  <mu>0.75</mu>
+                  <mu2>0.75</mu2>
+                </ode>
+              </friction>
+              <bounce>
+                <restitution_coefficient>0.0</restitution_coefficient>
+              </bounce>
+              <contact/>
+            </surface>
           </collision>
           <visual name='terrain_visual'>
             <geometry>

@@ -56,8 +56,8 @@ def generate_launch_description():
 
     world_arg = DeclareLaunchArgument(
         'world',
-        default_value='sandbox_world.sdf',
-        choices=['sandbox_world.sdf', 'soil_world.sdf'],
+        default_value='maintenance_world.sdf',
+        choices=['sandbox_world.sdf', 'soil_world.sdf', 'marsyard2026.sdf', 'maintenance_world.sdf'],
         description='World file in aries/worlds. sandbox_world.sdf has the '
                     'planted probe; soil_world.sdf replaces it with a bed of '
                     'loose soil grains and a deposit box for bucket sampling.'
