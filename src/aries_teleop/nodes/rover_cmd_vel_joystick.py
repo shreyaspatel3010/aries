@@ -137,10 +137,11 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        stop = Twist()
-        node.pub.publish(stop)
+        if rclpy.ok():
+            node.pub.publish(Twist())
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

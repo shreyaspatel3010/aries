@@ -273,7 +273,53 @@ def level_to_survey(height, pts, cx, cy, side, res):
     ok = np.isfinite(after)
     log(f"    all points   n={ok.sum():2d} std {after[ok].std():.3f} m "
         f"(was {resid[ok].std():.3f} m)")
-    return height
+    return height, coef
+
+
+def write_visual_mesh(verts, faces, datum_coef, texture_png, out_glb,
+                      face_count, texture_size):
+    """Write a lightweight, texture-baked copy of the official survey mesh.
+
+    Collision stays on the regular heightfield, but a heightfield visual turns
+    vertical boulder faces into slopes. A decimated visual-only mesh preserves
+    those silhouettes at a fraction of the 1.68-million-triangle source cost.
+    The orthophoto is embedded in the GLB because Ogre2 does not display the PLY
+    vertex colours exported by trimesh. The same fitted datum plane used by the
+    heightmap is removed from every mesh vertex.
+    """
+    import trimesh
+
+    aligned = verts.copy()
+    aligned[:, 2] -= (datum_coef[0] + datum_coef[1] * aligned[:, 0]
+                      + datum_coef[2] * aligned[:, 1])
+    mesh = trimesh.Trimesh(vertices=aligned, faces=faces, process=False)
+
+    target = min(int(face_count), len(faces))
+    if target < len(faces):
+        log(f"  decimating visual mesh {len(faces)} -> {target} faces")
+        visual = mesh.simplify_quadric_decimation(face_count=target, aggression=7)
+    else:
+        visual = mesh
+
+    # The generated terrain texture covers the 44 m square centered on the
+    # mesh bounds. glTF's V axis is opposite the PNG row direction.
+    lo, hi = verts.min(0), verts.max(0)
+    cx, cy = (lo[:2] + hi[:2]) / 2
+    side = DEFAULT_SIDE
+    x0, y0 = cx - side / 2, cy - side / 2
+    uv = np.column_stack(((visual.vertices[:, 0] - x0) / side,
+                          1.0 - (visual.vertices[:, 1] - y0) / side))
+    from PIL import Image
+    texture = Image.open(texture_png).convert("RGB").resize(
+        (texture_size, texture_size), Image.Resampling.LANCZOS)
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=texture, roughnessFactor=0.95, metallicFactor=0.0)
+    visual.visual = trimesh.visual.texture.TextureVisuals(uv=uv, material=material)
+
+    out_glb.parent.mkdir(parents=True, exist_ok=True)
+    visual.export(out_glb)
+    log(f"  wrote {out_glb.name} ({len(visual.faces)} textured faces, "
+        f"{out_glb.stat().st_size / (1024 * 1024):.1f} MiB)")
 
 
 # Landmark board geometry.  The ERC update report gives the ArUco library and
@@ -383,24 +429,23 @@ def make_ground_sampler(height, quant, visual_res, cx, cy, side, res, zmin, span
 
 
 def write_markers(pts, out_path, texture_uri="model://marsyard2026", ground=None):
-    """Emit the survey points as static SDF models.
+    """Emit physical landmarks plus named frames for non-physical points.
 
     Landmarks become real ArUco boards - textured, collidable, and facing the
     start area - because they are physical objects the rover has to see and
     avoid, and a vision stack cannot be tested against a coloured stick.
 
-    Starting locations, waypoints and the deep sampling square stay visual
-    only.  Those are marks on open ground, so giving them collision would put
-    obstacles in the yard that do not exist on the day.
+    Starting locations, waypoints and the deep-sampling location are coordinate
+    references in the organiser material, not coloured posts or painted pads.
+    They therefore become world frames with no visual or collision geometry.
+    This keeps the exact survey coordinates available to navigation software
+    without inventing objects that hide the official orthophoto or overlap a
+    robot spawned at S1.
 
     This block is already pasted into marsyard2026.sdf; regenerate it only if
     the coordinates file or the board geometry changes, then replace the
-    marker_* / landmark_* models in the world with the new output.
+    survey-frame / landmark_* block in the world with the new output.
     """
-    post_style = {
-        "S": ("0.15 0.75 0.20", 0.45),
-        "W": ("0.20 0.45 0.95", 0.35),
-    }
     blocks = []
     sunk = 0
     for name, x, y, h_survey in pts:
@@ -415,7 +460,7 @@ def write_markers(pts, out_path, texture_uri="model://marsyard2026", ground=None
             h = h_survey
         else:
             h = max(h_survey, ground(x, y, footprint) + GROUND_CLEARANCE)
-        if h - h_survey > 0.005:
+        if kind == "L" and h - h_survey > 0.005:
             sunk += 1
         if kind == "L":
             # Face the board at the start area: the traverse begins at S1/S2 on
@@ -465,56 +510,20 @@ def write_markers(pts, out_path, texture_uri="model://marsyard2026", ground=None
         </visual>
       </link>
     </model>""")
-        elif kind == "P":
-            # Deep sampling location, ~1 x 1 m per the update report.
-            blocks.append(f"""    <model name='marker_{name}'>
-      <static>true</static>
-      <pose>{x:.3f} {y:.3f} {h:.3f} 0 0 0</pose>
-      <link name='link'>
-        <visual name='zone'>
-          <pose>0 0 0.005 0 0 0</pose>
-          <geometry><box><size>1.0 1.0 0.01</size></box></geometry>
-          <material>
-            <ambient>0.90 0.15 0.15 1</ambient><diffuse>0.90 0.15 0.15 1</diffuse>
-            <emissive>0.90 0.15 0.15 0.30</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>""")
         else:
-            colour, tall = post_style[kind]
-            blocks.append(f"""    <model name='marker_{name}'>
-      <static>true</static>
-      <pose>{x:.3f} {y:.3f} {h:.3f} 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 {tall / 2:.3f} 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>{tall:.3f}</length></cylinder></geometry>
-          <material>
-            <ambient>{colour} 1</ambient><diffuse>{colour} 1</diffuse>
-            <emissive>{colour} 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 {tall:.3f} 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>{colour} 1</ambient><diffuse>{colour} 1</diffuse>
-            <emissive>{colour} 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>""")
+            blocks.append(f"""    <frame name='{name}'>
+      <pose>{x:.3f} {y:.3f} {h_survey:.3f} 0 0 0</pose>
+    </frame>""")
     header = (
         f"    <!-- {len(pts)} official survey points from Coordinates_MarsYard2026.txt.\n"
         f"         L1-L15 are ArUco landmark boards (5x5 library, ids "
         f"{LANDMARK_ARUCO_BASE + 1}-{LANDMARK_ARUCO_BASE + 15}, landmark n -> id "
         f"{LANDMARK_ARUCO_BASE}+n) and are collidable.\n"
-        f"         S (green) starts, W (blue) traverse waypoints and P (red) deep\n"
-        f"         sampling square are visual only - they are ground marks, not objects. -->")
+        f"         S starts, W traverse waypoints and P deep-sampling location are\n"
+        f"         named frames only: the report defines coordinates, not visible props. -->")
     out_path.write_text(header + "\n" + "\n".join(blocks) + "\n", encoding="utf8")
-    log(f"  wrote {out_path.name} ({len(pts)} models; {sunk} raised onto the terrain "
-        f"surface, which sits above their surveyed mark)")
+    log(f"  wrote {out_path.name} (15 physical landmark models, 19 survey frames; "
+        f"{sunk} landmarks raised onto the terrain surface)")
 
 
 def write_visual_heightmap(quant, out_png, res):
@@ -643,6 +652,15 @@ def main():
     ap.add_argument("--markers-out", type=pathlib.Path,
                     help="also write the survey-point SDF models here, for "
                          "pasting into marsyard2026.sdf")
+    ap.add_argument("--visual-faces", type=int, default=0,
+                    help="optionally export a textured comparison GLB with "
+                         "this triangle count (default 0: the SDF uses the "
+                         "shared colour heightfield instead)")
+    ap.add_argument("--visual-mesh-out", type=pathlib.Path,
+                    help="visual GLB output (default: models/marsyard2026/"
+                         "marsyard2026_visual.glb beside --out)")
+    ap.add_argument("--visual-texture-size", type=int, default=2048,
+                    help="embedded visual-mesh texture side (default 2048)")
     args = ap.parse_args()
 
     if (args.res - 1) & (args.res - 2) != 0 and bin(args.res - 1).count("1") != 1:
@@ -662,8 +680,9 @@ def main():
         sys.exit("internal error: heightmap still has non-finite cells")
 
     pts = read_survey(args.source)
+    datum_coef = np.zeros(3, dtype=np.float64)
     if not args.no_level:
-        height = level_to_survey(height, pts, cx, cy, args.side, args.res)
+        height, datum_coef = level_to_survey(height, pts, cx, cy, args.side, args.res)
 
     zmin, span, quant = write_heightmap(
         height, args.out / "marsyard2026_terrain_hm.png", args.res)
@@ -671,6 +690,13 @@ def main():
                            args.visual_res)
     write_texture(args.source, args.out / "marsyard2026_terrain_texture.png",
                   cx, cy, args.side, args.tex, ~exterior)
+    if args.visual_faces > 0:
+        visual_out = (args.visual_mesh_out or
+                      args.out.parent / "marsyard2026" / "marsyard2026_visual.glb")
+        write_visual_mesh(verts, faces, datum_coef,
+                          args.out / "marsyard2026_terrain_texture.png",
+                          visual_out, args.visual_faces,
+                          args.visual_texture_size)
     if args.markers_out:
         write_aruco_boards(pts, args.out.parent / "marsyard2026")
         ground = make_ground_sampler(height, quant, args.visual_res, cx, cy,

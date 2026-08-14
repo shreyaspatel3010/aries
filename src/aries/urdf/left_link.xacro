@@ -23,6 +23,9 @@
             </geometry>
             <material name="silver"/>
         </visual>
+        <!-- Keep the exact CAD mesh for rendering, but use its measured outer
+             envelope for physics. Concave STL wheel collisions do not make
+             reliable contact with DART heightfields. -->
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
@@ -66,7 +69,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/L_1_Wheel_Link_v2.stl"/>
+                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
         </collision>
     </link>
@@ -105,7 +108,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                 <mesh filename="${mesh_location}/L_2_Wheel_Link_v2.stl"/>
+                 <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
         </collision>
     </link>
@@ -141,7 +144,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/L_3_Wheel_Link_v2.stl"/>
+                <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
         </collision>
     </link>

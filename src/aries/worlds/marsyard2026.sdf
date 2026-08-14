@@ -3,24 +3,24 @@
        (2026_MarsYard_3D.zip: photogrammetry mesh + georeferenced orthophoto +
        Coordinates_MarsYard2026.txt).
 
-       Regenerate the terrain images, the ArUco landmark boards and the marker
-       models with scripts/build_marsyard2026_terrain.py, pointing its 'source'
+       Regenerate the terrain images, ArUco landmark boards and survey frames
+       with scripts/build_marsyard2026_terrain.py, pointing its 'source'
        option at the extracted 2026_MarsYard_3D_Model directory. That script
        prints the size and pose numbers used below, so if you re-run it at a
        different resolution, copy its output back into here.
 
-       The world is deliberately named 'leo_marsyard', the same as
-       marsyard.sdf, so config/marsyard_gazebo_bridge.yaml and its
-       /world/leo_marsyard/* topics work against either yard unchanged. The two
-       worlds are never loaded together. -->
-  <world name='leo_marsyard'>
+       The world is deliberately named 'empty'. my_robot.launch.py uses
+       config/gazebo_bridge.yaml, whose world-scoped pose and light topics are
+       /world/empty/*. Keeping the same name as the other selectable worlds is
+       required for odometry, TF consumers and GUI controls to keep working. -->
+  <world name='empty'>
     <physics name='1ms' type='ignored'>
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
       <dart>
-        <!-- DART's own bullet collision detector maps the heightmap onto
-             btHeightfieldTerrainShape, which is what makes a 1025x1025 grid
-             affordable to drive on. Its default (FCL) is markedly slower here. -->
+        <!-- Bullet maps the heightmap onto btHeightfieldTerrainShape. Together
+             with primitive wheel collision cylinders this gives stable,
+             deterministic rover contact on the surveyed surface. -->
         <collision_detector>bullet</collision_detector>
         <solver>
           <solver_type>dantzig</solver_type>
@@ -43,17 +43,21 @@
     <scene>
       <ambient>0.400000006 0.400000006 0.400000006 1</ambient>
       <background>0.699999988 0.699999988 0.699999988 1</background>
+      <!-- The default editor grid draws a large square lattice through the
+           coloured yard. It is a GUI aid, not part of the ERC environment. -->
+      <grid>false</grid>
+      <origin_visual>false</origin_visual>
       <sky/>
       <shadows>true</shadows>
     </scene>
 
     <!-- Terrain.
-         Geometry is a heightmap rather than the 1.68 M-triangle survey mesh:
-         contact against a regular grid is a cell lookup instead of a broad-phase
-         pass over the whole mesh, and mesh-vs-mesh is where DART is least
-         robust under the wheels. The cost is that overhangs cannot be
-         represented, which for rocks lying on graded sand costs nothing a rover
-         could drive under.
+         Visual and collision deliberately use the SAME 257 x 257 heightmap.
+         A triangle-mesh collision works for primitive probes but DART lets the
+         rover's detailed wheel collision meshes pass through it. Sharing one
+         heightfield gives the wheels a stable contact primitive and guarantees
+         that the rendered and physical surfaces have identical samples. The
+         official orthophoto is mapped over that surface for colour.
 
          Heights are on the yard's LEVELED survey datum, not the mesh's own.
          The photogrammetry vertical is tilted ~1.34 deg along Y and ~0.62 deg
@@ -62,19 +66,8 @@
          fit the DEM matches the official coordinates to 0.020 m std at the nine
          starting locations and 0.021 m at the nine traverse waypoints.
 
-         44 x 44 m patch at 1025 px = 4.30 cm/px, centred on the survey mesh, so
-         the model pose below carries that centre and world (0, 0) stays the
-         survey origin S1.
-
-         The pose Z is the DEM's minimum, -0.822577, and <pos> is left at zero
-         on purpose. gz-sim IGNORES a heightmap's <pos> Z: it puts pixel value 0
-         at the link origin and scales to <size> Z from there, so the vertical
-         datum has to ride on the model pose. That was measured on this stack,
-         not assumed - 34 probes on prismatic joints dropped onto the terrain at
-         the surveyed X/Y reproduced the DEM to 5.3 mm, and moving <pos> Z
-         changed nothing while moving the model pose Z shifted the terrain
-         one-for-one. Put the offset back in <pos> and the whole yard sits 0.8 m
-         low with no warning from gz. -->
+         The 44 x 44 m patch is centred on the survey mesh and the model pose
+         carries its minimum height, so world (0, 0) remains survey origin S1. -->
     <model name='marsyard2026_terrain'>
       <static>true</static>
       <pose>0.190492 14.019499 -0.822577 0 0 0</pose>
@@ -82,18 +75,17 @@
         <collision name='terrain_collision'>
           <geometry>
             <heightmap>
-              <uri>dem/marsyard2026_terrain_hm.png</uri>
+              <uri>dem/marsyard2026_terrain_hm_visual.png</uri>
               <pos>0 0 0</pos>
               <size>44 44 2.254232</size>
             </heightmap>
           </geometry>
           <surface>
-            <!-- Compacted sandy regolith / Mars-yard soil, matching the ground
-                 planes in the other aries worlds so a drive tuned in one
-                 transfers. mu = tan(phi) for phi ~ 37 deg, the internal
-                 friction angle of a compacted sand-gravel simulant under a
-                 lugged wheel. Isotropic on purpose - soil has no preferred
-                 direction, so tread anisotropy belongs on the wheel.
+            <!-- Compacted Mars-yard soil mixed with sand. This is an effective
+                 rigid-contact shear ceiling, not tan(internal friction angle):
+                 soil internal friction and wheel drawbar traction are different
+                 quantities. The ground is isotropic; tread anisotropy and slip
+                 are specified on the six wheel collisions.
 
                  dartsim reads only mu / mu2 / fdir1 / slip1 / slip2 from <ode>
                  plus restitution_coefficient. kp, kd, min_depth and max_vel are
@@ -102,8 +94,8 @@
                  the traction ceiling for anything driving on the yard. -->
             <friction>
               <ode>
-                <mu>0.75</mu>
-                <mu2>0.75</mu2>
+                <mu>0.60</mu>
+                <mu2>0.60</mu2>
               </ode>
             </friction>
             <bounce>
@@ -115,36 +107,12 @@
         <visual name='terrain_visual'>
           <geometry>
             <heightmap>
-              <use_terrain_paging>false</use_terrain_paging>
-              <!-- Deliberately a DIFFERENT heightmap from the collision above:
-                   the same 257-cell downsample of it. gz-sim's Ogre terrain
-                   renders a dense field of sharp cones from the full 1025 grid,
-                   still visible at 513 and gone at 257. It is not the bit depth
-                   (8-bit behaves identically) and not <sampling> (1 changes
-                   nothing) - all three were tried against a camera in-sim.
-                   Physics therefore keeps the full-resolution grid and the
-                   cameras get a surface that is smoothed rather than spiked.
-                   The two agree in the mean: same extent, same size, area
-                   averaged, so nothing shifts vertically. -->
-              <!-- This <pos> carries the FULL terrain placement, unlike the
-                   collision above which takes it from the model pose. gz-sim
-                   places a heightmap VISUAL from <pos> alone and ignores the
-                   model pose, while the COLLISION does the opposite. With
-                   <pos>0 0 0</pos> here the rendered yard sat 14 m from the
-                   collision it is supposed to skin, so every marker looked
-                   like it was floating off the edge of the map while its
-                   physics was perfectly fine. Measured: a top-down camera at
-                   the patch centre put the terrain's image-space centre at
-                   (596, 600) against a frame centre of (600, 600) once these
-                   numbers matched the model pose. Keep the two in step. -->
+              <!-- gz-sim places a heightmap visual from <pos> instead of the
+                   parent model pose, while collision uses the model pose. -->
               <uri>dem/marsyard2026_terrain_hm_visual.png</uri>
               <pos>0.190492 14.019499 -0.822577</pos>
               <size>44 44 2.254232</size>
               <texture>
-                <!-- The orthophoto, resampled onto exactly the patch above, so
-                     colour and height are aligned pixel for pixel. <size> is
-                     the world span the texture covers; at 44 it maps once
-                     across the terrain instead of tiling. -->
                 <diffuse>dem/marsyard2026_terrain_texture.png</diffuse>
                 <normal>dem/flat_normal.png</normal>
                 <size>44</size>
@@ -155,215 +123,40 @@
       </link>
     </model>
 
-    <!-- Official survey points, visual only.
-         These are navigation references, not obstacles: the physical markers
-         that stood in the yard during the scan are already baked into the
-         terrain heights, so giving these posts collision would add geometry the
-         rover can hit that is not there on the day. Poses are the surveyed X/Y
-         and the surveyed H, which is why the terrain had to be leveled onto the
-         same datum - otherwise every marker floats or buries. -->
+    <!-- Official survey points. Landmarks are physical ArUco boards. Starts,
+         waypoints and P1 are named coordinate frames only; the organiser
+         report does not show coloured posts or a painted red sampling pad. -->
     <!-- 34 official survey points from Coordinates_MarsYard2026.txt.
          L1-L15 are ArUco landmark boards (5x5 library, ids 51-65, landmark n -> id 50+n) and are collidable.
-         S (green) starts, W (blue) traverse waypoints and P (red) deep
-         sampling square are visual only - they are ground marks, not objects. -->
-    <model name='marker_S1'>
-      <static>true</static>
-      <pose>0.000 0.000 0.026 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S2'>
-      <static>true</static>
-      <pose>0.000 26.427 0.167 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S3'>
-      <static>true</static>
+         S starts, W traverse waypoints and P deep-sampling location are
+         named frames only: the report defines coordinates, not visible props. -->
+    <frame name='S1'>
+      <pose>0.000 0.000 0.000 0 0 0</pose>
+    </frame>
+    <frame name='S2'>
+      <pose>0.000 26.427 0.138 0 0 0</pose>
+    </frame>
+    <frame name='S3'>
       <pose>10.709 6.918 0.067 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S4'>
-      <static>true</static>
-      <pose>11.210 17.881 0.118 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S5'>
-      <static>true</static>
-      <pose>13.223 25.658 -0.031 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S6'>
-      <static>true</static>
-      <pose>-9.428 15.824 -0.238 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S7'>
-      <static>true</static>
+    </frame>
+    <frame name='S4'>
+      <pose>11.210 17.881 0.100 0 0 0</pose>
+    </frame>
+    <frame name='S5'>
+      <pose>13.223 25.658 -0.035 0 0 0</pose>
+    </frame>
+    <frame name='S6'>
+      <pose>-9.428 15.824 -0.302 0 0 0</pose>
+    </frame>
+    <frame name='S7'>
       <pose>-8.970 22.831 -0.180 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S8'>
-      <static>true</static>
+    </frame>
+    <frame name='S8'>
       <pose>-15.676 4.991 -0.280 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_S9'>
-      <static>true</static>
+    </frame>
+    <frame name='S9'>
       <pose>7.160 -4.762 -0.095 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.225 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.450</length></cylinder></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.450 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.15 0.75 0.20 1</ambient><diffuse>0.15 0.75 0.20 1</diffuse>
-            <emissive>0.15 0.75 0.20 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
+    </frame>
     <model name='landmark_L1'>
       <static>true</static>
       <pose>3.183 8.012 0.414 0 0 -3.5198</pose>
@@ -814,218 +607,36 @@
         </visual>
       </link>
     </model>
-    <model name='marker_W1'>
-      <static>true</static>
-      <pose>1.951 9.759 0.186 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W2'>
-      <static>true</static>
-      <pose>4.170 19.499 0.165 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W3'>
-      <static>true</static>
-      <pose>7.013 23.149 0.248 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W4'>
-      <static>true</static>
-      <pose>-1.701 18.665 -0.066 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W5'>
-      <static>true</static>
-      <pose>-5.339 19.034 -0.205 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W6'>
-      <static>true</static>
-      <pose>-7.675 8.197 -0.162 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W7'>
-      <static>true</static>
-      <pose>-2.108 7.682 -0.124 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W8'>
-      <static>true</static>
-      <pose>5.939 6.790 -0.034 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_W9'>
-      <static>true</static>
-      <pose>5.088 13.092 0.053 0 0 0</pose>
-      <link name='link'>
-        <visual name='post'>
-          <pose>0 0 0.175 0 0 0</pose>
-          <geometry><cylinder><radius>0.030</radius><length>0.350</length></cylinder></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.35</emissive>
-          </material>
-        </visual>
-        <visual name='cap'>
-          <pose>0 0 0.350 0 0 0</pose>
-          <geometry><sphere><radius>0.075</radius></sphere></geometry>
-          <material>
-            <ambient>0.20 0.45 0.95 1</ambient><diffuse>0.20 0.45 0.95 1</diffuse>
-            <emissive>0.20 0.45 0.95 0.55</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name='marker_P1'>
-      <static>true</static>
+    <frame name='W1'>
+      <pose>1.951 9.759 -0.053 0 0 0</pose>
+    </frame>
+    <frame name='W2'>
+      <pose>4.170 19.499 0.105 0 0 0</pose>
+    </frame>
+    <frame name='W3'>
+      <pose>7.013 23.149 0.205 0 0 0</pose>
+    </frame>
+    <frame name='W4'>
+      <pose>-1.701 18.665 -0.156 0 0 0</pose>
+    </frame>
+    <frame name='W5'>
+      <pose>-5.339 19.034 -0.259 0 0 0</pose>
+    </frame>
+    <frame name='W6'>
+      <pose>-7.675 8.197 -0.179 0 0 0</pose>
+    </frame>
+    <frame name='W7'>
+      <pose>-2.108 7.682 -0.163 0 0 0</pose>
+    </frame>
+    <frame name='W8'>
+      <pose>5.939 6.790 -0.065 0 0 0</pose>
+    </frame>
+    <frame name='W9'>
+      <pose>5.088 13.092 0.011 0 0 0</pose>
+    </frame>
+    <frame name='P1'>
       <pose>-5.997 25.901 -0.160 0 0 0</pose>
-      <link name='link'>
-        <visual name='zone'>
-          <pose>0 0 0.005 0 0 0</pose>
-          <geometry><box><size>1.0 1.0 0.01</size></box></geometry>
-          <material>
-            <ambient>0.90 0.15 0.15 1</ambient><diffuse>0.90 0.15 0.15 1</diffuse>
-            <emissive>0.90 0.15 0.15 0.30</emissive>
-          </material>
-        </visual>
-      </link>
-    </model>
+    </frame>
     <!-- Maintenance task panel, from the organisers' SolidWorks STEP
          ("Panel for Maintenance Tasks/Maintenance Task Panel .STEP") converted
          through OpenCASCADE and conditioned in Blender by
@@ -1041,13 +652,14 @@
          380 mm as dimensioned on the panel drawing. Their
          positions are computed from the mesh, not hand-placed.
 
-         POSITION IS A PLACEHOLDER. The update report gives the panel's geometry
-         and its starting point (S8) but never says where on the yard it stands,
-         so this sits 2.5 m from S8 facing it. Move it when the organisers say. -->
+         The update report gives the panel's geometry and the task start S8 but
+         does not publish a surveyed panel pose. For practice it is placed
+         exactly 2.5 m from S8 toward the yard centre, with its face aimed at
+         S8; this is the only non-surveyed placement in the rover yard. -->
     <include>
       <uri>model://maintenance_panel</uri>
       <name>maintenance_panel</name>
-      <pose>-8.676 2.241 -0.237 0 0 2.7673</pose>
+      <pose>-13.508 6.237 -0.252 0 0 -2.6200</pose>
     </include>
 
     <light name='sun' type='directional'>

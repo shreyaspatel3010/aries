@@ -9,6 +9,7 @@ from launch.actions import (
     RegisterEventHandler,
     SetEnvironmentVariable,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
@@ -16,6 +17,7 @@ from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 
 from launch_ros.actions import Node
@@ -44,6 +46,9 @@ def generate_launch_description():
     )
     virtual_diff_config_path = PathJoinSubstitution(
         [FindPackageShare('aries'), 'config', 'virtual_differential.yaml']
+    )
+    joystick_config_path = PathJoinSubstitution(
+        [FindPackageShare('aries_teleop'), 'config', 'joystick.yaml']
     )
 
     # Declare arguments
@@ -82,10 +87,37 @@ def generate_launch_description():
         description='Use simulation time'
     )
 
+    headless_arg = DeclareLaunchArgument(
+        'headless',
+        default_value='false',
+        description='Run only the Gazebo server (useful for automated world tests)'
+    )
+
     use_joystick_arg = DeclareLaunchArgument(
         'use_joystick',
         default_value='true',
-        description='Start joystick arm teleop'
+        description='Start the shared joystick driver and arm/gripper teleop'
+    )
+
+    use_rover_joystick_arg = DeclareLaunchArgument(
+        'use_rover_joystick',
+        default_value='true',
+        description='Use the hardware joystick mapping for simulated rover drive'
+    )
+
+    use_cmd_vel_relay_arg = DeclareLaunchArgument(
+        'use_cmd_vel_relay',
+        default_value='true',
+        description='Relay joystick /cmd_vel/teleop commands to Gazebo /cmd_vel'
+    )
+
+    use_sim_ekf_arg = DeclareLaunchArgument(
+        'use_sim_ekf',
+        default_value='true',
+        description=(
+            'Fuse Gazebo ground-truth odometry and IMU and publish the '
+            'odom to base_footprint transform'
+        )
     )
 
     joy_layout_arg = DeclareLaunchArgument(
@@ -136,12 +168,22 @@ def generate_launch_description():
         description='Spawn position Z coordinate above the world origin'
     )
 
+    spawn_yaw_arg = DeclareLaunchArgument(
+        'spawn_yaw',
+        default_value='0.0',
+        description='Spawn heading in radians (use 1.5708 to face into MarsYard from S1)'
+    )
+
     # Launch configurations
     gripper_type = LaunchConfiguration('gripper_type')
     finger_type = LaunchConfiguration('finger_type')
     hardware_protocol = LaunchConfiguration('hardware_protocol')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    headless = LaunchConfiguration('headless')
     use_joystick = LaunchConfiguration('use_joystick')
+    use_rover_joystick = LaunchConfiguration('use_rover_joystick')
+    use_cmd_vel_relay = LaunchConfiguration('use_cmd_vel_relay')
+    use_sim_ekf = LaunchConfiguration('use_sim_ekf')
     joy_driver = LaunchConfiguration('joy_driver')
     joy_layout = LaunchConfiguration('joy_layout')
     joy_dev = LaunchConfiguration('joy_dev')
@@ -149,6 +191,7 @@ def generate_launch_description():
     spawn_x = LaunchConfiguration('spawn_x')
     spawn_y = LaunchConfiguration('spawn_y')
     spawn_z = LaunchConfiguration('spawn_z')
+    spawn_yaw = LaunchConfiguration('spawn_yaw')
 
     # Set environment variable for Gazebo Sim resource path
     # Add aries package, models, worlds, and existing path
@@ -171,7 +214,11 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare('ros_gz_sim'), 'launch', 'gz_sim.launch.py'])
         ),
-        launch_arguments={'gz_args': [world_path, ' -r']}.items()
+        launch_arguments={'gz_args': [
+            world_path,
+            ' -r',
+            PythonExpression(["' -s' if '", headless, "' == 'true' else ''"]),
+        ]}.items()
     )
 
     # Robot state publisher
@@ -208,7 +255,8 @@ def generate_launch_description():
             '-allow_renaming', 'true',
             '-x', spawn_x,
             '-y', spawn_y,
-            '-z', spawn_z
+            '-z', spawn_z,
+            '-Y', spawn_yaw
         ]
     )
 
@@ -233,6 +281,56 @@ def generate_launch_description():
             virtual_diff_config_path,
             {'use_sim_time': use_sim_time}
         ]
+    )
+
+    # Reuse the real robot's rover teleop node and canonical mapping. The joy
+    # driver/layout normalizer is already owned by move_group_launch below, so
+    # starting another joy node here would duplicate /joy publishers.
+    rover_joystick_node = Node(
+        condition=IfCondition(use_rover_joystick),
+        package='aries_teleop',
+        executable='rover_cmd_vel_joystick.py',
+        name='rover_cmd_vel_joystick',
+        output='screen',
+        parameters=[
+            joystick_config_path,
+            {'use_sim_time': use_sim_time},
+        ],
+    )
+
+    cmd_vel_relay_node = Node(
+        condition=IfCondition(use_cmd_vel_relay),
+        package='aries_teleop',
+        executable='cmd_vel_teleop_relay.py',
+        name='cmd_vel_teleop_relay',
+        output='screen',
+        parameters=[{
+            'input_topic': '/cmd_vel/teleop',
+            'output_topic': '/cmd_vel',
+            'use_sim_time': use_sim_time,
+        }],
+    )
+
+    # Gazebo publishes both odometry measurements, but its wheel-integrated TF
+    # is deliberately not bridged. The simulation EKF is therefore the single
+    # owner of odom -> base_footprint, matching the localization wrapper and
+    # preventing RViz from reporting that the odom frame does not exist.
+    localization_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('aries_localization'),
+                'launch',
+                'localization.launch.py',
+            ])
+        ),
+        condition=IfCondition(use_sim_ekf),
+        launch_arguments={
+            'use_sim_ekf': 'true',
+            'use_sim_time': use_sim_time,
+            'sim_odom_topic': '/ground_truth/odom',
+            'sim_imu_topic': '/imu',
+            'filtered_odom_topic': '/odometry/filtered',
+        }.items(),
     )
 
     # Rover wheel/rocker joint states come from the Gazebo JointStatePublisher
@@ -290,7 +388,11 @@ def generate_launch_description():
         finger_type_arg,
         hardware_protocol_arg,
         use_sim_time_arg,
+        headless_arg,
         use_joystick_arg,
+        use_rover_joystick_arg,
+        use_cmd_vel_relay_arg,
+        use_sim_ekf_arg,
         joy_driver_arg,
         joy_layout_arg,
         joy_dev_arg,
@@ -298,6 +400,7 @@ def generate_launch_description():
         spawn_x_arg,
         spawn_y_arg,
         spawn_z_arg,
+        spawn_yaw_arg,
 
         # Environment
         set_gz_sim_resource_path,
@@ -308,6 +411,9 @@ def generate_launch_description():
         spawn_robot_node,
         parameter_bridge_node,
         virtual_differential_node,
+        rover_joystick_node,
+        cmd_vel_relay_node,
+        localization_launch,
         move_group_launch,
         delay_controllers_after_spawn,  # Controllers spawn after robot spawns
     ])

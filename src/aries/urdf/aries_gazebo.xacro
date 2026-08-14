@@ -53,9 +53,11 @@
   </gazebo>
   
   <gazebo reference="L_1_Wheel_Link">
-   
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <!-- Lugged tire: dry polymer tread has more grip than the soil can carry.
+         The Mars-yard surface therefore caps longitudinal traction at 0.60;
+         lower lateral grip permits physical scrub during skid steering. -->
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -64,9 +66,8 @@
   </gazebo>
   
   <gazebo reference="L_2_Wheel_Link">
-    
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -75,9 +76,8 @@
   </gazebo>
   
   <gazebo reference="L_3_Wheel_Link">
-    
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -86,9 +86,8 @@
   </gazebo>
   
   <gazebo reference="R_1_Wheel_Link">
-    
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -97,9 +96,8 @@
   </gazebo>
   
   <gazebo reference="R_2_Wheel_Link">
-    
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
@@ -108,9 +106,8 @@
   </gazebo>
   
   <gazebo reference="R_3_Wheel_Link">
-    
-    <mu1>1.4</mu1>
-    <mu2>0.35</mu2>
+    <mu1>0.85</mu1>
+    <mu2>0.42</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>

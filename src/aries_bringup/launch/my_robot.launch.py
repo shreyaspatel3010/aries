@@ -58,6 +58,13 @@ def generate_launch_description():
                 "joy_layout": joy_layout,
                 "joy_dev": joy_dev,
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
+                # This wrapper starts these nodes below for backwards
+                # compatibility. Disable the core launch copies so each topic
+                # has exactly one publisher/relay.
+                "use_rover_joystick": "false",
+                "use_cmd_vel_relay": "false",
+                # This wrapper owns the localization include below.
+                "use_sim_ekf": "false",
             }.items(),
         ),
 

@@ -16,13 +16,14 @@ ekf_filter_node:
     publish_tf: true
     publish_acceleration: false
 
-    # Gazebo ground truth supplies actual planar pose and forward speed.  Do not
-    # use DiffDrive /odom here: on a six-wheel skid-steer rover it integrates
-    # wheel motion but cannot observe lateral tire scrub, causing metre-scale
-    # return-to-origin error while the reported pose is near zero.
+    # Gazebo ground truth supplies planar position, absolute yaw and forward
+    # speed. Absolute yaw stays with the same source as X/Y so spawning the
+    # rover at a non-zero heading cannot rotate RViz motion by 90 degrees. Do
+    # not use DiffDrive /odom here: on a six-wheel skid-steer rover it integrates
+    # wheel motion but cannot observe lateral tire scrub.
     odom0: /ground_truth/odom
     odom0_config: [true,  true,  false,
-                   false, false, false,
+                   false, false, true,
                    true,  false, false,
                    false, false, false,
                    false, false, false]
@@ -30,10 +31,13 @@ ekf_filter_node:
     odom0_relative: false
     odom0_queue_size: 20
 
-    # Gazebo IMU owns heading and yaw rate.
+    # The simulated IMU supplies the measured Z angular velocity. Its absolute
+    # orientation is intentionally not fused because ground truth already owns
+    # absolute yaw; this avoids two competing heading sources while ensuring
+    # simulation exercises the same IMU-rate path used by localization.
     imu0: /imu
     imu0_config: [false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]

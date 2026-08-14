@@ -12,7 +12,11 @@
   </material>
   <!-- Properties -->
   <xacro:property name="PI" value="3.1415926535897931"/>
-  <xacro:property name="wheel_mass" value="50"/>
+  <!-- Mass recovered from the exported wheel inertia tensor. For a wheel with
+       r = 0.110 m, I_axis = 0.0160988 kg m^2 = 1/2 m r^2 gives
+       m = 2.661 kg. The previous 50 kg placeholder made the six wheels alone
+       weigh 300 kg and produced non-physical normal/friction forces. -->
+  <xacro:property name="wheel_mass" value="2.661"/>
   <xacro:property name="wheel_radius" value="0.1100"/>
   <xacro:property name="wheel_thickness" value="0.070"/>
   <!-- Height of base_link above the wheel contact plane.

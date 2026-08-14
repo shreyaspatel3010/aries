@@ -74,10 +74,11 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node.pub is not None:
+        if rclpy.ok() and node.pub is not None:
             node.pub.publish(Twist())
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

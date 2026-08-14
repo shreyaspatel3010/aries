@@ -304,22 +304,42 @@ def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
         for mid, p, pitch in tags)
 
     controls_json = panel_glb.parent / "panel_controls.json"
-    control_links, control_joints, control_plugins = "", "", ""
+    control_links, control_joints, control_plugins, fixed_parts = "", "", "", ""
     n_controls = 0
     if controls_json.is_file():
         import json
 
-        # Controls turn about the console's own normal: they are panel-mounted,
-        # so their shafts run through the face, and the tags computed above
-        # already give that normal as a pitch.
+        # Rotary shafts use the console normal; breaker handles use their
+        # transverse hinge axis. Both are recorded by the Blender split stage.
         _, _, pitch = tags[0]
         controls = json.loads(controls_json.read_text())
         n_controls = len(controls)
-        links, joints, plugins = [], [], []
+        links, joints, fixed = [], [], []
         for c in controls:
             x, y, z = c["pivot"]
+            fx, fy, fz = c.get("fixed_pivot", c["pivot"])
+            axis = c.get("axis", [math.sin(pitch), 0, math.cos(pitch)])
+            # Passive resistance keeps a released control in place without a
+            # motor fighting the robot's gripper.
+            default_dynamics = {
+                "rotary": (0.04, 0.08),
+                "disconnect": (0.08, 0.18),
+                "breaker": (0.08, 0.12),
+            }
+            damping, friction = default_dynamics[c["kind"]]
+            damping = c.get("damping", damping)
+            friction = c.get("friction", friction)
+            fixed.append(f"""        <visual name='{c['name']}_fixed'>
+          <pose>{fx:.4f} {fy:.4f} {fz:.4f} 0 0 0</pose>
+          <geometry><mesh><uri>{panel_texture_dir}/panel_{c['name']}_fixed.glb</uri></mesh></geometry>
+        </visual>
+        <collision name='{c['name']}_fixed_collision'>
+          <pose>{fx:.4f} {fy:.4f} {fz:.4f} 0 0 0</pose>
+          <geometry><mesh><uri>{panel_texture_dir}/panel_{c['name']}_fixed.glb</uri></mesh></geometry>
+          <surface><friction><ode><mu>0.9</mu><mu2>0.9</mu2></ode></friction></surface>
+        </collision>""")
             links.append(f"""        <link name='{c['name']}'>
-          <pose>{x:.4f} {y:.4f} {z:.4f} 0 {pitch:.4f} 0</pose>
+          <pose>{x:.4f} {y:.4f} {z:.4f} 0 0 0</pose>
           <inertial>
             <mass>0.05</mass>
             <inertia><ixx>2e-5</ixx><iyy>2e-5</iyy><izz>2e-5</izz>
@@ -328,33 +348,33 @@ def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
           <visual name='v'>
             <geometry><mesh><uri>{panel_texture_dir}/panel_{c['name']}.glb</uri></mesh></geometry>
           </visual>
+          <collision name='collision'>
+            <geometry><mesh><uri>{panel_texture_dir}/panel_{c['name']}.glb</uri></mesh></geometry>
+            <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+          </collision>
         </link>""")
-            # Axis is the link's own +Z, which the pose above has already laid
-            # along the console normal.
+            # Axis is expressed directly in the model frame. The mesh was
+            # already transformed into that frame before export, so adding a
+            # link rotation here would double-tilt the control.
             joints.append(f"""        <joint name='{c['name']}_joint' type='revolute'>
           <parent>body</parent>
           <child>{c['name']}</child>
           <axis>
-            <xyz expressed_in='__model__'>{math.sin(pitch):.4f} 0 {math.cos(pitch):.4f}</xyz>
+            <xyz expressed_in='__model__'>{axis[0]:.4f} {axis[1]:.4f} {axis[2]:.4f}</xyz>
             <limit><lower>{c['lower']:.4f}</lower><upper>{c['upper']:.4f}</upper>
                    <effort>{c['effort']}</effort><velocity>{c['velocity']}</velocity></limit>
-            <dynamics><damping>0.05</damping><friction>0.02</friction></dynamics>
+            <dynamics><damping>{damping:.2f}</damping><friction>{friction:.2f}</friction></dynamics>
           </axis>
         </joint>""")
-            plugins.append(f"""      <plugin filename='gz-sim-joint-position-controller-system'
-              name='gz::sim::systems::JointPositionController'>
-        <joint_name>{c['name']}_joint</joint_name>
-        <topic>/maintenance_panel/{c['name']}/cmd_pos</topic>
-        <p_gain>2.0</p_gain><i_gain>0.02</i_gain><d_gain>0.05</d_gain>
-        <i_min>-0.5</i_min><i_max>0.5</i_max>
-      </plugin>""")
         control_links = "\n" + "\n".join(links)
         control_joints = "\n" + "\n".join(joints)
-        control_plugins = ("\n" + "\n".join(plugins) + f"""
+        fixed_parts = "\n" + "\n".join(fixed)
+        # No position controllers: contact from the arm is the only actuation.
+        control_plugins = f"""
       <plugin filename='gz-sim-joint-state-publisher-system'
               name='gz::sim::systems::JointStatePublisher'>
         <topic>/maintenance_panel/joint_states</topic>
-      </plugin>""")
+      </plugin>"""
         log(f"  articulating {n_controls} panel controls "
             f"({', '.join(sorted({c['kind'] for c in controls}))})")
 
@@ -396,7 +416,7 @@ def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
         <visual name='body_visual'>
           <geometry><mesh><uri>{panel_texture_dir}/maintenance_panel.glb</uri></mesh></geometry>
         </visual>
-{marker_visuals}
+{marker_visuals}{fixed_parts}
       </link>{control_links}{control_joints}
 {control_plugins}
     </model>"""
@@ -593,6 +613,9 @@ def main():
         cmd = [args.blender, "--background", "--python", str(script), "--",
                "--panel-glb", str(raw), "--out", str(args.out),
                "--panel-out", str(args.panel_out)]
+        panel_3mf = args.step.parent / "3mf file Maintenance Task Panel.3MF"
+        if panel_3mf.is_file():
+            cmd += ["--panel-3mf", str(panel_3mf)]
         if args.render_dir:
             args.render_dir.mkdir(parents=True, exist_ok=True)
             cmd += ["--render-dir", str(args.render_dir)]

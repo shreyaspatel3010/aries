@@ -28,6 +28,7 @@ import math
 import sys
 
 import bpy
+from mathutils import Vector
 
 # Drone cage, from "Droning Task - Cage" in the ERC 2026 MY Update Report.
 CAGE_SIDE = 10.0
@@ -110,17 +111,253 @@ def export_glb(obj, path):
     log(f"  exported {path.name}")
 
 
+def control_material(name, rgba):
+    """Create a simple PBR material matching the organiser's panel render."""
+    mat = bpy.data.materials.new(name)
+    mat.diffuse_color = rgba
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = rgba
+    bsdf.inputs["Roughness"].default_value = 0.5
+    bsdf.inputs["Metallic"].default_value = 0.05
+    return mat
+
+
+def mesh_subset(source, polygon_indices, name, material, shift=Vector((0, 0, 0))):
+    """Copy selected faces into a new object without changing their frame."""
+    polygons = [source.data.polygons[index] for index in polygon_indices]
+    used = sorted({vertex for polygon in polygons for vertex in polygon.vertices})
+    remap = {old: new for new, old in enumerate(used)}
+    vertices = [source.data.vertices[index].co.copy() - shift for index in used]
+    faces = [[remap[index] for index in polygon.vertices] for polygon in polygons]
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.materials.append(material)
+    result = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(result)
+    return result
+
+
+def subset_bounds_center(source, polygon_indices):
+    used = {vertex for index in polygon_indices
+            for vertex in source.data.polygons[index].vertices}
+    points = [source.data.vertices[index].co for index in used]
+    lo = Vector(tuple(min(point[axis] for point in points) for axis in range(3)))
+    hi = Vector(tuple(max(point[axis] for point in points) for axis in range(3)))
+    return (lo + hi) / 2
+
+
+def threemf_matrix(text):
+    """Decode the row-vector 3MF transform into a Blender column matrix."""
+    import mathutils
+
+    value = [float(item) for item in text.split()]
+    return mathutils.Matrix((
+        (value[0], value[3], value[6], value[9]),
+        (value[1], value[4], value[7], value[10]),
+        (value[2], value[5], value[8], value[11]),
+        (0, 0, 0, 1),
+    ))
+
+
+def threemf_control_parts(path):
+    """Load exact control bodies and assembly transforms from the supplied 3MF.
+
+    SolidWorks exports each disconnect and MCB body separately in the 3MF,
+    which is much more reliable than inferring bodies from a STEP triangle
+    soup. The rotary selector is supplied as one simplified part, so it alone
+    is divided at its shaft-depth midpoint.
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    ns = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
+    with zipfile.ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("3D/3dmodel.model"))
+    objects = {obj.attrib["id"]: obj for obj in root.findall(".//c:object", ns)}
+    panel = next(obj for obj in objects.values()
+                 if obj.attrib.get("name", "").startswith("Maintenance Task Panel"))
+
+    identity = "1 0 0 0 1 0 0 0 1 0 0 0"
+    # cascadio writes the original SolidWorks Z-up values into glTF's Y-up
+    # coordinate slots. Blender applies this conversion while importing the
+    # STEP-derived GLB; apply the same conversion to direct 3MF vertices.
+    import mathutils
+    gltf_to_blender = mathutils.Matrix((
+        (1, 0, 0, 0),
+        (0, 0, -1, 0),
+        (0, 1, 0, 0),
+        (0, 0, 0, 1),
+    ))
+    group_names = {
+        "Rotary Switch": "rotary",
+        "rotary control switch": "disconnect",
+        "1mcb": "breaker",
+    }
+    instances = []
+    for component in panel.findall("./c:components/c:component", ns):
+        child = objects[component.attrib["objectid"]]
+        label = child.attrib.get("name", "").split(".STEP", 1)[0]
+        if label in group_names:
+            transform = threemf_matrix(component.attrib.get("transform", identity))
+            instances.append((label, group_names[label], transform, child))
+
+    # Number controls consistently from left to right in the SolidWorks panel.
+    instances.sort(key=lambda item: (item[0].lower(), item[2].translation.x))
+    counts = {}
+    result = []
+    for group, kind, placement, parent in instances:
+        index = counts.get(group, 0)
+        counts[group] = index + 1
+        name = f"{group.lower().replace(' ', '_')}_{index}"
+        bodies = []
+        for component in parent.findall("./c:components/c:component", ns):
+            body = objects[component.attrib["objectid"]]
+            local_transform = threemf_matrix(component.attrib.get("transform", identity))
+            vertices = [Vector(tuple(float(vertex.attrib[axis]) for axis in "xyz"))
+                        for vertex in body.findall("./c:mesh/c:vertices/c:vertex", ns)]
+            faces = [tuple(int(triangle.attrib[key]) for key in ("v1", "v2", "v3"))
+                     for triangle in body.findall("./c:mesh/c:triangles/c:triangle", ns)]
+            local_vertices = [(local_transform @ vertex.to_4d()).to_3d()
+                              for vertex in vertices]
+            bodies.append((local_vertices, faces))
+
+        moving_body = None
+        if kind == "breaker":
+            # The lever body is the one furthest forward along local +Z.
+            moving_body = max(range(len(bodies)),
+                              key=lambda i: max(vertex.z for vertex in bodies[i][0]))
+
+        fixed_chunks, moving_chunks = [], []
+        for body_index, (vertices, faces) in enumerate(bodies):
+            if kind == "disconnect":
+                # The two red handle bodies begin at z=37.5 / 42.7 mm; the
+                # yellow mechanism bodies begin behind this plane.
+                moving = min(vertex.z for vertex in vertices) > 30.0
+                (moving_chunks if moving else fixed_chunks).append((vertices, faces))
+            elif kind == "breaker":
+                (moving_chunks if body_index == moving_body else fixed_chunks).append(
+                    (vertices, faces))
+            else:
+                lo = min(vertex.z for vertex in vertices)
+                hi = max(vertex.z for vertex in vertices)
+                split = (lo + hi) / 2
+                fixed_faces, moving_faces = [], []
+                for face in faces:
+                    target = moving_faces if sum(vertices[i].z for i in face) / 3 > split else fixed_faces
+                    target.append(face)
+                fixed_chunks.append((vertices, fixed_faces))
+                moving_chunks.append((vertices, moving_faces))
+
+        def make_part(chunks, suffix, material):
+            vertices_out, faces_out = [], []
+            for vertices, faces in chunks:
+                used = sorted({index for face in faces for index in face})
+                remap = {old: len(vertices_out) + new for new, old in enumerate(used)}
+                vertices_out.extend(tuple((gltf_to_blender @ placement @ vertex.to_4d()).to_3d() / 1000)
+                                    for vertex in (vertices[index] for index in used))
+                faces_out.extend(tuple(remap[index] for index in face) for face in faces)
+            mesh = bpy.data.meshes.new(f"{name}_{suffix}")
+            mesh.from_pydata(vertices_out, [], faces_out)
+            mesh.materials.append(material)
+            obj = bpy.data.objects.new(f"{name}_{suffix}", mesh)
+            bpy.context.scene.collection.objects.link(obj)
+            return obj
+
+        colors = {
+            "rotary": ((0.16, 0.17, 0.19, 1), (0.015, 0.018, 0.022, 1)),
+            "disconnect": ((0.95, 0.68, 0.02, 1), (0.82, 0.025, 0.02, 1)),
+            "breaker": ((0.52, 0.57, 0.64, 1), (0.035, 0.04, 0.05, 1)),
+        }
+        fixed_color, moving_color = colors[kind]
+        result.append(dict(
+            name=name, group=group, kind=kind,
+            fixed=make_part(fixed_chunks, "fixed",
+                            control_material(f"{name}_fixed_material", fixed_color)),
+            moving=make_part(moving_chunks, "moving",
+                             control_material(f"{name}_moving_material", moving_color)),
+        ))
+    return result
+
+
+def export_control_parts(source, name, kind, out_dir):
+    """Split a CAD control into its fixed housing and actual actuator.
+
+    The supplied 3MF shows that disconnect switches contain separate fixed and
+    moving bodies, breaker handles are their smallest connected body, and the
+    selector actuator is the geometry in front of its mounting plane. The STEP
+    conversion preserves those same connected regions.
+    """
+    # Measured from the supplied CAD/3MF face transform (about 33.1 degrees),
+    # rather than rounding the console drawing's nominal 33-degree callout.
+    panel_normal = Vector((0.5458, 0, 0.8379)).normalized()
+    if kind == "disconnect":
+        # The 3MF stores the red handle as two bodies from 37.5 to 71.7 mm
+        # along the shaft, while the fixed yellow mechanism ends at 41.5 mm.
+        # STEP tessellation breaks each CAD surface into many disconnected
+        # islands, so connected-component size is not a body identifier.
+        moving_faces = [polygon.index for polygon in source.data.polygons
+                        if polygon.center.dot(panel_normal) > 0.024]
+        moving_set = set(moving_faces)
+        fixed_faces = [polygon.index for polygon in source.data.polygons
+                       if polygon.index not in moving_set]
+        center = subset_bounds_center(source, moving_faces)
+        # Put the joint on the common centreline of the two circular red parts.
+        offset = center - panel_normal * center.dot(panel_normal)
+        fixed_color = (0.95, 0.68, 0.02, 1.0)  # safety yellow surround
+        moving_color = (0.82, 0.025, 0.02, 1.0)  # red rotary handle
+        axis = panel_normal
+    elif kind == "breaker":
+        # In 1mcb.SLDPRT / the 3MF, the lever is the front 19.5 mm body. Its
+        # rear face is 18 mm in front of the assembly bounding-box centre.
+        moving_faces = [polygon.index for polygon in source.data.polygons
+                        if polygon.center.dot(panel_normal) > 0.018]
+        moving_set = set(moving_faces)
+        fixed_faces = [polygon.index for polygon in source.data.polygons
+                       if polygon.index not in moving_set]
+        center = subset_bounds_center(source, moving_faces)
+        # The 3MF handle has a transverse pivot hole through its AABB centre.
+        offset = Vector((center.x, 0, center.z))
+        fixed_color = (0.52, 0.57, 0.64, 1.0)
+        moving_color = (0.035, 0.04, 0.05, 1.0)
+        axis = Vector((0, 1, 0))
+    else:
+        # Selector shaft is local to the panel normal. Geometry in front of the
+        # mounting plane is the knob; the rear contact block remains fixed.
+        moving_faces = [polygon.index for polygon in source.data.polygons
+                        if polygon.center.dot(panel_normal) > 0.0]
+        moving_set = set(moving_faces)
+        fixed_faces = [polygon.index for polygon in source.data.polygons
+                       if polygon.index not in moving_set]
+        offset = Vector((0, 0, 0))
+        fixed_color = (0.10, 0.11, 0.13, 1.0)
+        moving_color = (0.015, 0.018, 0.022, 1.0)
+        axis = panel_normal
+
+    fixed = mesh_subset(source, fixed_faces, f"{name}_fixed",
+                        control_material(f"{name}_fixed_material", fixed_color))
+    moving = mesh_subset(source, moving_faces, name,
+                         control_material(f"{name}_moving_material", moving_color),
+                         shift=offset)
+    export_glb(fixed, out_dir / f"panel_{name}_fixed.glb")
+    export_glb(moving, out_dir / f"panel_{name}.glb")
+    return offset, axis
+
+
 # The controls the rover has to operate, keyed by the SolidWorks part name the
 # STEP carries.  Everything not listed here is panel structure and stays welded
 # to the body.  `count` is a check: if the organisers revise the panel and the
 # part count changes, the build says so instead of silently dropping a switch.
 PANEL_CONTROLS = {
     "Rotary Switch": dict(kind="rotary", count=5, lower=-1.5708, upper=1.5708,
-                          effort=2.0, velocity=6.0),
+                          effort=2.0, velocity=6.0,
+                          damping=0.04, friction=0.08),
     "rotary control switch": dict(kind="disconnect", count=2, lower=0.0, upper=1.5708,
-                                  effort=5.0, velocity=4.0),
+                                  effort=5.0, velocity=4.0,
+                                  damping=0.08, friction=0.18),
     "1mcb": dict(kind="breaker", count=2, lower=-0.4, upper=0.4,
-                 effort=1.0, velocity=8.0),
+                 effort=1.0, velocity=8.0,
+                 damping=0.08, friction=0.12),
 }
 
 
@@ -144,7 +381,7 @@ def control_group(obj):
     return None
 
 
-def build_panel(panel_glb, out_dir, articulate=True):
+def build_panel(panel_glb, out_dir, articulate=True, panel_3mf=None):
     """Import the converted STEP, square it up, export visual + collision.
 
     With `articulate`, the switches and breakers are held back from the join and
@@ -158,6 +395,7 @@ def build_panel(panel_glb, out_dir, articulate=True):
     log(f"panel: imported {len(parts)} parts")
 
     controls = {}
+    exact_controls = []
     if articulate:
         seen = {}
         for obj in list(parts):
@@ -174,10 +412,19 @@ def build_panel(panel_glb, out_dir, articulate=True):
             else:
                 log(f"  {got} x '{base}' held out as {cfg['kind']} controls")
         parts = [o for o in parts if o not in controls.values()]
+        if panel_3mf:
+            exact_controls = threemf_control_parts(panel_3mf)
+            for obj in controls.values():
+                bpy.data.objects.remove(obj, do_unlink=True)
+            log(f"  using exact 3MF bodies for {len(exact_controls)} controls")
 
     panel = join_meshes(parts, "maintenance_panel")
-    movers = list(controls.values())
-    everything = [panel] + movers
+    if exact_controls:
+        moving_geometry = [part for control in exact_controls
+                           for part in (control["fixed"], control["moving"])]
+    else:
+        moving_geometry = list(controls.values())
+    everything = [panel] + moving_geometry
     # The importer parents everything under a root empty carrying the Y-up/Z-up
     # conversion, so bake the full world matrix before measuring anything.  The
     # controls must ride the identical transform chain as the body or they will
@@ -237,23 +484,56 @@ def build_panel(panel_glb, out_dir, articulate=True):
     log(f"  collision proxy {len(proxy.data.polygons)} faces (from {original_faces})")
     export_glb(proxy, out_dir / "maintenance_panel_collision.glb")
 
-    # Each control is exported about its own pivot: the mesh is shifted so its
-    # centroid is the origin, and that centroid becomes the joint anchor in the
-    # world file.  Exporting them in panel coordinates instead would make every
-    # joint origin (0,0,0) and every switch spin about the panel's foot.
+    # Start each control at its assembly bounding-box centre, then let
+    # export_control_parts move the origin onto the actual shaft / hinge seen
+    # in the 3MF. Fixed housings keep the original assembly-frame placement.
     info = []
-    for key, obj in sorted(controls.items()):
-        base, idx = key.split("#")
-        cfg = PANEL_CONTROLS[base]
-        lo_c, hi_c, _ = mesh_extents(obj)
-        pivot = [(lo_c[i] + hi_c[i]) / 2 for i in range(3)]
-        translate_mesh(obj, (-pivot[0], -pivot[1], -pivot[2]))
-        slug = base.lower().replace(" ", "_")
-        obj.name = f"{slug}_{idx}"
-        export_glb(obj, out_dir / f"panel_{obj.name}.glb")
-        info.append(dict(name=obj.name, group=base, kind=cfg["kind"], pivot=pivot,
-                         lower=cfg["lower"], upper=cfg["upper"],
-                         effort=cfg["effort"], velocity=cfg["velocity"]))
+    if exact_controls:
+        panel_normal = Vector((0.5458, 0, 0.8379)).normalized()
+        for control in exact_controls:
+            cfg = PANEL_CONTROLS[control["group"]]
+            # Any point on the shaft is a valid revolute origin. Use the
+            # moving body's centre for breakers/disconnects, and the complete
+            # selector centre for its simplified one-part CAD geometry.
+            objects = ([control["fixed"], control["moving"]]
+                       if control["kind"] == "rotary" else [control["moving"]])
+            points = [vertex.co for obj in objects for vertex in obj.data.vertices]
+            lo_c = [min(point[i] for point in points) for i in range(3)]
+            hi_c = [max(point[i] for point in points) for i in range(3)]
+            pivot = [(lo_c[i] + hi_c[i]) / 2 for i in range(3)]
+            for obj in (control["fixed"], control["moving"]):
+                translate_mesh(obj, tuple(-value for value in pivot))
+            export_glb(control["fixed"], out_dir / f"panel_{control['name']}_fixed.glb")
+            export_glb(control["moving"], out_dir / f"panel_{control['name']}.glb")
+            # Keep the assembled Blender scene useful for preview / .blend
+            # output after exporting link-local meshes.
+            for obj in (control["fixed"], control["moving"]):
+                translate_mesh(obj, pivot)
+            axis = Vector((0, 1, 0)) if control["kind"] == "breaker" else panel_normal
+            info.append(dict(name=control["name"], group=control["group"],
+                             kind=control["kind"], pivot=pivot,
+                             fixed_pivot=pivot, axis=list(axis),
+                             lower=cfg["lower"], upper=cfg["upper"],
+                             effort=cfg["effort"], velocity=cfg["velocity"],
+                             damping=cfg["damping"], friction=cfg["friction"]))
+    else:
+        for key, obj in sorted(controls.items()):
+            base, idx = key.split("#")
+            cfg = PANEL_CONTROLS[base]
+            lo_c, hi_c, _ = mesh_extents(obj)
+            pivot = [(lo_c[i] + hi_c[i]) / 2 for i in range(3)]
+            translate_mesh(obj, (-pivot[0], -pivot[1], -pivot[2]))
+            slug = base.lower().replace(" ", "_")
+            obj.name = f"{slug}_{idx}"
+            fixed_pivot = list(pivot)
+            offset, axis = export_control_parts(obj, obj.name, cfg["kind"], out_dir)
+            pivot = [pivot[index] + offset[index] for index in range(3)]
+            info.append(dict(name=obj.name, group=base, kind=cfg["kind"], pivot=pivot,
+                             fixed_pivot=fixed_pivot,
+                             axis=list(axis),
+                             lower=cfg["lower"], upper=cfg["upper"],
+                             effort=cfg["effort"], velocity=cfg["velocity"],
+                             damping=cfg["damping"], friction=cfg["friction"]))
     if info:
         import json
 
@@ -504,6 +784,8 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--panel-glb", required=True)
+    ap.add_argument("--panel-3mf",
+                    help="organiser 3MF, used for exact switch body separation")
     ap.add_argument("--out", required=True)
     ap.add_argument("--panel-out", required=True)
     ap.add_argument("--render-dir")
@@ -522,7 +804,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     panel_out.mkdir(parents=True, exist_ok=True)
 
-    panel = build_panel(pathlib.Path(args.panel_glb), panel_out)
+    panel = build_panel(pathlib.Path(args.panel_glb), panel_out,
+                        panel_3mf=pathlib.Path(args.panel_3mf) if args.panel_3mf else None)
     if args.render_dir:
         render_preview(pathlib.Path(args.render_dir) / "panel_preview.png",
                        panel, (1.6, -1.6, 1.5), (0, 0, 0.6))

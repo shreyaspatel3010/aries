@@ -63,7 +63,7 @@ def _start_localization(context, *args, **kwargs):
         return [
             LogInfo(msg=(
                 "[rover localization] simulation EKF enabled: "
-                "/ground_truth/odom + /imu -> /odometry/filtered; "
+                "/ground_truth/odom + /imu yaw rate -> /odometry/filtered; "
                 "EKF owns corrected odom->base_footprint TF"
             )),
             Node(
@@ -159,11 +159,18 @@ def _start_localization(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("use_sim_ekf", default_value="false",
-                              description="Fuse simulation /odom and /imu into filtered odometry."),
+        DeclareLaunchArgument(
+            "use_sim_ekf",
+            default_value="false",
+            description="Fuse simulation ground truth and IMU yaw rate.",
+        ),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("sim_odom_topic", default_value="/ground_truth/odom"),
-        DeclareLaunchArgument("sim_imu_topic", default_value="/imu"),
+        DeclareLaunchArgument(
+            "sim_imu_topic",
+            default_value="/imu",
+            description="Simulated IMU topic fused by the localization EKF.",
+        ),
         DeclareLaunchArgument("filtered_odom_topic", default_value="/odometry/filtered"),
 
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto",

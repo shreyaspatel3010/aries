@@ -223,8 +223,11 @@ def opaque_func(context, *args, **kwargs):
                 "group_name": "arm_with_gripper",
                 "min_self_distance": 0.015,
                 "distance_tolerance": 0.001,
-                "interpolation_steps": 3,
-                "hold_time": 0.05,
+                # Keep joystick collision response identical to the real-arm
+                # launch. These values affect how quickly a command is passed
+                # or held near a collision.
+                "interpolation_steps": 1,
+                "hold_time": 0.02,
             },
         ],
         output="screen",
@@ -239,7 +242,15 @@ def opaque_func(context, *args, **kwargs):
         name="joy_node",
         parameters=[
             {'use_sim_time': use_sim_time},
-            {"dev": joy_dev, "autorepeat_rate": 200.0},
+            {
+                # Match aries_hardware.launch.py exactly so button edges,
+                # trigger thresholds and commanded update timing behave the
+                # same in simulation and on the real robot.
+                "dev": joy_dev,
+                "autorepeat_rate": 80.0,
+                "deadzone": 0.0,
+                "coalesce_interval_ms": 1,
+            },
         ],
         remappings=[("joy", "joy/raw")],
         output="screen",
@@ -297,6 +308,22 @@ def opaque_func(context, *args, **kwargs):
         output="screen",
     )
 
+    # Same preset combinations as full_hardware.launch.py:
+    # LT+Y -> pick_home, LT+A -> probe_drop, LT+B -> soil_drop.
+    arm_preset_pose_node = Node(
+        condition=IfCondition(use_joystick),
+        package="aries_moveit",
+        executable="arm_preset_pose_joystick.py",
+        namespace=namespace,
+        name="arm_preset_pose_joystick",
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            teleop_joy_twist_file,
+            teleop_speeds_file,
+        ],
+        output="screen",
+    )
+
     # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
     # The robot model here always loads the new four-bar gripper.
     gripper_arc_visualizer_node = Node(
@@ -341,6 +368,7 @@ def opaque_func(context, *args, **kwargs):
         joy_layout_normalizer_node,
         teleop_twist_joy_node,
         move_group_joystick_node,
+        arm_preset_pose_node,
         gripper_arc_visualizer_node,
         launch_rviz
     ]
