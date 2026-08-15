@@ -43,6 +43,82 @@
     <xacro:property name="finger_iyz"
                     value="${-3.025e-07 if finger_type == 'probe' else (3.143e-06 if finger_type == 'bucket' else -1.008e-06)}"/>
 
+    <!-- Fingertip COLLISION is boxes, not the mesh, and it has to stay that way.
+         In this gz-sim 8.11 / DART-bullet stack a <mesh> collision generates NO
+         contacts against another <mesh> - bullet wraps both as concave GImpact
+         shapes and GImpact-vs-GImpact yields no manifold. Measured by dropping
+         probes on the maintenance panel's disconnect handle: a primitive box
+         rests on it at z=1.7844, this same fingertip STL falls through the
+         handle AND through the panel body to the ground. That is why the
+         fingers passed through everything they were asked to grasp.
+
+         The SDF escape hatch does not exist in this build. <convex_decomposition>
+         and <optimization> both pass `gz sdf -k` as "Valid", but only because
+         sdformat copies unknown elements through with a warning, and neither
+         changed the drop-test result. Do not put the mesh back on the strength
+         of `gz sdf -k`; re-run the drop test.
+
+         Three boxes per finger, z-bands tiling the mesh end to end so there is
+         no gap between them, x/y from a 400k-point surface sampling of each
+         STL. All three tips are symmetric about x, so only a width is needed.
+         The visual stays the real mesh. -->
+    <xacro:property name="finger_col_zlo"
+                    value="${-0.00496 if finger_type == 'probe' else (-0.00496 if finger_type == 'bucket' else -0.00494)}"/>
+    <xacro:property name="finger_col_zhi"
+                    value="${0.11959 if finger_type == 'probe' else (0.09488 if finger_type == 'bucket' else 0.11959)}"/>
+    <xacro:property name="finger_col0_x"
+                    value="${0.01500 if finger_type == 'probe' else (0.01500 if finger_type == 'bucket' else 0.01500)}"/>
+    <xacro:property name="finger_col0_ylo"
+                    value="${-0.00498 if finger_type == 'probe' else (-0.00497 if finger_type == 'bucket' else -0.00500)}"/>
+    <xacro:property name="finger_col0_yhi"
+                    value="${0.01819 if finger_type == 'probe' else (0.01563 if finger_type == 'bucket' else 0.01823)}"/>
+    <xacro:property name="finger_col1_x"
+                    value="${0.01840 if finger_type == 'probe' else (0.05000 if finger_type == 'bucket' else 0.01500)}"/>
+    <xacro:property name="finger_col1_ylo"
+                    value="${0.00224 if finger_type == 'probe' else (-0.02539 if finger_type == 'bucket' else 0.00228)}"/>
+    <xacro:property name="finger_col1_yhi"
+                    value="${0.01818 if finger_type == 'probe' else (0.01823 if finger_type == 'bucket' else 0.01822)}"/>
+    <xacro:property name="finger_col2_x"
+                    value="${0.03000 if finger_type == 'probe' else (0.05000 if finger_type == 'bucket' else 0.01500)}"/>
+    <xacro:property name="finger_col2_ylo"
+                    value="${-0.00273 if finger_type == 'probe' else (-0.02539 if finger_type == 'bucket' else -0.00255)}"/>
+    <xacro:property name="finger_col2_yhi"
+                    value="${0.01837 if finger_type == 'probe' else (0.01823 if finger_type == 'bucket' else 0.01852)}"/>
+    <xacro:property name="finger_col_dz" value="${(finger_col_zhi - finger_col_zlo) / 3}"/>
+
+    <!-- The bucket's last two bands are the scoop, and a box fills its bowl:
+         the proxy is SOLID where the real tip is a shell. Nothing in these
+         worlds is scooped as particles, so a conservative solid is the right
+         trade; if granular digging is ever simulated this tip needs a proper
+         three-box U instead. -->
+    <xacro:macro name="finger_collision_boxes">
+      <xacro:property name="band" value="0"/>
+      <collision name="tip_band0">
+        <origin xyz="0 ${(finger_col0_yhi + finger_col0_ylo) / 2}
+                       ${finger_col_zlo + finger_col_dz * 0.5 + finger_axial_correction}"
+                rpy="0 0 0"/>
+        <geometry>
+          <box size="${finger_col0_x} ${finger_col0_yhi - finger_col0_ylo} ${finger_col_dz}"/>
+        </geometry>
+      </collision>
+      <collision name="tip_band1">
+        <origin xyz="0 ${(finger_col1_yhi + finger_col1_ylo) / 2}
+                       ${finger_col_zlo + finger_col_dz * 1.5 + finger_axial_correction}"
+                rpy="0 0 0"/>
+        <geometry>
+          <box size="${finger_col1_x} ${finger_col1_yhi - finger_col1_ylo} ${finger_col_dz}"/>
+        </geometry>
+      </collision>
+      <collision name="tip_band2">
+        <origin xyz="0 ${(finger_col2_yhi + finger_col2_ylo) / 2}
+                       ${finger_col_zlo + finger_col_dz * 2.5 + finger_axial_correction}"
+                rpy="0 0 0"/>
+        <geometry>
+          <box size="${finger_col2_x} ${finger_col2_yhi - finger_col2_ylo} ${finger_col_dz}"/>
+        </geometry>
+      </collision>
+    </xacro:macro>
+
     <!-- Reusable inertial blocks. -->
     <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
         <inertial>
@@ -368,13 +444,7 @@
                 <color rgba="1 1 1 1" />
             </material>
         </visual>
-        <collision>
-            <origin xyz="0 0 ${finger_axial_correction}"
-                    rpy="0 0 0" />
-            <geometry>
-                <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
-            </geometry>
-        </collision>
+        <xacro:finger_collision_boxes/>
     </link>
 
     <!-- Local +Z here maps to base +Y (the plate-stack depth direction). The
@@ -444,13 +514,7 @@
                 <color rgba="1 1 1 1" />
             </material>
         </visual>
-        <collision>
-            <origin xyz="0 0 ${finger_axial_correction}"
-                    rpy="0 0 0" />
-            <geometry>
-                <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
-            </geometry>
-        </collision>
+        <xacro:finger_collision_boxes/>
     </link>
 
     <!-- Mirror of gripper_bucket_left_joint; same inboard-face step sign. -->

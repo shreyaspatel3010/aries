@@ -38,6 +38,9 @@ POST_SPACING = 2.5     # intermediate net supports along each wall
 NET_PITCH = 0.5        # net mesh spacing
 NET_THICK = 0.008
 
+# DIN modules per 654747 breaker block.  70.8 mm across / 17.7 mm per module.
+BANK_MODULES = 4
+
 
 def log(msg):
     print(f"[erc2026-blender] {msg}", flush=True)
@@ -160,6 +163,92 @@ def threemf_matrix(text):
     ))
 
 
+def clip_slab(vertices, faces, low, high, eps=1e-6):
+    """Cut a mesh to `low <= x <= high`, capping the two new faces.
+
+    Sorting whole faces by their centroid does not work here: the toggle bar
+    across a 4-module breaker block is a coarse extrusion whose long faces are
+    single triangles spanning all 70 mm, so a centroid test hands two modules
+    everything and the other two nothing.  Clip the triangles against the pair
+    of planes instead, then close each cut with a fan so the module reads as a
+    solid when it swings away from its neighbours.
+    """
+    out_vertices, out_faces, seen = [], [], {}
+
+    def index_of(point):
+        key = (round(point.x, 6), round(point.y, 6), round(point.z, 6))
+        if key not in seen:
+            seen[key] = len(out_vertices)
+            out_vertices.append(point)
+        return seen[key]
+
+    on_plane = {low: [], high: []}
+    for face in faces:
+        polygon = [vertices[i] for i in face]
+        for bound, inside in ((low, 1.0), (high, -1.0)):
+            clipped = []
+            for a, b in zip(polygon, polygon[1:] + polygon[:1]):
+                da, db = inside * (a.x - bound), inside * (b.x - bound)
+                if da >= 0:
+                    clipped.append(a)
+                if (da > 0) != (db > 0) and da != db:
+                    crossing = a.lerp(b, da / (da - db))
+                    clipped.append(crossing)
+                    on_plane[bound].append(crossing)
+            polygon = clipped
+            if not polygon:
+                break
+        if len(polygon) < 3:
+            continue
+        ring = [index_of(point) for point in polygon]
+        for k in range(1, len(ring) - 1):
+            if len({ring[0], ring[k], ring[k + 1]}) == 3:
+                out_faces.append((ring[0], ring[k], ring[k + 1]))
+
+    for bound, points in on_plane.items():
+        if math.isinf(bound) or len(points) < 3:
+            continue
+        unique = {(round(p.y, 6), round(p.z, 6)): p for p in points}
+        ring = list(unique.values())
+        if len(ring) < 3:
+            continue
+        cy = sum(p.y for p in ring) / len(ring)
+        cz = sum(p.z for p in ring) / len(ring)
+        ring.sort(key=lambda p: math.atan2(p.z - cz, p.y - cy))
+        fan = [index_of(point) for point in ring]
+        for k in range(1, len(fan) - 1):
+            if len({fan[0], fan[k], fan[k + 1]}) == 3:
+                # Both windings: the cap is interior to the block, and which
+                # side of it the camera ends up on is not worth predicting.
+                out_faces.append((fan[0], fan[k], fan[k + 1]))
+                out_faces.append((fan[0], fan[k + 1], fan[k]))
+    return out_vertices, out_faces
+
+
+def leaf_bodies(obj, objects, ns, transform):
+    """Every mesh under `obj`, flattened into the caller's frame.
+
+    Most SolidWorks parts sit one level down, but the 654747 breaker block is an
+    assembly of assemblies: reading only its direct children returns objects
+    with no `<mesh>` at all.
+    """
+    vertices = obj.findall("./c:mesh/c:vertices/c:vertex", ns)
+    if vertices:
+        points = [(transform @ Vector(
+            tuple(float(vertex.attrib[axis]) for axis in "xyz")).to_4d()).to_3d()
+            for vertex in vertices]
+        faces = [tuple(int(triangle.attrib[key]) for key in ("v1", "v2", "v3"))
+                 for triangle in obj.findall("./c:mesh/c:triangles/c:triangle", ns)]
+        return [(points, faces)]
+    out = []
+    for component in obj.findall("./c:components/c:component", ns):
+        child = objects[component.attrib["objectid"]]
+        local = threemf_matrix(component.attrib.get(
+            "transform", "1 0 0 0 1 0 0 0 1 0 0 0"))
+        out.extend(leaf_bodies(child, objects, ns, transform @ local))
+    return out
+
+
 def threemf_control_parts(path):
     """Load exact control bodies and assembly transforms from the supplied 3MF.
 
@@ -193,11 +282,21 @@ def threemf_control_parts(path):
         "Rotary Switch": "rotary",
         "rotary control switch": "disconnect",
         "1mcb": "breaker",
+        # One CAD part, four DIN modules. 654747 measures 70.8 mm across
+        # against 1mcb's 17.7 mm - exactly 4x - and carries a single 69.7 mm
+        # toggle bar spanning all four. Split it and the panel's 3 blocks plus
+        # the 2 singles come to the 14 separate MCBs the organisers specify.
+        "654747": "breaker_bank",
     }
+    # Slug per group, so links keep readable names instead of `654747_0`.
+    slugs = {"654747": "mcb"}
     instances = []
     for component in panel.findall("./c:components/c:component", ns):
         child = objects[component.attrib["objectid"]]
         label = child.attrib.get("name", "").split(".STEP", 1)[0]
+        # Supplier parts arrive as `654747_STEP` in the 3MF but `654747` in the
+        # STEP-derived GLB; normalise so one key names the group in both.
+        label = label[:-5] if label.endswith("_STEP") else label
         if label in group_names:
             transform = threemf_matrix(component.attrib.get("transform", identity))
             instances.append((label, group_names[label], transform, child))
@@ -209,18 +308,8 @@ def threemf_control_parts(path):
     for group, kind, placement, parent in instances:
         index = counts.get(group, 0)
         counts[group] = index + 1
-        name = f"{group.lower().replace(' ', '_')}_{index}"
-        bodies = []
-        for component in parent.findall("./c:components/c:component", ns):
-            body = objects[component.attrib["objectid"]]
-            local_transform = threemf_matrix(component.attrib.get("transform", identity))
-            vertices = [Vector(tuple(float(vertex.attrib[axis]) for axis in "xyz"))
-                        for vertex in body.findall("./c:mesh/c:vertices/c:vertex", ns)]
-            faces = [tuple(int(triangle.attrib[key]) for key in ("v1", "v2", "v3"))
-                     for triangle in body.findall("./c:mesh/c:triangles/c:triangle", ns)]
-            local_vertices = [(local_transform @ vertex.to_4d()).to_3d()
-                              for vertex in vertices]
-            bodies.append((local_vertices, faces))
+        slug = slugs.get(group, group.lower().replace(" ", "_"))
+        bodies = leaf_bodies(parent, objects, ns, mathutils.Matrix.Identity(4))
 
         moving_body = None
         if kind == "breaker":
@@ -228,28 +317,65 @@ def threemf_control_parts(path):
             moving_body = max(range(len(bodies)),
                               key=lambda i: max(vertex.z for vertex in bodies[i][0]))
 
-        fixed_chunks, moving_chunks = [], []
-        for body_index, (vertices, faces) in enumerate(bodies):
-            if kind == "disconnect":
-                # The two red handle bodies begin at z=37.5 / 42.7 mm; the
-                # yellow mechanism bodies begin behind this plane.
-                moving = min(vertex.z for vertex in vertices) > 30.0
-                (moving_chunks if moving else fixed_chunks).append((vertices, faces))
-            elif kind == "breaker":
-                (moving_chunks if body_index == moving_body else fixed_chunks).append(
-                    (vertices, faces))
-            else:
-                lo = min(vertex.z for vertex in vertices)
-                hi = max(vertex.z for vertex in vertices)
-                split = (lo + hi) / 2
-                fixed_faces, moving_faces = [], []
-                for face in faces:
-                    target = moving_faces if sum(vertices[i].z for i in face) / 3 > split else fixed_faces
-                    target.append(face)
-                fixed_chunks.append((vertices, fixed_faces))
-                moving_chunks.append((vertices, moving_faces))
+        # Normally one control per CAD instance; a breaker bank yields four.
+        parts = []
+        if kind == "breaker_bank":
+            def extent(index, axis):
+                values = [getattr(vertex, axis) for vertex in bodies[index][0]]
+                return max(values) - min(values)
 
-        def make_part(chunks, suffix, material):
+            # The housing is the bulkiest body; among the rest the toggle bar is
+            # the only one that runs the full width of the block (69.7 mm
+            # against 17.0 mm for the next largest), so size identifies it
+            # without depending on tessellation or body order.
+            housing = max(range(len(bodies)),
+                          key=lambda i: extent(i, "x") * extent(i, "y") * extent(i, "z"))
+            bar = max((i for i in range(len(bodies)) if i != housing),
+                      key=lambda i: extent(i, "x"))
+            # Cut on the housing, not the bar: the housing spans the block's
+            # full 70.8 mm, so its quarters land on the 17.7 mm module pitch
+            # and coincide with the four terminal blocks inside.
+            span_lo = min(vertex.x for vertex in bodies[housing][0])
+            span_hi = max(vertex.x for vertex in bodies[housing][0])
+            cuts = [span_lo + (span_hi - span_lo) * k / BANK_MODULES
+                    for k in range(BANK_MODULES + 1)]
+            for module in range(BANK_MODULES):
+                # First and last module keep everything beyond their cut, so no
+                # face of the block is dropped at the ends.
+                low = -math.inf if module == 0 else cuts[module]
+                high = math.inf if module == BANK_MODULES - 1 else cuts[module + 1]
+                fixed_chunks, moving_chunks = [], []
+                for body_index, (vertices, faces) in enumerate(bodies):
+                    slab = clip_slab(vertices, faces, low, high)
+                    if not slab[1]:
+                        continue
+                    target = moving_chunks if body_index == bar else fixed_chunks
+                    target.append(slab)
+                parts.append((module, fixed_chunks, moving_chunks))
+        else:
+            fixed_chunks, moving_chunks = [], []
+            for body_index, (vertices, faces) in enumerate(bodies):
+                if kind == "disconnect":
+                    # The two red handle bodies begin at z=37.5 / 42.7 mm; the
+                    # yellow mechanism bodies begin behind this plane.
+                    moving = min(vertex.z for vertex in vertices) > 30.0
+                    (moving_chunks if moving else fixed_chunks).append((vertices, faces))
+                elif kind == "breaker":
+                    (moving_chunks if body_index == moving_body else fixed_chunks).append(
+                        (vertices, faces))
+                else:
+                    lo = min(vertex.z for vertex in vertices)
+                    hi = max(vertex.z for vertex in vertices)
+                    split = (lo + hi) / 2
+                    fixed_faces, moving_faces = [], []
+                    for face in faces:
+                        target = moving_faces if sum(vertices[i].z for i in face) / 3 > split else fixed_faces
+                        target.append(face)
+                    fixed_chunks.append((vertices, fixed_faces))
+                    moving_chunks.append((vertices, moving_faces))
+            parts.append((None, fixed_chunks, moving_chunks))
+
+        def make_part(chunks, suffix, material, name):
             vertices_out, faces_out = [], []
             for vertices, faces in chunks:
                 used = sorted({index for face in faces for index in face})
@@ -268,15 +394,19 @@ def threemf_control_parts(path):
             "rotary": ((0.16, 0.17, 0.19, 1), (0.015, 0.018, 0.022, 1)),
             "disconnect": ((0.95, 0.68, 0.02, 1), (0.82, 0.025, 0.02, 1)),
             "breaker": ((0.52, 0.57, 0.64, 1), (0.035, 0.04, 0.05, 1)),
+            "breaker_bank": ((0.52, 0.57, 0.64, 1), (0.035, 0.04, 0.05, 1)),
         }
         fixed_color, moving_color = colors[kind]
-        result.append(dict(
-            name=name, group=group, kind=kind,
-            fixed=make_part(fixed_chunks, "fixed",
-                            control_material(f"{name}_fixed_material", fixed_color)),
-            moving=make_part(moving_chunks, "moving",
-                             control_material(f"{name}_moving_material", moving_color)),
-        ))
+        for module, fixed_chunks, moving_chunks in parts:
+            name = (f"{slug}_{index}" if module is None
+                    else f"{slug}_{index * BANK_MODULES + module}")
+            result.append(dict(
+                name=name, group=group, kind=kind,
+                fixed=make_part(fixed_chunks, "fixed",
+                                control_material(f"{name}_fixed_material", fixed_color), name),
+                moving=make_part(moving_chunks, "moving",
+                                 control_material(f"{name}_moving_material", moving_color), name),
+            ))
     return result
 
 
@@ -358,6 +488,12 @@ PANEL_CONTROLS = {
     "1mcb": dict(kind="breaker", count=2, lower=-0.4, upper=0.4,
                  effort=1.0, velocity=8.0,
                  damping=0.08, friction=0.12),
+    # 3 blocks x 4 modules; with the 2 singles above that is the 14 MCBs.
+    # `count` is leaves, not blocks: cascadio keeps this block's 14 sub-parts as
+    # separate meshes where it merges each 1mcb into one.
+    "654747": dict(kind="breaker_bank", count=42, lower=-0.4, upper=0.4,
+                        effort=1.0, velocity=8.0,
+                        damping=0.08, friction=0.12),
 }
 
 
@@ -374,7 +510,16 @@ def control_group(obj):
     """
     import re
 
-    name = re.sub(r"[._]\d+$", "", obj.data.name)
+    # Strip repeatedly, not once: the second and third copies of the 654747
+    # block arrive as `654747_01.001`, and taking off only Blender's `.001`
+    # leaves `654747_01`, which matches nothing.  Two of the three blocks then
+    # stayed welded into the panel body while also being emitted as controls.
+    name = obj.data.name
+    while True:
+        stripped = re.sub(r"[._]\d+$", "", name)
+        if stripped == name:
+            break
+        name = stripped
     for base in sorted(PANEL_CONTROLS, key=len, reverse=True):
         if name == base:
             return base
@@ -509,7 +654,8 @@ def build_panel(panel_glb, out_dir, articulate=True, panel_3mf=None):
             # output after exporting link-local meshes.
             for obj in (control["fixed"], control["moving"]):
                 translate_mesh(obj, pivot)
-            axis = Vector((0, 1, 0)) if control["kind"] == "breaker" else panel_normal
+            axis = (Vector((0, 1, 0))
+                    if control["kind"] in ("breaker", "breaker_bank") else panel_normal)
             info.append(dict(name=control["name"], group=control["group"],
                              kind=control["kind"], pivot=pivot,
                              fixed_pivot=pivot, axis=list(axis),

@@ -33,6 +33,7 @@ sentence.
 """
 
 import argparse
+import collections
 import math
 import pathlib
 import shutil
@@ -53,7 +54,20 @@ PANEL_MARKER_M = 0.050
 PANEL_MARKER_SPAN_X = 0.260
 PANEL_MARKER_SPAN_Y = 0.380
 PANEL_MARKER_IDS = (11, 13, 14, 15)
-PANEL_DEFAULT_MARKER_IDS = (11, 13, 14)
+PANEL_DEFAULT_MARKER_IDS = (11, 13, 14, 15)
+# The console carries recessed sub-plates spanning ~92 mm in depth, so a tag
+# floated off one global front plane hangs in the air over the others. Each tag
+# is floated this far proud of the plate directly under it instead.
+PANEL_MARKER_PROUD = 0.002
+# Push buttons: the CAD models them as raised pads on the panel body rather than
+# separate parts, so they are found by their signature and capped here.
+PANEL_BUTTON_COUNT = 5
+PANEL_BUTTON_PROUD = 0.010     # pad height above the surrounding console plate
+# Pads measure 24.0 x 8.4 mm (about 236 mm^2).  The nearest other proud feature
+# is a 30 x 22.8 mm disconnect boss at 345 mm^2, so this window has real margin.
+PANEL_BUTTON_AREA = (1.5e-4, 3.0e-4)   # m^2
+PANEL_BUTTON_CAP = (0.021, 0.0065, 0.008)   # across, up-slope, out of the panel
+PANEL_BUTTON_TRAVEL = 0.004
 ARUCO_TEXTURE_PX = 512
 ARUCO_QUIET_PX = int(ARUCO_TEXTURE_PX * 0.14)
 ARUCO_TEXTURE_SCALE = ARUCO_TEXTURE_PX / (ARUCO_TEXTURE_PX - 2 * ARUCO_QUIET_PX)
@@ -190,20 +204,101 @@ def panel_marker_poses(panel_glb):
     front = ad.max()
     pitch = float(np.arctan2(n[0], n[2]))
 
-    # Page 20 marks top-left, top-right and bottom-left with black squares.
-    # The report lists four possible IDs but does not show a fourth location.
+    # Page 20 marks the four corners of the 260 x 380 mm span with black
+    # squares.  Sitting them all on `front` is wrong: the console is a stack of
+    # sub-plates and the frontmost one is not the one under every tag, so three
+    # of the four floated up to 34 mm off their plate.  Ray-cast the plate that
+    # is actually there and float each tag off that.
     layout = ((-1, +1, PANEL_DEFAULT_MARKER_IDS[0]),
               (+1, +1, PANEL_DEFAULT_MARKER_IDS[1]),
-              (-1, -1, PANEL_DEFAULT_MARKER_IDS[2]))
+              (-1, -1, PANEL_DEFAULT_MARKER_IDS[2]),
+              (+1, -1, PANEL_DEFAULT_MARKER_IDS[3]))
+    inset = PANEL_MARKER_M / 2 * 0.6
     out = []
     for sx, sy, mid in layout:
-        p = ((cu + sx * PANEL_MARKER_SPAN_X / 2) * u
-             + (cw + sy * PANEL_MARKER_SPAN_Y / 2) * w
-             + (front + 0.003) * n)
+        tu = cu + sx * PANEL_MARKER_SPAN_X / 2
+        tw = cw + sy * PANEL_MARKER_SPAN_Y / 2
+        # Probe the tag's own footprint, not just its centre: a screw hole or
+        # engraved legend under the middle would otherwise drop the tag inside.
+        probes = [(tu, tw)] + [(tu + du, tw + dw)
+                               for du in (-inset, inset) for dw in (-inset, inset)]
+        origins = np.array([pu * u + pw * w + (front + 0.05) * n for pu, pw in probes])
+        hits, index_ray, _ = mesh.ray.intersects_location(
+            origins, np.tile(-n, (len(origins), 1)), multiple_hits=False)
+        plate = float((hits @ n).max()) if len(hits) else front
+        p = tu * u + tw * w + (plate + PANEL_MARKER_PROUD) * n
         out.append((mid, p, pitch))
     log(f"  console face {au.max() - au.min():.3f} x {aw.max() - aw.min():.3f} m, "
-        f"tilt {np.degrees(pitch):.1f} deg; 3 marker locations placed")
+        f"tilt {np.degrees(pitch):.1f} deg; {len(out)} markers on their own plates "
+        f"(depth spread {max(q[1] @ n for q in out) - min(q[1] @ n for q in out):.3f} m)")
     return out
+
+
+def panel_button_poses(panel_glb):
+    """Locate the five push buttons on the console face.
+
+    The organisers' CAD does not ship these as parts - `panel.STEP` is one
+    body - so they cannot be pulled out of the assembly the way the breakers
+    and selectors are.  They are in the geometry though, as five identical pads
+    standing 10 mm proud of their plate on a 37.5 mm pitch.  Find them by that
+    signature rather than by hard-coded coordinates, so the day the organisers
+    reissue the STEP this moves with it instead of silently pointing at bare
+    console.
+
+    Returns (centre, pitch, normal) with the centre on the pad's front face.
+    """
+    import trimesh
+    from scipy import ndimage
+
+    mesh = trimesh.load(panel_glb)
+    mesh = mesh.to_mesh() if hasattr(mesh, "to_mesh") else mesh
+    normals = mesh.face_normals
+    cand = (normals[:, 0] > 0.2) & (normals[:, 2] > 0.5)
+    n = (normals[cand] * mesh.area_faces[cand, None]).sum(0)
+    n /= np.linalg.norm(n)
+    u = np.array([0.0, 1.0, 0.0])
+    w = np.cross(n, u)
+    w /= np.linalg.norm(w)
+    pitch = float(np.arctan2(n[0], n[2]))
+
+    # Vertices alone leave 90 % of the console empty - it is a handful of large
+    # flat plates - so sample the surface and keep the frontmost hit per cell.
+    points, _ = trimesh.sample.sample_surface(mesh, 4_000_000)
+    au, aw, ad = points @ u, points @ w, points @ n
+    step = 0.0012
+    u0, w0 = au.min(), aw.min()
+    grid = np.full((int((aw.max() - w0) / step) + 1, int((au.max() - u0) / step) + 1),
+                   -np.inf)
+    np.maximum.at(grid, (((aw - w0) / step).astype(int), ((au - u0) / step).astype(int)), ad)
+    filled = np.isfinite(grid)
+    # Console plate = the modal depth; every real plate is flat and huge next to
+    # the features standing on it.
+    counts, edges = np.histogram(grid[filled], bins=300)
+    base = float(edges[counts.argmax()])
+
+    labels, _ = ndimage.label(filled & (grid > base + PANEL_BUTTON_PROUD / 2))
+    cell = step * step
+    found = []
+    for index, box in enumerate(ndimage.find_objects(labels), 1):
+        sel = labels[box] == index
+        area = sel.sum() * cell
+        if not (PANEL_BUTTON_AREA[0] <= area <= PANEL_BUTTON_AREA[1]):
+            continue
+        rows = np.arange(box[0].start, box[0].stop)
+        cols = np.arange(box[1].start, box[1].stop)
+        rr, cc = np.meshgrid(rows, cols, indexing="ij")
+        found.append(((cc[sel] + 0.5).mean() * step + u0,
+                      (rr[sel] + 0.5).mean() * step + w0,
+                      float(np.median(grid[box][sel]))))
+    found.sort(key=lambda q: q[0])
+    if len(found) != PANEL_BUTTON_COUNT:
+        raise SystemExit(
+            f"expected {PANEL_BUTTON_COUNT} push-button pads on the console, "
+            f"found {len(found)} - the CAD changed, re-check PANEL_BUTTON_AREA")
+    spacing = np.diff([q[0] for q in found])
+    log(f"  {len(found)} push buttons at {np.round(spacing * 1000, 1)} mm pitch, "
+        f"{np.mean([q[2] for q in found]) * 1000 - base * 1000:.1f} mm proud")
+    return [(q[0] * u + q[1] * w + q[2] * n, pitch, n) for q in found]
 
 
 def sector_table():
@@ -306,6 +401,241 @@ def tag_visual(name, mid, size, pose, texture_dir):
         </visual>"""
 
 
+def write_panel_model(panel_dir):
+    """Write the standalone `model://maintenance_panel` the worlds include.
+
+    Everything here is derived from the organisers' CAD by the Blender stage
+    plus the two detectors above, so re-running the build reproduces the file
+    exactly rather than losing hand edits.
+    """
+    import json
+
+    tags = panel_marker_poses(panel_dir / "maintenance_panel.glb")
+    buttons = panel_button_poses(panel_dir / "maintenance_panel.glb")
+    uri = "model://maintenance_panel"
+
+    markers = "\n".join(
+        tag_visual(f"aruco_{mid}", mid, PANEL_MARKER_M,
+                   f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f} 0 {pitch:.4f} 0", uri)
+        for mid, p, pitch in tags)
+
+    controls = json.loads((panel_dir / "panel_controls.json").read_text())
+    housings, links, joints = [], [], []
+    for c in controls:
+        x, y, z = c["pivot"]
+        fx, fy, fz = c.get("fixed_pivot", c["pivot"])
+        ax, ay, az = c["axis"]
+        housings.append(f"""    <visual name='{c['name']}_fixed'>
+      <pose>{fx:.4f} {fy:.4f} {fz:.4f} 0 0 0</pose>
+      <geometry><mesh><uri>{uri}/panel_{c['name']}_fixed.glb</uri></mesh></geometry>
+    </visual>
+    <collision name='{c['name']}_fixed_collision'>
+      <pose>{fx:.4f} {fy:.4f} {fz:.4f} 0 0 0</pose>
+      <geometry><mesh><uri>{uri}/panel_{c['name']}_fixed.glb</uri></mesh></geometry>
+      <surface><friction><ode><mu>0.9</mu><mu2>0.9</mu2></ode></friction></surface>
+    </collision>""")
+        links.append(f"""  <link name='{c['name']}'>
+    <pose>{x:.4f} {y:.4f} {z:.4f} 0 0 0</pose>
+    <inertial>
+      <mass>0.03</mass>
+      <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
+               <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+    </inertial>
+    <visual name='v'>
+      <geometry><mesh><uri>{uri}/panel_{c['name']}.glb</uri></mesh></geometry>
+    </visual>
+    <collision name='collision'>
+      <geometry><mesh><uri>{uri}/panel_{c['name']}.glb</uri></mesh></geometry>
+      <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+    </collision>
+  </link>""")
+        joints.append(f"""  <joint name='{c['name']}_joint' type='revolute'>
+    <parent>body</parent>
+    <child>{c['name']}</child>
+    <axis>
+      <xyz expressed_in='__model__'>{ax:.4f} {ay:.4f} {az:.4f}</xyz>
+      <limit><lower>{c['lower']:.4f}</lower><upper>{c['upper']:.4f}</upper>
+             <effort>{c['effort']}</effort><velocity>{c['velocity']}</velocity></limit>
+      <dynamics><damping>{c['damping']:.2f}</damping><friction>{c['friction']:.2f}</friction></dynamics>
+    </axis>
+  </joint>""")
+
+    across, up_slope, out = PANEL_BUTTON_CAP
+    for index, (centre, pitch, normal) in enumerate(buttons):
+        # The link's own pitch puts its +Z on the console normal and its +Y
+        # across the console, so the cap is sized (up-slope, across, out).
+        seat = centre + normal * (out / 2)
+        links.append(f"""  <link name='push_button_{index}'>
+    <pose>{seat[0]:.4f} {seat[1]:.4f} {seat[2]:.4f} 0 {pitch:.4f} 0</pose>
+    <inertial>
+      <mass>0.01</mass>
+      <inertia><ixx>2e-7</ixx><iyy>2e-7</iyy><izz>2e-7</izz>
+               <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+    </inertial>
+    <visual name='v'>
+      <geometry><box><size>{up_slope:.4f} {across:.4f} {out:.4f}</size></box></geometry>
+      <material>
+        <ambient>0.05 0.42 0.12 1</ambient><diffuse>0.09 0.66 0.18 1</diffuse>
+        <specular>0.2 0.2 0.2 1</specular>
+      </material>
+    </visual>
+    <collision name='collision'>
+      <geometry><box><size>{up_slope:.4f} {across:.4f} {out:.4f}</size></box></geometry>
+      <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+    </collision>
+  </link>""")
+        joints.append(f"""  <joint name='push_button_{index}_joint' type='prismatic'>
+    <parent>body</parent>
+    <child>push_button_{index}</child>
+    <axis>
+      <xyz expressed_in='__model__'>{-normal[0]:.4f} {-normal[1]:.4f} {-normal[2]:.4f}</xyz>
+      <limit><lower>0</lower><upper>{PANEL_BUTTON_TRAVEL:.4f}</upper>
+             <effort>30</effort><velocity>0.5</velocity></limit>
+      <dynamics>
+        <damping>2.0</damping><friction>0.5</friction>
+        <!-- Momentary action, if the physics engine honours joint springs;
+             with DART it does not, so a pressed button stays pressed and the
+             joint state is a latch the task can read. -->
+        <spring_stiffness>200</spring_stiffness><spring_reference>0</spring_reference>
+      </dynamics>
+    </axis>
+  </joint>""")
+
+    kinds = collections.Counter(c["kind"] for c in controls)
+    body = "\n".join(housings)
+    text = f"""<?xml version='1.0'?>
+<!-- GENERATED by scripts/build_erc2026_props.py from the organisers'
+     "Panel for Maintenance Tasks" CAD. Do not hand-edit; re-run the build.
+
+     0.49 x 0.39 x 1.00 m, base on the ground, console face
+     {math.degrees(tags[0][2]):.0f} deg off vertical, model front is its own +X.
+     Collision is a decimation of the visual mesh: DART only needs the
+     sloped-box silhouette, not every switch and socket.
+
+     Operable controls, all free joints the rover's gripper moves directly -
+     there is no position controller fighting it, and joint friction holds a
+     control where the arm leaves it:
+       {kinds['breaker'] + kinds['breaker_bank']} MCB toggles ({kinds['breaker']} single + {kinds['breaker_bank']} from the 4-module blocks)
+       {kinds['rotary']} rotary selectors
+       {kinds['disconnect']} red disconnect handles
+       {len(buttons)} push buttons
+     Read them on /maintenance_panel/joint_states. -->
+<sdf version='1.10'>
+<model name='maintenance_panel'>
+  <!-- Not <static>: a static model cannot carry joints, so the body is
+       welded to the world instead. Same immobility, but the switches move. -->
+  <joint name='anchor' type='fixed'><parent>world</parent><child>body</child></joint>
+  <link name='body'>
+    <inertial>
+      <mass>40</mass>
+      <inertia><ixx>4.0</ixx><iyy>4.0</iyy><izz>2.0</izz>
+               <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+    </inertial>
+    <collision name='body_collision'>
+      <geometry><mesh><uri>{uri}/maintenance_panel_collision.glb</uri></mesh></geometry>
+      <surface>
+        <friction><ode><mu>0.9</mu><mu2>0.9</mu2></ode></friction>
+      </surface>
+    </collision>
+    <visual name='body_visual'>
+      <geometry><mesh><uri>{uri}/maintenance_panel.glb</uri></mesh></geometry>
+    </visual>
+{markers}
+    <!-- Fixed switch housings. The matching actuator meshes live on the
+         movable links below, so only the parts that physically move move. -->
+{body}
+  </link>
+{chr(10).join(links)}
+{chr(10).join(joints)}
+  <plugin filename='gz-sim-joint-state-publisher-system'
+          name='gz::sim::systems::JointStatePublisher'>
+    <topic>/maintenance_panel/joint_states</topic>
+  </plugin>
+</model>
+</sdf>
+"""
+    (panel_dir / "model.sdf").write_text(text, encoding="utf8")
+    write_panel_task_table(panel_dir, tags, buttons, controls)
+    log(f"  wrote {panel_dir / 'model.sdf'}: {len(controls)} CAD controls "
+        f"+ {len(buttons)} push buttons, {len(tags)} ArUco tags")
+
+
+def write_panel_task_table(panel_dir, tags, buttons, controls):
+    """Emit how the arm operates each control, in the panel's own frame.
+
+    The alternative is coordinates typed into the node, which drift the moment
+    the CAD is reissued.  Everything here is derived from the same geometry the
+    SDF is written from.
+
+    Two measured facts drive the `jaw_axis` column, and they are the whole
+    reason this table is not just a list of positions:
+
+    - The two red disconnects are 65 mm across on a 76.7 mm pitch, so there is
+      **11.7 mm** between them.  No finger fits: a grasp that closes across the
+      console is impossible.  Rolled 90 deg it works - 35.8 mm clear above the
+      knob, 36.2 mm below, and the knob stands 30 mm proud of its surround.
+    - The MCB toggles are on a 17.7 mm pitch (3.9 mm between modules) and the
+      selectors on 55 mm (7.4 mm).  Those cannot be grasped at all and are not
+      meant to be: a breaker is flicked and a button is pressed, with the jaws
+      closed, which is what `action` says.
+    """
+    import json
+
+    _, _, pitch = tags[0]
+    normal = [math.sin(pitch), 0.0, math.cos(pitch)]     # out of the console
+    up_slope = [-math.cos(pitch), 0.0, math.sin(pitch)]  # up the console face
+    across = [0.0, 1.0, 0.0]
+
+    # action, how far to move, and which way the jaws must close.
+    # `turn` grips and rolls the wrist about the approach axis; `flick` and
+    # `press` drive a closed jaw into the control.
+    recipe = {
+        "rotary": dict(action="turn", jaw_axis=up_slope, travel=1.0472, grip=True),
+        "disconnect": dict(action="turn", jaw_axis=up_slope, travel=1.5708, grip=True),
+        "breaker": dict(action="flick", jaw_axis=up_slope, travel=0.012, grip=False),
+        "breaker_bank": dict(action="flick", jaw_axis=up_slope, travel=0.012, grip=False),
+    }
+    entries = []
+    for c in controls:
+        r = recipe[c["kind"]]
+        entries.append(dict(
+            name=c["name"], kind=c["kind"], action=r["action"],
+            position=[round(v, 5) for v in c["pivot"]],
+            approach=[round(v, 5) for v in normal],
+            joint_axis=[round(v, 5) for v in c["axis"]],
+            jaw_axis=[round(v, 5) for v in r["jaw_axis"]],
+            travel=r["travel"], grip=r["grip"],
+            joint=f"{c['name']}_joint",
+            limits=[c["lower"], c["upper"]]))
+    for index, (centre, _, button_normal) in enumerate(buttons):
+        entries.append(dict(
+            name=f"push_button_{index}", kind="button", action="press",
+            position=[round(v, 5) for v in centre],
+            approach=[round(v, 5) for v in button_normal],
+            joint_axis=[round(-v, 5) for v in button_normal],
+            jaw_axis=[round(v, 5) for v in across],
+            travel=PANEL_BUTTON_TRAVEL, grip=False,
+            joint=f"push_button_{index}_joint",
+            limits=[0.0, PANEL_BUTTON_TRAVEL]))
+
+    table = dict(
+        frame="maintenance_panel",
+        console_pitch=round(pitch, 5),
+        console_normal=[round(v, 5) for v in normal],
+        console_up_slope=[round(v, 5) for v in up_slope],
+        # Standoff along the approach axis for the pre-touch pose. 60 mm clears
+        # the tallest thing on the console (the disconnect knobs, 34 mm proud).
+        standoff=0.060,
+        markers=[dict(id=mid, position=[round(v, 5) for v in p], pitch=round(pt, 5),
+                      size=PANEL_MARKER_M)
+                 for mid, p, pt in tags],
+        controls=entries)
+    (panel_dir / "panel_task.json").write_text(json.dumps(table, indent=1))
+    kinds = collections.Counter(e["action"] for e in entries)
+    log(f"  wrote panel_task.json: {len(entries)} operable controls "
+        f"({', '.join(f'{v} {k}' for k, v in sorted(kinds.items()))})")
+
+
 def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
              panel_xyz, panel_yaw,
              cage_xy, cage_z, landing_xy, include_cage=False):
@@ -342,6 +672,7 @@ def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
                 "rotary": (0.04, 0.08),
                 "disconnect": (0.08, 0.18),
                 "breaker": (0.08, 0.12),
+                "breaker_bank": (0.08, 0.12),
             }
             damping, friction = default_dynamics[c["kind"]]
             damping = c.get("damping", damping)
@@ -673,6 +1004,8 @@ def main():
             print("\n".join(lines[start:start + 40]), file=sys.stderr)
             sys.exit("blender stage failed")
         raw.unlink(missing_ok=True)
+
+    write_panel_model(args.panel_out)
 
     rows = sector_table()
     log(f"  effective-area sector grid: {len(rows)} cells of {SECTOR_M} m "

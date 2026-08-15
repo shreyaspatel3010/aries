@@ -165,6 +165,98 @@
         </collision>
     </xacro:macro>
 
+    <!-- The FINGERTIPS are the exception to the macro above: their collision is
+         boxes, and it has to stay that way.
+
+         In this gz-sim 8.11 / DART-bullet stack a <mesh> collision generates NO
+         contacts against another <mesh>. Bullet wraps both as concave GImpact
+         shapes and GImpact-vs-GImpact yields no manifold. Measured by dropping
+         probes onto the maintenance panel's disconnect handle: a primitive box
+         comes to rest on it at z=1.7844, while a fingertip STL falls straight
+         through the handle AND through the panel body onto the ground. That is
+         why the gripper passed through everything it was asked to operate.
+
+         The SDF escape hatch does not exist in this build: <convex_decomposition>
+         and <optimization> both pass `gz sdf -k` as "Valid" - only because
+         sdformat copies unknown elements through with a warning - and neither
+         changed the drop test. Do not restore the mesh on the strength of
+         `gz sdf -k`; re-run the drop test.
+
+         Three boxes per tip, z-bands tiling the mesh end to end so there is no
+         gap, x/y from a 300k-point surface sampling of each STL. Left and right
+         are exact mirrors, so one set of numbers serves both with sx = +/-1.
+         The visual stays the real mesh. -->
+    <xacro:property name="finger_col0_sx"
+                    value="${0.0262 if finger_type == 'probe' else (0.0270 if finger_type == 'bucket' else 0.0261)}"/>
+    <xacro:property name="finger_col0_sy"
+                    value="${0.0150 if finger_type == 'probe' else (0.0150 if finger_type == 'bucket' else 0.0150)}"/>
+    <xacro:property name="finger_col0_sz"
+                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+    <xacro:property name="finger_col0_x"
+                    value="${0.00812 if finger_type == 'probe' else (0.00849 if finger_type == 'bucket' else 0.00803)}"/>
+    <xacro:property name="finger_col0_y"
+                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+    <xacro:property name="finger_col0_z"
+                    value="${0.01180 if finger_type == 'probe' else (0.01346 if finger_type == 'bucket' else 0.01165)}"/>
+    <xacro:property name="finger_col1_sx"
+                    value="${0.0173 if finger_type == 'probe' else (0.0466 if finger_type == 'bucket' else 0.0174)}"/>
+    <xacro:property name="finger_col1_sy"
+                    value="${0.0300 if finger_type == 'probe' else (0.0500 if finger_type == 'bucket' else 0.0150)}"/>
+    <xacro:property name="finger_col1_sz"
+                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+    <xacro:property name="finger_col1_x"
+                    value="${0.01627 if finger_type == 'probe' else (0.00633 if finger_type == 'bucket' else 0.01588)}"/>
+    <xacro:property name="finger_col1_y"
+                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+    <xacro:property name="finger_col1_z"
+                    value="${0.04525 if finger_type == 'probe' else (0.05023 if finger_type == 'bucket' else 0.04479)}"/>
+    <xacro:property name="finger_col2_sx"
+                    value="${0.0217 if finger_type == 'probe' else (0.0483 if finger_type == 'bucket' else 0.0216)}"/>
+    <xacro:property name="finger_col2_sy"
+                    value="${0.0300 if finger_type == 'probe' else (0.0500 if finger_type == 'bucket' else 0.0150)}"/>
+    <xacro:property name="finger_col2_sz"
+                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+    <xacro:property name="finger_col2_x"
+                    value="${0.02568 if finger_type == 'probe' else (0.00883 if finger_type == 'bucket' else 0.02522)}"/>
+    <xacro:property name="finger_col2_y"
+                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+    <xacro:property name="finger_col2_z"
+                    value="${0.07870 if finger_type == 'probe' else (0.08699 if finger_type == 'bucket' else 0.07793)}"/>
+
+    <!-- The bucket's upper two bands are its scoop, and a box fills the bowl:
+         the proxy is SOLID where the real tip is a shell. Nothing in these
+         worlds is scooped as particles, so a conservative solid is the right
+         trade; granular digging would need a proper three-box U instead. -->
+    <xacro:macro name="finger_geometry" params="file sx">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/gripper_v2/${file}"/>
+            </geometry>
+            <material name="">
+                <color rgba="1 1 1 1"/>
+            </material>
+        </visual>
+        <collision name="tip_band0">
+            <origin xyz="${sx * finger_col0_x} ${finger_col0_y} ${finger_col0_z}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${finger_col0_sx} ${finger_col0_sy} ${finger_col0_sz}"/>
+            </geometry>
+        </collision>
+        <collision name="tip_band1">
+            <origin xyz="${sx * finger_col1_x} ${finger_col1_y} ${finger_col1_z}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${finger_col1_sx} ${finger_col1_sy} ${finger_col1_sz}"/>
+            </geometry>
+        </collision>
+        <collision name="tip_band2">
+            <origin xyz="${sx * finger_col2_x} ${finger_col2_y} ${finger_col2_z}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${finger_col2_sx} ${finger_col2_sy} ${finger_col2_sz}"/>
+            </geometry>
+        </collision>
+    </xacro:macro>
+
     <!-- Joint damping/friction, sized against the inertias above; see the long
          note in gripper_new.xacro for why they cannot be left at the 10/2 that
          file inherited. The links here are the same order of magnitude as that
@@ -318,7 +410,7 @@
         <xacro:gripper_inertial mass="${finger_mass}" cx="${finger_com_x}" cy="0.0" cz="${finger_com_z}"
                                 ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
                                 ixz="${finger_ixz}"/>
-        <xacro:gripper_mesh_geometry file="${finger_mesh_left}"/>
+        <xacro:finger_geometry file="${finger_mesh_left}" sx="1"/>
     </link>
 
     <joint name="gripper_bucket_left_joint" type="revolute">
@@ -336,7 +428,7 @@
         <xacro:gripper_inertial mass="${finger_mass}" cx="${-finger_com_x}" cy="0.0" cz="${finger_com_z}"
                                 ixx="${finger_ixx}" iyy="${finger_iyy}" izz="${finger_izz}"
                                 ixz="${-finger_ixz}"/>
-        <xacro:gripper_mesh_geometry file="${finger_mesh_right}"/>
+        <xacro:finger_geometry file="${finger_mesh_right}" sx="-1"/>
     </link>
 
     <!-- Mirror of the left fingertip joint. Its parent already turns the other
