@@ -18,8 +18,10 @@ Update Report Rev.1:
                lift-off spot a 1 x 1 m square at the centre carrying ArUco 101;
                landing target a disc of radius 0.5 m carrying ArUco 102; both
                markers 15 x 15 cm, ORIGINAL ArUco library.
-  Panel        markers 50 x 50 mm, ORIGINAL ArUco library, ids 11/13/14/15,
-               spanning 260 +/-1 mm across and 380 +/-1 mm down the console.
+  Panel        three marker locations, 50 x 50 mm, ORIGINAL ArUco library;
+               allowed ids 11/13/14/15. The default practice arrangement uses
+               11/13/14 at top-left/top-right/bottom-left, spanning 260 +/-1 mm
+               across and 380 +/-1 mm down the console.
 
 One caveat worth keeping in view: the report says the cage is "divided into
 1 x 1 m sectors", but its own worked examples are half that - "A2 covers
@@ -51,6 +53,10 @@ PANEL_MARKER_M = 0.050
 PANEL_MARKER_SPAN_X = 0.260
 PANEL_MARKER_SPAN_Y = 0.380
 PANEL_MARKER_IDS = (11, 13, 14, 15)
+PANEL_DEFAULT_MARKER_IDS = (11, 13, 14)
+ARUCO_TEXTURE_PX = 512
+ARUCO_QUIET_PX = int(ARUCO_TEXTURE_PX * 0.14)
+ARUCO_TEXTURE_SCALE = ARUCO_TEXTURE_PX / (ARUCO_TEXTURE_PX - 2 * ARUCO_QUIET_PX)
 # Keep the panel this far from every surveyed point: the markers are physical
 # objects on the yard and the panel must not be planted on one.
 PANEL_SURVEY_CLEARANCE = 1.5
@@ -113,8 +119,8 @@ def write_textures(out_dir, panel_out_dir):
     cv2.imwrite(str(out_dir / "drone_cage_floor.png"), floor)
 
     for mid in ALL_MARKER_IDS:
-        size = 512
-        quiet = int(size * 0.14)
+        size = ARUCO_TEXTURE_PX
+        quiet = ARUCO_QUIET_PX
         board = np.full((size, size), 255, np.uint8)
         board[quiet:size - quiet, quiet:size - quiet] = aruco(orig, mid, size - 2 * quiet)
         marker_dir = panel_out_dir if mid in PANEL_MARKER_IDS else out_dir
@@ -132,14 +138,19 @@ def verify_textures(out_dir, panel_out_dir):
     """
     import cv2
 
-    det = cv2.aruco.ArucoDetector(
-        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL),
-        cv2.aruco.DetectorParameters())
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(
+            dictionary, cv2.aruco.DetectorParameters())
+        detect = detector.detectMarkers
+    else:
+        # OpenCV releases before 4.7 expose the equivalent module function.
+        detect = lambda image: cv2.aruco.detectMarkers(image, dictionary)
     bad = []
     for mid in ALL_MARKER_IDS:
         marker_dir = panel_out_dir if mid in PANEL_MARKER_IDS else out_dir
         img = cv2.imread(str(marker_dir / f"aruco_orig_{mid}.png"), cv2.IMREAD_GRAYSCALE)
-        _, ids, _ = det.detectMarkers(img)
+        _, ids, _ = detect(img)
         if ids is None or mid not in ids.flatten():
             bad.append((mid, None if ids is None else ids.flatten().tolist()))
     if bad:
@@ -150,7 +161,7 @@ def verify_textures(out_dir, panel_out_dir):
 
 
 def panel_marker_poses(panel_glb):
-    """Work out where the four panel tags go, from the panel mesh itself.
+    """Work out the three marker locations shown on the panel drawing.
 
     The console is a plane tilted 33 deg off vertical carrying several recessed
     sub-plates, so the outermost plane alone is too small to hold the drawing's
@@ -179,8 +190,11 @@ def panel_marker_poses(panel_glb):
     front = ad.max()
     pitch = float(np.arctan2(n[0], n[2]))
 
-    layout = ((-1, +1, PANEL_MARKER_IDS[0]), (+1, +1, PANEL_MARKER_IDS[1]),
-              (-1, -1, PANEL_MARKER_IDS[2]), (+1, -1, PANEL_MARKER_IDS[3]))
+    # Page 20 marks top-left, top-right and bottom-left with black squares.
+    # The report lists four possible IDs but does not show a fourth location.
+    layout = ((-1, +1, PANEL_DEFAULT_MARKER_IDS[0]),
+              (+1, +1, PANEL_DEFAULT_MARKER_IDS[1]),
+              (-1, -1, PANEL_DEFAULT_MARKER_IDS[2]))
     out = []
     for sx, sy, mid in layout:
         p = ((cu + sx * PANEL_MARKER_SPAN_X / 2) * u
@@ -188,7 +202,7 @@ def panel_marker_poses(panel_glb):
              + (front + 0.003) * n)
         out.append((mid, p, pitch))
     log(f"  console face {au.max() - au.min():.3f} x {aw.max() - aw.min():.3f} m, "
-        f"tilt {np.degrees(pitch):.1f} deg; 4 tags placed")
+        f"tilt {np.degrees(pitch):.1f} deg; 3 marker locations placed")
     return out
 
 
@@ -276,9 +290,12 @@ def terrain_z(x, y, dem_png, zmin=-0.822577, span=2.254232,
 
 
 def tag_visual(name, mid, size, pose, texture_dir):
+    # `size` is the outer black ArUco square specified by the report. Expand
+    # the textured backing so its white quiet zone does not shrink that code.
+    backing = size * ARUCO_TEXTURE_SCALE
     return f"""        <visual name='{name}'>
           <pose>{pose}</pose>
-          <geometry><box><size>{size:.3f} {size:.3f} 0.002</size></box></geometry>
+          <geometry><box><size>{backing:.4f} {backing:.4f} 0.002</size></box></geometry>
           <material>
             <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
             <pbr><metal>
@@ -388,10 +405,12 @@ def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
          only needs the sloped-box silhouette, and the real mesh would put every
          switch and socket into the broad phase.
 
-         The four ArUco tags are 50 x 50 mm from the ORIGINAL library, ids
-         {'/'.join(str(m) for m, _, _ in tags)}, spanning {PANEL_MARKER_SPAN_X * 1000:.0f} x
-         {PANEL_MARKER_SPAN_Y * 1000:.0f} mm as dimensioned on the panel drawing. Their
-         positions are computed from the mesh, not hand-placed.
+         The panel drawing shows three 50 x 50 mm ArUco locations: top-left,
+         top-right and bottom-left. This deterministic practice setup uses
+         ORIGINAL-library ids {'/'.join(str(m) for m, _, _ in tags)}, with
+         {PANEL_MARKER_SPAN_X * 1000:.0f} mm horizontal and
+         {PANEL_MARKER_SPAN_Y * 1000:.0f} mm vertical centre spacing. ID 15
+         remains an organiser-permitted replacement texture, not a fourth slot.
 
          POSITION IS A PLACEHOLDER. The update report gives the panel's geometry
          and its starting point (S8) but never says where on the yard it stands,
@@ -672,7 +691,8 @@ def main():
     log(f"  lift-off {LIFTOFF_SIDE} m square (ArUco 101), landing disc "
         f"r={LANDING_RADIUS} m (ArUco 102), both tags {DRONE_MARKER_M} m")
     log(f"  panel markers {PANEL_MARKER_M} m at {PANEL_MARKER_SPAN_X} x "
-        f"{PANEL_MARKER_SPAN_Y} m spacing, ids {PANEL_MARKER_IDS}")
+        f"{PANEL_MARKER_SPAN_Y} m spacing, default ids "
+        f"{PANEL_DEFAULT_MARKER_IDS}; allowed ids {PANEL_MARKER_IDS}")
 
 
 if __name__ == "__main__":

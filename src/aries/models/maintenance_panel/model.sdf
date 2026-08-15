@@ -21,7 +21,9 @@
     </visual>
     <visual name='aruco_11'>
       <pose>-0.1256 -0.1300 0.9823 0 0.5773 0</pose>
-      <geometry><box><size>0.050 0.050 0.002</size></box></geometry>
+      <!-- 69.2 mm backing preserves the texture's white quiet zone while the
+           encoded black ArUco square itself measures 50 x 50 mm. -->
+      <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
       <material>
         <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
         <pbr><metal>
@@ -32,7 +34,7 @@
     </visual>
     <visual name='aruco_13'>
       <pose>-0.1256 0.1300 0.9823 0 0.5773 0</pose>
-      <geometry><box><size>0.050 0.050 0.002</size></box></geometry>
+      <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
       <material>
         <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
         <pbr><metal>
@@ -43,22 +45,11 @@
     </visual>
     <visual name='aruco_14'>
       <pose>0.1929 -0.1300 0.7749 0 0.5773 0</pose>
-      <geometry><box><size>0.050 0.050 0.002</size></box></geometry>
+      <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
       <material>
         <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
         <pbr><metal>
           <albedo_map>model://maintenance_panel/aruco_orig_14.png</albedo_map>
-          <roughness>0.9</roughness><metalness>0</metalness>
-        </metal></pbr>
-      </material>
-    </visual>
-    <visual name='aruco_15'>
-      <pose>0.1929 0.1300 0.7749 0 0.5773 0</pose>
-      <geometry><box><size>0.050 0.050 0.002</size></box></geometry>
-      <material>
-        <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
-        <pbr><metal>
-          <albedo_map>model://maintenance_panel/aruco_orig_15.png</albedo_map>
           <roughness>0.9</roughness><metalness>0</metalness>
         </metal></pbr>
       </material>

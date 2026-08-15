@@ -53,66 +53,91 @@
   </gazebo>
   
   <gazebo reference="L_1_Wheel_Link">
-    <!-- Lugged tire: dry polymer tread has more grip than the soil can carry.
-         The Mars-yard surface therefore caps longitudinal traction at 0.60;
-         lower lateral grip permits physical scrub during skid steering. -->
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <!-- The cylinder-local Z axis is the wheel axle, so fdir1 and mu1 are
+         lateral. mu2 is longitudinal, capped to 0.65 by the yard surface.
+         WheelSlip below adds speed-dependent granular-soil compliance. -->
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
   </gazebo>
   
   <gazebo reference="L_2_Wheel_Link">
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
   </gazebo>
   
   <gazebo reference="L_3_Wheel_Link">
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
   </gazebo>
   
   <gazebo reference="R_1_Wheel_Link">
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
   </gazebo>
   
   <gazebo reference="R_2_Wheel_Link">
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
   </gazebo>
   
   <gazebo reference="R_3_Wheel_Link">
-    <mu1>0.85</mu1>
-    <mu2>0.42</mu2>
+    <mu1>0.42</mu1>
+    <mu2>0.85</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <minDepth>0.001</minDepth>
     <maxVel>0.1</maxVel>
-    <fdir1>1 0 0</fdir1>
+    <fdir1>0 0 1</fdir1>
+  </gazebo>
+
+  <!-- Gazebo's supported deformable-terrain approximation. The 90 kg rover
+       has an average static wheel load of 90 * 9.8 / 6 = 147 N. Compliance
+       gives about 13% longitudinal and 15% lateral slip at the respective
+       friction limits instead of the perfect no-slip behaviour of Coulomb
+       contact alone. -->
+  <gazebo>
+    <plugin filename="gz-sim-wheel-slip-system"
+            name="gz::sim::systems::WheelSlip">
+      <xacro:macro name="marsyard_wheel_slip" params="link_name">
+        <wheel link_name="${link_name}">
+          <slip_compliance_lateral>0.35</slip_compliance_lateral>
+          <slip_compliance_longitudinal>0.20</slip_compliance_longitudinal>
+          <wheel_normal_force>147.0</wheel_normal_force>
+          <wheel_radius>${wheel_radius}</wheel_radius>
+        </wheel>
+      </xacro:macro>
+      <xacro:marsyard_wheel_slip link_name="L_1_Wheel_Link"/>
+      <xacro:marsyard_wheel_slip link_name="L_2_Wheel_Link"/>
+      <xacro:marsyard_wheel_slip link_name="L_3_Wheel_Link"/>
+      <xacro:marsyard_wheel_slip link_name="R_1_Wheel_Link"/>
+      <xacro:marsyard_wheel_slip link_name="R_2_Wheel_Link"/>
+      <xacro:marsyard_wheel_slip link_name="R_3_Wheel_Link"/>
+    </plugin>
   </gazebo>
   
   <!-- Gazebo Plugin for Joint State Publisher -->

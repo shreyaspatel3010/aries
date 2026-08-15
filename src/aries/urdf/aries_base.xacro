@@ -59,14 +59,20 @@
         <inertial>
             <origin xyz="-0.0194894545849965 0.000308596526751935 0.119828029892907"
                     rpy="0 0 0" />
-            <mass value="17.5363204791731" />
+            <!-- The complete competition rover weighs 90 kg. The other links
+                 total 49.0157953866879 kg with the default bucket fingertip,
+                 so batteries, electronics and the
+                 remaining chassis hardware are represented here. The inertia
+                 tensor is scaled with mass from the original CAD tensor,
+                 preserving the chassis radii of gyration. -->
+            <mass value="40.9842046133121" />
             <inertia
-                ixx="0.242660790998556"
-                ixy="-9.00009815481889E-05"
-                ixz="0.0234683038167963"
-                iyy="0.514730499629884"
-                iyz="2.70300300277055E-11"
-                izz="0.664242254581203" />
+                ixx="0.567123503572166"
+                ixy="-0.000210341653344592"
+                ixz="0.0548478665577117"
+                iyy="1.20297870597186"
+                iyz="6.31719911069787E-11"
+                izz="1.55240322545973" />
         </inertial>
         <visual>
             <origin xyz="0 0 0"

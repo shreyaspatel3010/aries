@@ -91,11 +91,14 @@
                  plus restitution_coefficient. kp, kd, min_depth and max_vel are
                  soft-contact terms it ignores; torsional and rolling friction
                  it rejects outright. Surfaces combine with min(), so this is
-                 the traction ceiling for anything driving on the yard. -->
+                 the traction ceiling for anything driving on the yard. A
+                 value of 0.65 represents the compacted yard ground mixed with
+                 sand described by the ERC report; deformable-soil losses are
+                 represented by force-dependent slip on the rover tires. -->
             <friction>
               <ode>
-                <mu>0.60</mu>
-                <mu2>0.60</mu2>
+                <mu>0.65</mu>
+                <mu2>0.65</mu2>
               </ode>
             </friction>
             <bounce>
@@ -647,10 +650,11 @@
          only needs the sloped-box silhouette, and the real mesh would put every
          switch and socket into the broad phase.
 
-         The four ArUco tags are 50 x 50 mm from the ORIGINAL library, ids
-         11/13/14/15, spanning 260 x
-         380 mm as dimensioned on the panel drawing. Their
-         positions are computed from the mesh, not hand-placed.
+         The drawing shows three 50 x 50 mm ArUco locations: top-left,
+         top-right and bottom-left, with 260 mm horizontal and 380 mm vertical
+         centre spacing. This deterministic practice setup uses ORIGINAL-
+         library ids 11/13/14 in those slots. ID 15 is another organiser-
+         permitted replacement, not an unsupported fourth simultaneous tag.
 
          The update report gives the panel's geometry and the task start S8 but
          does not publish a surveyed panel pose. For practice it is placed
@@ -659,7 +663,7 @@
     <include>
       <uri>model://maintenance_panel</uri>
       <name>maintenance_panel</name>
-      <pose>-13.508 6.237 -0.252 0 0 -2.6200</pose>
+      <pose>0.7443 1.5540 0.3 0 -1.57 1.57</pose>
     </include>
 
     <light name='sun' type='directional'>

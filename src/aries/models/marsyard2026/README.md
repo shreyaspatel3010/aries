@@ -15,8 +15,11 @@ because they are shared with the terrain tooling.
 - A 1025 x 1025 heightmap (4.30 cm per sample) is retained as the high-resolution
   generated DEM. Gazebo's current Ogre2 / DART combination is most reliable
   when the shared 257 grid is used for both rendering and contact.
-- S1-S9, L1-L15, W1-W9 and P1: exact X, Y and H values from
-  `Coordinates_MarsYard2026.txt`. The source file lists Y before X.
+- S1-S9, W1-W9 and P1 frames use the exact X, Y and H values from
+  `Coordinates_MarsYard2026.txt`; landmark L1-L15 X/Y positions are exact.
+  Landmark model bases are lifted onto the rendered terrain where the
+  photogrammetry retained the original landmark mound, so their model Z is not
+  the surveyed H. The source coordinate file lists Y before X.
 - Landmark IDs 51-65 and task geometry: `[ERC 2026] MY Update Report Rev.1.pdf`.
 
 Starts, waypoints and P1 are SDF frames, not synthetic visible markers. The
