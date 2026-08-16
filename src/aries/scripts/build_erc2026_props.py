@@ -19,9 +19,10 @@ Update Report Rev.1:
                landing target a disc of radius 0.5 m carrying ArUco 102; both
                markers 15 x 15 cm, ORIGINAL ArUco library.
   Panel        three marker locations, 50 x 50 mm, ORIGINAL ArUco library;
-               allowed ids 11/13/14/15. The default practice arrangement uses
-               11/13/14 at top-left/top-right/bottom-left, spanning 260 +/-1 mm
-               across and 380 +/-1 mm down the console.
+               three unique ids are chosen from 11/13/14/15 and assigned
+               randomly to the fixed top-left/top-right/bottom-left locations.
+               The top pair spans 260 +/-1 mm across; the left pair spans
+               380 +/-1 mm down the console. There is no bottom-right marker.
 
 One caveat worth keeping in view: the report says the cage is "divided into
 1 x 1 m sectors", but its own worked examples are half that - "A2 covers
@@ -36,6 +37,7 @@ import argparse
 import collections
 import math
 import pathlib
+import random
 import shutil
 import subprocess
 import sys
@@ -54,7 +56,11 @@ PANEL_MARKER_M = 0.050
 PANEL_MARKER_SPAN_X = 0.260
 PANEL_MARKER_SPAN_Y = 0.380
 PANEL_MARKER_IDS = (11, 13, 14, 15)
-PANEL_DEFAULT_MARKER_IDS = (11, 13, 14, 15)
+PANEL_MARKER_COUNT = 3
+# In the organiser's front drawing the upper marker centres sit about 7 mm
+# above the centres of the five green buttons. The marker-pair midpoint and
+# button-row midpoint share the same across-panel coordinate.
+PANEL_MARKER_ABOVE_BUTTONS = 0.007
 # The console carries recessed sub-plates spanning ~92 mm in depth, so a tag
 # floated off one global front plane hangs in the air over the others. Each tag
 # is floated this far proud of the plate directly under it instead.
@@ -174,8 +180,19 @@ def verify_textures(out_dir, panel_out_dir):
     log(f"  all {len(ALL_MARKER_IDS)} ArUco textures decode to their expected ids")
 
 
-def panel_marker_poses(panel_glb):
-    """Work out the three marker locations shown on the panel drawing.
+def select_panel_marker_ids(seed=None):
+    """Choose and order the three tags installed for one panel build.
+
+    The report defines four possible ORIGINAL-library ids, but the panel CAD
+    drawing has only three black mounting squares. Sampling without replacement
+    both omits one id and randomises which selected id occupies each fixed slot.
+    A seed makes a practice world reproducible when desired.
+    """
+    return tuple(random.Random(seed).sample(PANEL_MARKER_IDS, PANEL_MARKER_COUNT))
+
+
+def panel_marker_poses(panel_glb, marker_ids, buttons):
+    """Work out the three fixed marker locations shown on the panel drawing.
 
     The console is a plane tilted 33 deg off vertical carrying several recessed
     sub-plates, so the outermost plane alone is too small to hold the drawing's
@@ -196,39 +213,65 @@ def panel_marker_poses(panel_glb):
 
     coplanar = (normals @ n) > 0.99
     v = mesh.vertices[mesh.faces[coplanar]].reshape(-1, 3)
-    u = np.array([0.0, 1.0, 0.0])              # across the console
-    w = np.cross(n, u)
-    w /= np.linalg.norm(w)                     # up the slope
-    au, aw, ad = v @ u, v @ w, v @ n
-    cu, cw = (au.min() + au.max()) / 2, (aw.min() + aw.max()) / 2
-    front = ad.max()
+    # In the exported panel frame +Y is the viewer's left. cross(normal, left)
+    # points down the sloped face (green buttons -> MCBs -> selectors ->
+    # disconnects -> handle). Naming these directions explicitly avoids the
+    # old double mirror which removed top-left while calling it bottom-right.
+    left = np.array([0.0, 1.0, 0.0])
+    down = np.cross(n, left)
+    down /= np.linalg.norm(down)
+    aleft, adown, adepth = v @ left, v @ down, v @ n
+    front = adepth.max()
     pitch = float(np.arctan2(n[0], n[2]))
 
-    # Page 20 marks the four corners of the 260 x 380 mm span with black
-    # squares.  Sitting them all on `front` is wrong: the console is a stack of
-    # sub-plates and the frontmost one is not the one under every tag, so three
-    # of the four floated up to 34 mm off their plate.  Ray-cast the plate that
+    if len(marker_ids) != PANEL_MARKER_COUNT:
+        raise ValueError(f"the panel needs exactly {PANEL_MARKER_COUNT} markers")
+    if (len(set(marker_ids)) != PANEL_MARKER_COUNT or
+            not set(marker_ids) <= set(PANEL_MARKER_IDS)):
+        raise ValueError(f"panel markers must be unique ids from {PANEL_MARKER_IDS}")
+    if len(buttons) != PANEL_BUTTON_COUNT:
+        raise ValueError(f"expected {PANEL_BUTTON_COUNT} button anchors, got {len(buttons)}")
+
+    # Do not centre on the complete coplanar mesh: it includes asymmetric side
+    # hardware and shifts the left marker boards beyond the visible panel edge.
+    # The front drawing aligns the marker-pair midpoint to the midpoint of the
+    # five green buttons, and puts the marker row 7 mm above their centres.
+    button_centres = np.array([centre for centre, _, _ in buttons])
+    cleft = float(np.mean(button_centres @ left))
+    top_down = float(np.mean(button_centres @ down) -
+                     PANEL_MARKER_ABOVE_BUTTONS)
+
+    # Page 20 marks only top-left, top-right and lower-left. The 260 mm
+    # dimension spans the top pair and the 380 mm dimension spans the left
+    # pair; there is deliberately no bottom-right marker. Sitting the tags all
+    # on `front` is wrong: the console is a stack of
+    # sub-plates and the frontmost one is not the one under every tag, so tags
+    # can float up to 34 mm off their plate. Ray-cast the plate that
     # is actually there and float each tag off that.
-    layout = ((-1, +1, PANEL_DEFAULT_MARKER_IDS[0]),
-              (+1, +1, PANEL_DEFAULT_MARKER_IDS[1]),
-              (-1, -1, PANEL_DEFAULT_MARKER_IDS[2]),
-              (+1, -1, PANEL_DEFAULT_MARKER_IDS[3]))
+    layout = ((+1, 0.0, marker_ids[0]),                  # top-left
+              (-1, 0.0, marker_ids[1]),                  # top-right
+              (+1, PANEL_MARKER_SPAN_Y, marker_ids[2]))  # lower-left
     inset = PANEL_MARKER_M / 2 * 0.6
     out = []
-    for sx, sy, mid in layout:
-        tu = cu + sx * PANEL_MARKER_SPAN_X / 2
-        tw = cw + sy * PANEL_MARKER_SPAN_Y / 2
+    for side, row_offset, mid in layout:
+        target_left = cleft + side * PANEL_MARKER_SPAN_X / 2
+        target_down = top_down + row_offset
         # Probe the tag's own footprint, not just its centre: a screw hole or
         # engraved legend under the middle would otherwise drop the tag inside.
-        probes = [(tu, tw)] + [(tu + du, tw + dw)
-                               for du in (-inset, inset) for dw in (-inset, inset)]
-        origins = np.array([pu * u + pw * w + (front + 0.05) * n for pu, pw in probes])
+        probes = [(target_left, target_down)] + [
+                              (target_left + dl, target_down + dd)
+                              for dl in (-inset, inset)
+                              for dd in (-inset, inset)]
+        origins = np.array([pl * left + pd * down + (front + 0.05) * n
+                            for pl, pd in probes])
         hits, index_ray, _ = mesh.ray.intersects_location(
             origins, np.tile(-n, (len(origins), 1)), multiple_hits=False)
         plate = float((hits @ n).max()) if len(hits) else front
-        p = tu * u + tw * w + (plate + PANEL_MARKER_PROUD) * n
+        p = (target_left * left + target_down * down +
+             (plate + PANEL_MARKER_PROUD) * n)
         out.append((mid, p, pitch))
-    log(f"  console face {au.max() - au.min():.3f} x {aw.max() - aw.min():.3f} m, "
+    log(f"  console face {aleft.max() - aleft.min():.3f} x "
+        f"{adown.max() - adown.min():.3f} m, "
         f"tilt {np.degrees(pitch):.1f} deg; {len(out)} markers on their own plates "
         f"(depth spread {max(q[1] @ n for q in out) - min(q[1] @ n for q in out):.3f} m)")
     return out
@@ -401,7 +444,7 @@ def tag_visual(name, mid, size, pose, texture_dir):
         </visual>"""
 
 
-def write_panel_model(panel_dir):
+def write_panel_model(panel_dir, marker_ids):
     """Write the standalone `model://maintenance_panel` the worlds include.
 
     Everything here is derived from the organisers' CAD by the Blender stage
@@ -410,8 +453,9 @@ def write_panel_model(panel_dir):
     """
     import json
 
-    tags = panel_marker_poses(panel_dir / "maintenance_panel.glb")
     buttons = panel_button_poses(panel_dir / "maintenance_panel.glb")
+    tags = panel_marker_poses(
+        panel_dir / "maintenance_panel.glb", marker_ids, buttons)
     uri = "model://maintenance_panel"
 
     markers = "\n".join(
@@ -512,10 +556,16 @@ def write_panel_model(panel_dir):
      Collision is a decimation of the visual mesh: DART only needs the
      sloped-box silhouette, not every switch and socket.
 
+     Marker assignment for this build, in fixed slot order
+     top-left/top-right/bottom-left: {'/'.join(str(mid) for mid, _, _ in tags)}.
+     There is no bottom-right marker slot.
+
      Operable controls, all free joints the rover's gripper moves directly -
      there is no position controller fighting it, and joint friction holds a
      control where the arm leaves it:
-       {kinds['breaker'] + kinds['breaker_bank']} MCB toggles ({kinds['breaker']} single + {kinds['breaker_bank']} from the 4-module blocks)
+       {kinds['breaker'] + kinds['breaker_bank']} independent MCB toggles
+       ({kinds['breaker']} single + {kinds['breaker_bank']} split from the
+       4-module blocks), each with its own link and joint
        {kinds['rotary']} rotary selectors
        {kinds['disconnect']} red disconnect handles
        {len(buttons)} push buttons
@@ -558,6 +608,7 @@ def write_panel_model(panel_dir):
     write_panel_task_table(panel_dir, tags, buttons, controls)
     log(f"  wrote {panel_dir / 'model.sdf'}: {len(controls)} CAD controls "
         f"+ {len(buttons)} push buttons, {len(tags)} ArUco tags")
+    return tags
 
 
 def write_panel_task_table(panel_dir, tags, buttons, controls):
@@ -682,13 +733,11 @@ def write_panel_task_table(panel_dir, tags, buttons, controls):
 
 def emit_sdf(out_path, panel_glb, panel_texture_dir, cage_texture_dir,
              panel_xyz, panel_yaw,
-             cage_xy, cage_z, landing_xy, include_cage=False):
+             cage_xy, cage_z, landing_xy, tags, include_cage=False):
     """Write the drone cage and maintenance panel as SDF models."""
     px, py, pz = panel_xyz
     ccx, ccy = cage_xy
     lx, ly = landing_xy
-    tags = panel_marker_poses(panel_glb)
-
     marker_visuals = "\n".join(
         tag_visual(f"aruco_{mid}", mid, PANEL_MARKER_M,
                    f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f} 0 {pitch:.4f} 0", panel_texture_dir)
@@ -940,6 +989,8 @@ def main():
                     help="Coordinates_MarsYard2026.txt, needed for --blend-out")
     ap.add_argument("--terrain-texture", type=pathlib.Path,
                     default=here / "models" / "dem" / "marsyard2026_terrain_texture.png")
+    ap.add_argument("--panel-marker-seed", type=int,
+                    help="repeat the same random three-marker assignment")
     args = ap.parse_args()
     if args.blend_out and not args.survey_txt:
         ap.error("--blend-out needs --survey-txt")
@@ -951,6 +1002,10 @@ def main():
 
     write_textures(args.out, args.panel_out)
     verify_textures(args.out, args.panel_out)
+    marker_ids = select_panel_marker_ids(args.panel_marker_seed)
+    log("  panel marker slots top-left/top-right/bottom-left: "
+        + "/".join(str(marker_id) for marker_id in marker_ids)
+        + " (no bottom-right slot)")
 
     raw = args.panel_out / "_panel_raw.glb"
     convert_step(args.step, raw)
@@ -1049,7 +1104,7 @@ def main():
             sys.exit("blender stage failed")
         raw.unlink(missing_ok=True)
 
-    write_panel_model(args.panel_out)
+    tags = write_panel_model(args.panel_out, marker_ids)
 
     rows = sector_table()
     log(f"  effective-area sector grid: {len(rows)} cells of {SECTOR_M} m "
@@ -1059,7 +1114,7 @@ def main():
         emit_sdf(args.sdf_out, args.panel_out / "maintenance_panel.glb",
                  f"model://{args.panel_out.name}", f"model://{args.out.name}",
                  panel_pose[:3], panel_pose[3],
-                 args.cage_xy, args.cage_z, args.landing_xy,
+                 args.cage_xy, args.cage_z, args.landing_xy, tags,
                  include_cage=args.with_cage)
 
     log("")
@@ -1068,8 +1123,8 @@ def main():
     log(f"  lift-off {LIFTOFF_SIDE} m square (ArUco 101), landing disc "
         f"r={LANDING_RADIUS} m (ArUco 102), both tags {DRONE_MARKER_M} m")
     log(f"  panel markers {PANEL_MARKER_M} m at {PANEL_MARKER_SPAN_X} x "
-        f"{PANEL_MARKER_SPAN_Y} m spacing, default ids "
-        f"{PANEL_DEFAULT_MARKER_IDS}; allowed ids {PANEL_MARKER_IDS}")
+        f"{PANEL_MARKER_SPAN_Y} m spacing, installed ids {marker_ids}; "
+        f"allowed ids {PANEL_MARKER_IDS}")
 
 
 if __name__ == "__main__":

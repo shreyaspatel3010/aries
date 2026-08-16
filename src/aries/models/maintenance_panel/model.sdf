@@ -7,10 +7,16 @@
      Collision is a decimation of the visual mesh: DART only needs the
      sloped-box silhouette, not every switch and socket.
 
+     Marker assignment for this build, in fixed slot order
+     top-left/top-right/bottom-left: 11/13/14.
+     There is no bottom-right marker slot.
+
      Operable controls, all free joints the rover's gripper moves directly -
      there is no position controller fighting it, and joint friction holds a
      control where the arm leaves it:
-       14 MCB toggles (2 single + 12 from the 4-module blocks)
+       14 independent MCB toggles
+       (2 single + 12 split from the 4-module blocks), each with its own link
+       and joint
        5 rotary selectors
        2 red disconnect handles
        5 push buttons
@@ -36,7 +42,7 @@
       <geometry><mesh><uri>model://maintenance_panel/maintenance_panel.glb</uri></mesh></geometry>
     </visual>
         <visual name='aruco_11'>
-          <pose>-0.1261 -0.1300 0.9815 0 0.5779 0</pose>
+          <pose>0.1687 0.1101 0.7523 0 0.5779 0</pose>
           <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
           <material>
             <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
@@ -47,7 +53,7 @@
           </material>
         </visual>
         <visual name='aruco_13'>
-          <pose>-0.1430 0.1300 0.9555 0 0.5779 0</pose>
+          <pose>0.1687 -0.1500 0.7523 0 0.5779 0</pose>
           <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
           <material>
             <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
@@ -58,23 +64,12 @@
           </material>
         </visual>
         <visual name='aruco_14'>
-          <pose>0.1753 -0.1300 0.7480 0 0.5779 0</pose>
+          <pose>-0.1496 0.1101 0.9599 0 0.5779 0</pose>
           <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
           <material>
             <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
             <pbr><metal>
               <albedo_map>model://maintenance_panel/aruco_orig_14.png</albedo_map>
-              <roughness>0.9</roughness><metalness>0</metalness>
-            </metal></pbr>
-          </material>
-        </visual>
-        <visual name='aruco_15'>
-          <pose>0.1753 0.1300 0.7480 0 0.5779 0</pose>
-          <geometry><box><size>0.0692 0.0692 0.002</size></box></geometry>
-          <material>
-            <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>
-            <pbr><metal>
-              <albedo_map>model://maintenance_panel/aruco_orig_15.png</albedo_map>
               <roughness>0.9</roughness><metalness>0</metalness>
             </metal></pbr>
           </material>

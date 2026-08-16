@@ -90,7 +90,7 @@ def _pose_error(recovered, truth):
 
 
 @pytest.mark.parametrize("yaw,pitch", [(0.0, 0.0), (0.25, -0.15), (-0.35, 0.2)])
-def test_all_four_markers_recover_the_pose(yaw, pitch):
+def test_all_installed_markers_recover_the_pose(yaw, pitch):
     truth = _camera_from_panel(yaw=yaw, pitch=pitch)
     pose, info = panel_pose_from_markers(_project(truth), _table(), K)
     assert pose is not None, info
@@ -102,7 +102,8 @@ def test_all_four_markers_recover_the_pose(yaw, pitch):
 
 def test_two_markers_are_enough():
     truth = _camera_from_panel()
-    seen = _project(truth, ids={11, 14})
+    ids = {marker["id"] for marker in _table()["markers"][:2]}
+    seen = _project(truth, ids=ids)
     assert len(seen) == 2
     pose, info = panel_pose_from_markers(seen, _table(), K)
     assert pose is not None
@@ -113,7 +114,9 @@ def test_two_markers_are_enough():
 
 def test_single_marker_is_flagged_not_hidden():
     truth = _camera_from_panel()
-    pose, info = panel_pose_from_markers(_project(truth, ids={13}), _table(), K)
+    marker_id = _table()["markers"][0]["id"]
+    pose, info = panel_pose_from_markers(
+        _project(truth, ids={marker_id}), _table(), K)
     assert pose is not None
     assert info["single_marker"] is True
 
@@ -123,7 +126,7 @@ def test_registered_depth_corrects_aruco_translation():
     shift = np.array([200.0, 300.0])
     detections = {marker_id: corners + shift
                   for marker_id, corners in
-                  _project(truth, ids={11, 13, 14}).items()}
+                  _project(truth).items()}
     shifted_k = K.copy()
     shifted_k[0, 2] += shift[0]
     shifted_k[1, 2] += shift[1]

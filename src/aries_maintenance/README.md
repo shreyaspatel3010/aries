@@ -1,14 +1,20 @@
 # Aries maintenance-panel operator
 
 This node uses both rover and gripper color cameras to detect the maintenance
-panel's ArUco markers (IDs 11, 13, 14 and 15). Recent agreeing observations are
-transformed into `base_link` and fused into one panel pose. A weaker one-tag
-frame cannot overwrite an accepted multi-tag pose. By default both cameras must
-agree, with at least two unique marker IDs between them. Camera extrinsics are
-looked up at each image's acquisition timestamp, which matters for the moving
-gripper camera. The node then requires 15 fused samples over at least 0.5 s to
-stay within 12 mm/1.5 degrees before averaging and latching them. Arm occlusion
-cannot corrupt that accepted consensus pose.
+panel's ArUco markers. Three unique IDs are randomly selected from 11, 13, 14
+and 15 at build time and assigned to the fixed top-left, top-right and
+bottom-left positions; the panel has no bottom-right marker. Recent agreeing
+observations are transformed into `base_link` and fused into one panel pose. A
+weaker one-tag frame cannot overwrite an accepted multi-tag pose. By default
+both cameras must agree, with at least two unique marker IDs between them.
+Camera extrinsics are looked up at each image's acquisition timestamp, which
+matters for the moving gripper camera. The node then requires 15 fused samples
+over at least 0.5 s to stay within 12 mm/1.5 degrees before averaging and
+latching them. Arm occlusion cannot corrupt that accepted consensus pose.
+
+The prop builder chooses a fresh assignment on each build. Pass
+`--panel-marker-seed <integer>` to reproduce the same assignment in a practice
+world.
 
 Both registered depth streams are also used when available. Depth inside the
 inner ArUco area back-projects each known marker centre into camera 3D and
