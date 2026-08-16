@@ -629,11 +629,9 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    # LT + Y -> pick_home, LT + A -> probe_drop, LT + B -> soil_drop, all as
-    # planned MoveGroup moves.
-    # Runs in both joystick modes: it only ever sends a MoveGroup goal, and
-    # refuses while RB/RT/LB are held, so it never competes with whichever
-    # teleop node owns the arm.
+    # LT + Y -> pick_home, LT + A -> probe_drop, LT + B -> soil_drop. MoveIt
+    # collision-plans each preset; the idle arm controller executes it directly.
+    # Refusing while RB/RT/LB are held prevents competition with manual teleop.
     arm_preset_pose_node = Node(
         condition=IfCondition(use_joystick),
         package="aries_moveit",

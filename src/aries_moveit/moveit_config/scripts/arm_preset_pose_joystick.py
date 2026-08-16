@@ -8,11 +8,10 @@ second /joy consumer for a modifier combo -- rebel_hand_guiding.py owns RB + Y -
 and keeping the preset move out of the teleop hot path means a planning stall
 can never delay the velocity stream that is actually driving the arm.
 
-The move goes through /move_action, the same planning, joint limit and collision
-path RViz's Plan + Execute uses. A preset is a large traverse across the
-workspace, which is exactly the motion that should not be a straight line in
-joint space: the URDF's collision primitives already under-approximate the arm,
-so an unplanned interpolation is checked against nothing at all.
+MoveIt still performs planning, joint-limit and collision checking. Execution
+goes directly to the arm FollowJointTrajectory action after planning. This
+avoids MoveIt's global trajectory manager, which can remain permanently busy
+when another client submits an overlapping plan-and-execute request.
 
 Only arm joints are commanded. The gripper is deliberately left alone so the
 preset can be used while holding something.
@@ -25,8 +24,10 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_action_status_default
 
-from action_msgs.msg import GoalStatus
+from action_msgs.msg import GoalStatus, GoalStatusArray
+from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Vector3
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, JointConstraint, RobotState
@@ -42,6 +43,14 @@ class ArmPresetPoseJoystick(Node):
         self.declare_parameter("joy_topic", "joy")
         self.declare_parameter("preset_status_topic", "/arm_preset_pose/status")
         self.declare_parameter("move_action_name", "move_action")
+        self.declare_parameter(
+            "arm_controller_action_name",
+            "/rebel_arm_trajectory_controller/follow_joint_trajectory",
+        )
+        self.declare_parameter(
+            "arm_controller_status_topic",
+            "/rebel_arm_trajectory_controller/follow_joint_trajectory/_action/status",
+        )
         self.declare_parameter("planning_group", "igus_rebel_arm")
         self.declare_parameter("planning_frame", "base_link")
 
@@ -100,6 +109,9 @@ class ArmPresetPoseJoystick(Node):
 
         self.joy_topic = str(self.get_parameter("joy_topic").value)
         self.move_action_name = str(self.get_parameter("move_action_name").value)
+        self.arm_controller_action_name = str(
+            self.get_parameter("arm_controller_action_name").value
+        )
         self.planning_group = str(self.get_parameter("planning_group").value)
         self.planning_frame = str(self.get_parameter("planning_frame").value)
 
@@ -167,6 +179,7 @@ class ArmPresetPoseJoystick(Node):
         self.modifier_held = False
         self.buttons_were_pressed = {button: False for button in self.presets}
         self.motion_active = False
+        self.controller_active = False
         self.active_pose_name = ""
         self.last_joy_time = 0.0
 
@@ -174,6 +187,15 @@ class ArmPresetPoseJoystick(Node):
             String, str(self.get_parameter("preset_status_topic").value), 10
         )
         self.move_group_client = ActionClient(self, MoveGroup, self.move_action_name)
+        self.arm_controller_client = ActionClient(
+            self, FollowJointTrajectory, self.arm_controller_action_name
+        )
+        self.controller_status_sub = self.create_subscription(
+            GoalStatusArray,
+            str(self.get_parameter("arm_controller_status_topic").value),
+            self._controller_status_callback,
+            qos_profile_action_status_default,
+        )
         self.joy_sub = self.create_subscription(Joy, self.joy_topic, self._joy_callback, 10)
 
         combos = ", ".join(
@@ -206,6 +228,16 @@ class ArmPresetPoseJoystick(Node):
 
     def _publish_status(self, text: str):
         self.status_pub.publish(String(data=text))
+
+    def _controller_status_callback(self, msg: GoalStatusArray):
+        active = {
+            GoalStatus.STATUS_ACCEPTED,
+            GoalStatus.STATUS_EXECUTING,
+            GoalStatus.STATUS_CANCELING,
+        }
+        self.controller_active = any(
+            status.status in active for status in msg.status_list
+        )
 
     def _joy_callback(self, msg: Joy):
         now = time.monotonic()
@@ -259,6 +291,9 @@ class ArmPresetPoseJoystick(Node):
         if self.motion_active:
             self._reject(pose_name, "a preset move is already running")
             return
+        if self.controller_active:
+            self._reject(pose_name, "the arm controller is executing another goal")
+            return
 
         self._send_preset_goal(pose_name, joint_positions)
 
@@ -301,7 +336,10 @@ class ArmPresetPoseJoystick(Node):
         goal.request.max_velocity_scaling_factor = self.velocity_scale
         goal.request.max_acceleration_scaling_factor = self.acceleration_scale
         goal.request.goal_constraints = [constraints]
-        goal.planning_options.plan_only = False
+        # Preserve MoveIt's collision-aware plan but bypass its global
+        # trajectory execution manager. Overlapping autonomous and preset
+        # requests can leave that manager permanently marked busy.
+        goal.planning_options.plan_only = True
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
 
@@ -331,23 +369,99 @@ class ArmPresetPoseJoystick(Node):
         goal_handle.get_result_async().add_done_callback(self._result_callback)
 
     def _result_callback(self, future):
-        self.motion_active = False
         try:
-            result = future.result()
+            wrapped = future.result()
         except Exception as exc:  # noqa: BLE001
+            self.motion_active = False
             self._reject(self.active_pose_name, f"no result ({exc})")
             return
 
-        if result.status == GoalStatus.STATUS_SUCCEEDED:
+        if (wrapped.status != GoalStatus.STATUS_SUCCEEDED or
+                wrapped.result.error_code.val != 1):
+            self.motion_active = False
+            self._reject(
+                self.active_pose_name,
+                "planning failed (status {}, MoveIt error {})".format(
+                    wrapped.status, wrapped.result.error_code.val
+                ),
+            )
+            return
+
+        trajectory = wrapped.result.planned_trajectory.joint_trajectory
+        if not trajectory.points:
+            self.motion_active = False
+            self._reject(self.active_pose_name, "MoveIt returned an empty trajectory")
+            return
+        if self.controller_active:
+            self.motion_active = False
+            self._reject(
+                self.active_pose_name,
+                "the arm controller became busy while the preset was planning",
+            )
+            return
+        if not self.arm_controller_client.wait_for_server(
+                timeout_sec=self.action_wait_sec):
+            self.motion_active = False
+            self._reject(
+                self.active_pose_name,
+                f"{self.arm_controller_action_name} is not available",
+            )
+            return
+
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory = trajectory
+        # Zero timestamp requests immediate execution; a planning timestamp can
+        # be stale by the time the controller receives the trajectory.
+        goal.trajectory.header.stamp.sec = 0
+        goal.trajectory.header.stamp.nanosec = 0
+        text = (
+            f"Preset '{self.active_pose_name}': executing "
+            f"{len(trajectory.points)} planned points"
+        )
+        self.get_logger().info(text)
+        self._publish_status(text)
+        self.arm_controller_client.send_goal_async(goal).add_done_callback(
+            self._controller_goal_response_callback
+        )
+
+    def _controller_goal_response_callback(self, future):
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.motion_active = False
+            self._reject(self.active_pose_name, f"controller goal was not sent ({exc})")
+            return
+        if not goal_handle.accepted:
+            self.motion_active = False
+            self._reject(self.active_pose_name, "arm controller rejected the trajectory")
+            return
+        goal_handle.get_result_async().add_done_callback(
+            self._controller_result_callback
+        )
+
+    def _controller_result_callback(self, future):
+        self.motion_active = False
+        try:
+            wrapped = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._reject(self.active_pose_name, f"no controller result ({exc})")
+            return
+
+        result = wrapped.result
+        if (wrapped.status == GoalStatus.STATUS_SUCCEEDED and
+                result.error_code == FollowJointTrajectory.Result.SUCCESSFUL):
             text = f"Preset '{self.active_pose_name}': reached"
             self.get_logger().info(text)
-        else:
-            text = (
-                f"Preset '{self.active_pose_name}': failed "
-                f"(status {result.status}, MoveIt error {result.result.error_code.val})"
-            )
-            self.get_logger().warn(text)
-        self._publish_status(text)
+            self._publish_status(text)
+            return
+
+        detail = result.error_string or "no controller detail"
+        self._reject(
+            self.active_pose_name,
+            "controller failed (status {}, error {}: {})".format(
+                wrapped.status, result.error_code, detail
+            ),
+        )
 
 
 def main(args: Optional[List[str]] = None):

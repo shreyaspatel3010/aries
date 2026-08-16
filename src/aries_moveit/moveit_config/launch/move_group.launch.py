@@ -308,7 +308,7 @@ def opaque_func(context, *args, **kwargs):
         output="screen",
     )
 
-    # Same preset combinations as full_hardware.launch.py:
+    # Same collision-planned, direct-controller presets as full_hardware.launch.py:
     # LT+Y -> pick_home, LT+A -> probe_drop, LT+B -> soil_drop.
     arm_preset_pose_node = Node(
         condition=IfCondition(use_joystick),

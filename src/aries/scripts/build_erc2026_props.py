@@ -580,6 +580,7 @@ def write_panel_task_table(panel_dir, tags, buttons, controls):
       closed, which is what `action` says.
     """
     import json
+    import trimesh
 
     _, _, pitch = tags[0]
     normal = [math.sin(pitch), 0.0, math.cos(pitch)]     # out of the console
@@ -595,22 +596,65 @@ def write_panel_task_table(panel_dir, tags, buttons, controls):
         "breaker": dict(action="flick", jaw_axis=up_slope, travel=0.012, grip=False),
         "breaker_bank": dict(action="flick", jaw_axis=up_slope, travel=0.012, grip=False),
     }
+    # The source CAD contains twelve `mcb_*` links and two legacy `1mcb_*`
+    # links.  Keep those physical link/joint names for Gazebo, but expose one
+    # unambiguous operator namespace.  +Y is the viewer's left on the panel,
+    # so descending panel Y numbers every breaker left-to-right.
+    breaker_kinds = {"breaker", "breaker_bank"}
+    breakers = sorted(
+        (c for c in controls if c["kind"] in breaker_kinds),
+        key=lambda c: -c["pivot"][1])
+    mcb_names = {c["name"]: f"mcb_{index}"
+                 for index, c in enumerate(breakers)}
+    ordered_controls = breakers + [
+        c for c in controls if c["kind"] not in breaker_kinds]
+
     entries = []
-    for c in controls:
+    for c in ordered_controls:
         r = recipe[c["kind"]]
-        entries.append(dict(
-            name=c["name"], kind=c["kind"], action=r["action"],
-            position=[round(v, 5) for v in c["pivot"]],
+        pivot = np.asarray(c["pivot"], dtype=float)
+        control_mesh = trimesh.load(panel_dir / f"panel_{c['name']}.glb")
+        control_mesh = (control_mesh.to_mesh()
+                        if hasattr(control_mesh, "to_mesh") else control_mesh)
+        normal_array = np.asarray(normal, dtype=float)
+        # A joint pivot is buried inside its switch. It is useful for Gazebo's
+        # revolute joint but unsafe as a gripper target. Project the movable CAD
+        # vertices onto the console normal and put the contact target on the
+        # outermost modeled surface while retaining the pivot's across/up-slope
+        # coordinates. This moves MCBs 8.6 mm, disconnects 21.8 mm and rotary
+        # selectors 36.8 mm outward compared with the old pivot target.
+        surface_offset = float(np.max(control_mesh.vertices @ normal_array))
+        contact_position = pivot + normal_array * surface_offset
+        entry = dict(
+            name=mcb_names.get(c["name"], c["name"]),
+            kind=c["kind"], action=r["action"],
+            position=[round(v, 5) for v in contact_position],
+            pivot_position=[round(v, 5) for v in pivot],
+            surface_offset_m=round(surface_offset, 5),
             approach=[round(v, 5) for v in normal],
             joint_axis=[round(v, 5) for v in c["axis"]],
             jaw_axis=[round(v, 5) for v in r["jaw_axis"]],
             travel=r["travel"], grip=r["grip"],
             joint=f"{c['name']}_joint",
-            limits=[c["lower"], c["upper"]]))
+            limits=[c["lower"], c["upper"]])
+        if c["kind"] in breaker_kinds:
+            entry["model_name"] = c["name"]
+            entry["target_state"] = "on"
+            entry["motion_direction"] = "up"
+        entries.append(entry)
     for index, (centre, _, button_normal) in enumerate(buttons):
+        # `centre` is the front of the CAD pad. The operable SDF cap begins
+        # there and extends PANEL_BUTTON_CAP[out] farther out of the panel.
+        # Target that cap's front face, not the pad/cap interface.
+        centre = np.asarray(centre, dtype=float)
+        button_normal = np.asarray(button_normal, dtype=float)
+        surface_offset = PANEL_BUTTON_CAP[2]
+        contact_position = centre + button_normal * surface_offset
         entries.append(dict(
             name=f"push_button_{index}", kind="button", action="press",
-            position=[round(v, 5) for v in centre],
+            position=[round(v, 5) for v in contact_position],
+            pivot_position=[round(v, 5) for v in centre],
+            surface_offset_m=round(surface_offset, 5),
             approach=[round(v, 5) for v in button_normal],
             joint_axis=[round(-v, 5) for v in button_normal],
             jaw_axis=[round(v, 5) for v in across],

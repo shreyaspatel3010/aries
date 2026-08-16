@@ -127,6 +127,10 @@
     preset_velocity_scale: 0.25
     preset_acceleration_scale: 0.25
     preset_status_topic: "/arm_preset_pose/status"
+    # MoveIt collision-plans presets; the active ros2_control action executes
+    # them without entering MoveIt's shared trajectory-execution manager.
+    arm_controller_action_name: "/rebel_arm_trajectory_controller/follow_joint_trajectory"
+    arm_controller_status_topic: "/rebel_arm_trajectory_controller/follow_joint_trajectory/_action/status"
 
     axis_linear_x: 1
     axis_linear_y: 0

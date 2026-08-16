@@ -4,7 +4,7 @@
   <name>aries_maintenance</name>
   <version>0.1.0</version>
   <description>ERC maintenance-panel task: locate the panel from its ArUco tags
-  with the gripper camera and operate all 26 of its controls with the arm.
+  with rover and gripper cameras and operate all 26 of its controls with the arm.
   Marker geometry only -- no trained detector.</description>
 
   <maintainer email="shreyaspatel517@gmail.com">shreyas</maintainer>
@@ -23,16 +23,22 @@
        else is taken from the grasp pipeline: the panel task shares no
        perception, no detector and no grasp logic with it. -->
   <exec_depend>aries_vision_grasp</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>shape_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
 
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>

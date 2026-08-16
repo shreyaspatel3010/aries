@@ -152,6 +152,80 @@ def panel_pose_from_markers(detections, table, camera_matrix, dist_coeffs=None,
                            single_marker=len(used) == 1)
 
 
+def refine_panel_translation_from_depth(
+        camera_from_panel, detections, table, camera_matrix, depth_image,
+        dist_coeffs=None, min_depth=0.10, max_depth=5.0,
+        expected_band=0.15, minimum_pixels=6):
+    """Constrain PnP translation with registered depth inside ArUco tags.
+
+    ArUco supplies the full orientation. For each tag with valid aligned depth,
+    its known panel-frame centre and measured camera-frame 3D centre provide an
+    independent translation estimate ``observed - R * known``. Their median is
+    robust to a few invalid/background pixels and removes most single-tag range
+    jitter without requiring both cameras to see the same marker.
+    """
+    import cv2
+
+    pose = np.asarray(camera_from_panel, float)
+    depth = np.asarray(depth_image, float)
+    if depth.ndim != 2:
+        raise ValueError(f"depth image must be 2D, got {depth.shape}")
+    k = np.asarray(camera_matrix, float).reshape(3, 3)
+    distortion = (np.zeros(5) if dist_coeffs is None
+                  else np.asarray(dist_coeffs, float).ravel())
+    known = {marker["id"]: marker for marker in table["markers"]}
+    estimates = []
+    residuals = []
+    used = []
+    height, width = depth.shape
+
+    for marker_id, corners in detections.items():
+        marker = known.get(marker_id)
+        if marker is None:
+            continue
+        corners = np.asarray(corners, float).reshape(4, 2)
+        centre_uv = corners.mean(axis=0)
+        # Keep away from tag edges, where registration rounding mixes the
+        # panel/background with the marker plane.
+        inner = centre_uv + 0.55 * (corners - centre_uv)
+        mask = np.zeros((height, width), dtype=np.uint8)
+        polygon = np.rint(inner).astype(np.int32)
+        cv2.fillConvexPoly(mask, polygon, 1)
+        values = depth[(mask != 0) & np.isfinite(depth) &
+                       (depth > float(min_depth)) &
+                       (depth < float(max_depth))]
+        marker_position = np.asarray(marker["position"], float)
+        predicted = pose[:3, :3] @ marker_position + pose[:3, 3]
+        if values.size:
+            in_band = values[np.abs(values - predicted[2]) <= expected_band]
+            if in_band.size >= minimum_pixels:
+                values = in_band
+        if values.size < minimum_pixels:
+            continue
+        measured_depth = float(np.median(values))
+        undistorted = cv2.undistortPoints(
+            centre_uv.reshape(1, 1, 2), k, distortion, P=k).reshape(2)
+        observed = np.array([
+            (undistorted[0] - k[0, 2]) * measured_depth / k[0, 0],
+            (undistorted[1] - k[1, 2]) * measured_depth / k[1, 1],
+            measured_depth,
+        ])
+        estimates.append(observed - pose[:3, :3] @ marker_position)
+        residuals.append(float(np.linalg.norm(observed - predicted)))
+        used.append(marker_id)
+
+    if not estimates:
+        return pose.copy(), dict(depth_markers=[], depth_correction_m=0.0,
+                                 depth_residual_m=None)
+    refined = pose.copy()
+    translation = np.median(np.asarray(estimates), axis=0)
+    refined[:3, 3] = translation
+    return refined, dict(
+        depth_markers=sorted(used),
+        depth_correction_m=float(np.linalg.norm(translation - pose[:3, 3])),
+        depth_residual_m=float(np.median(residuals)))
+
+
 def tool_orientation(approach, jaw_axis):
     """Rotation whose +Z is the approach and whose +X is the jaw line.
 
@@ -172,7 +246,7 @@ def tool_orientation(approach, jaw_axis):
     return np.column_stack([x, np.cross(z, x), z])
 
 
-def control_waypoints(control, table, standoff=None):
+def control_waypoints(control, table, standoff=None, tool_contact_offset=0.0):
     """Approach, contact and operate poses for one control, in panel frame.
 
     - `approach` sits `standoff` out along the console normal, clear of the
@@ -197,26 +271,128 @@ def control_waypoints(control, table, standoff=None):
         transform[:3, 3] = point
         return transform
 
-    contact = position
-    approach = position + approach_dir * standoff
+    # ``position`` is the physical switch surface. The IK link is gripper_tcp,
+    # but the maintenance fingertips project beyond that virtual frame (65 mm
+    # for the v2 tool). Pull the TCP outward so TCP + tool-Z*offset lands the
+    # actual fingertip on the switch rather than driving it through the panel.
+    contact = position + approach_dir * float(tool_contact_offset)
+    approach = contact + approach_dir * standoff
     turn = 0.0
     if control["action"] == "turn":
         operate = contact
         turn = float(control["travel"])
     elif control["action"] == "press":
         operate = contact - approach_dir * float(control["travel"])
-    else:                                   # flick
-        jaw = np.asarray(control["jaw_axis"], float)
-        operate = contact + jaw / np.linalg.norm(jaw) * float(control["travel"])
+    else:                                   # flick an enabled MCB upward
+        # A YAML ``true`` means operate/set the breaker upward. Do not inherit
+        # the sign of jaw_axis here: that axis describes an undirected jaw line
+        # and reversing it is mechanically equivalent for a grasp, whereas an
+        # MCB's switching direction is not equivalent.
+        upward = np.asarray(table["console_up_slope"], float)
+        upward = upward / np.linalg.norm(upward)
+        operate = contact + upward * float(control["travel"])
     return dict(approach=pose(approach), contact=pose(contact),
                 operate=pose(operate), turn_about_approach=turn,
                 grip=bool(control["grip"]), action=control["action"],
                 name=control["name"], joint=control["joint"])
 
 
+def upward_flick_in_planning_frame(contact_pose, travel,
+                                   planning_up=(0.0, 0.0, 1.0)):
+    """Return an MCB endpoint that is unambiguously upward in robot space.
+
+    Marker texture orientation and a panel-frame convention must never decide
+    whether an ON command moves up or down. Project planning-frame +Z onto the
+    panel face recovered from the tool's contact orientation. The resulting
+    motion remains tangent to the console and always has a positive +Z part.
+    """
+    contact = np.asarray(contact_pose, float)
+    result = contact.copy()
+    # Tool +Z points into the panel at contact; negate it for the outward normal.
+    normal = -contact[:3, 2]
+    normal /= np.linalg.norm(normal)
+    up = np.asarray(planning_up, float)
+    up = up - normal * float(up @ normal)
+    length = np.linalg.norm(up)
+    if length < 1e-6:
+        raise ValueError("planning-frame up is parallel to the panel normal")
+    up /= length
+    if float(up @ np.asarray(planning_up, float)) <= 0.0:
+        raise ValueError("projected MCB direction is not upward")
+    result[:3, 3] += up * float(travel)
+    return result
+
+
 def transform_pose(parent_from_panel, pose):
     """Move a panel-frame 4x4 into the parent frame."""
     return np.asarray(parent_from_panel, float) @ np.asarray(pose, float)
+
+
+def roll_about_tool_z(transform, angle):
+    """Return the same tool pose rolled about its own approach axis.
+
+    The maintenance jaws and fingers are symmetric about their centre line.
+    A 180 degree local-Z roll therefore presents the same jaw line to a switch,
+    but places a bounded robot wrist joint in the other IK family.  Position
+    and tool +Z are deliberately invariant.
+    """
+    transform = np.asarray(transform, float)
+    result = transform.copy()
+    c, s = math.cos(float(angle)), math.sin(float(angle))
+    local_roll = np.array([
+        [c, -s, 0.0],
+        [s, c, 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    result[:3, :3] = transform[:3, :3] @ local_roll
+    return result
+
+
+def transform_distance(a, b):
+    """Return translation metres and rotation radians between two transforms."""
+    delta = np.linalg.inv(np.asarray(a, float)) @ np.asarray(b, float)
+    cosine = max(-1.0, min(1.0, (float(np.trace(delta[:3, :3])) - 1.0) / 2.0))
+    return float(np.linalg.norm(delta[:3, 3])), math.acos(cosine)
+
+
+def average_transforms(transforms, weights=None):
+    """Weighted rigid-transform mean, including a sign-safe quaternion mean."""
+    transforms = [np.asarray(t, float) for t in transforms]
+    if not transforms:
+        raise ValueError("at least one transform is required")
+    weights = (np.ones(len(transforms), float) if weights is None
+               else np.asarray(weights, float))
+    if weights.shape != (len(transforms),) or np.any(weights < 0) or not weights.sum():
+        raise ValueError("weights must be non-negative and match transforms")
+    weights = weights / weights.sum()
+
+    result = np.eye(4)
+    result[:3, 3] = sum(w * t[:3, 3] for w, t in zip(weights, transforms))
+
+    # Markley's quaternion average uses q*q^T, so q and -q contribute exactly
+    # the same rotation and cannot cancel each other.
+    accumulator = np.zeros((4, 4))
+    for weight, transform in zip(weights, transforms):
+        q = np.asarray(quaternion_from_matrix(transform), float)
+        accumulator += weight * np.outer(q, q)
+    q = np.linalg.eigh(accumulator)[1][:, -1]
+    x, y, z, w = q
+    result[:3, :3] = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),
+         2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z),
+         2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w),
+         1 - 2 * (x * x + y * y)]])
+    return result
+
+
+def transform_consensus(transforms, weights=None):
+    """Return mean pose and maximum translation/rotation deviation from it."""
+    mean = average_transforms(transforms, weights)
+    deviations = [transform_distance(mean, pose) for pose in transforms]
+    return (mean, max(distance for distance, _ in deviations),
+            max(angle for _, angle in deviations))
 
 
 def quaternion_from_matrix(transform):

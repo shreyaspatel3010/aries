@@ -11,16 +11,21 @@ import pathlib
 
 import numpy as np
 import pytest
+import yaml
 
 cv2 = pytest.importorskip("cv2")
 
 from aries_maintenance.panel_alignment import (           # noqa: E402
-    control_waypoints, detect_markers, load_task_table, marker_corners,
-    panel_pose_from_markers, quaternion_from_matrix, tool_orientation,
+    average_transforms, control_waypoints, detect_markers, load_task_table,
+    marker_corners, panel_pose_from_markers, quaternion_from_matrix,
+    refine_panel_translation_from_depth, roll_about_tool_z, tool_orientation,
+    transform_consensus, transform_distance,
+    upward_flick_in_planning_frame,
 )
 
 TABLE = (pathlib.Path(__file__).resolve().parents[2]
          / "aries" / "models" / "maintenance_panel" / "panel_task.json")
+TASK_CONFIG = pathlib.Path(__file__).resolve().parents[1] / "config" / "panel_tasks.yaml"
 K = np.array([[615.0, 0.0, 320.0], [0.0, 615.0, 240.0], [0.0, 0.0, 1.0]])
 
 
@@ -113,6 +118,32 @@ def test_single_marker_is_flagged_not_hidden():
     assert info["single_marker"] is True
 
 
+def test_registered_depth_corrects_aruco_translation():
+    truth = _camera_from_panel()
+    shift = np.array([200.0, 300.0])
+    detections = {marker_id: corners + shift
+                  for marker_id, corners in
+                  _project(truth, ids={11, 13, 14}).items()}
+    shifted_k = K.copy()
+    shifted_k[0, 2] += shift[0]
+    shifted_k[1, 2] += shift[1]
+    initial = truth.copy()
+    initial[:3, 3] += [0.025, -0.010, 0.040]
+    depth = np.zeros((1000, 1000), dtype=np.float32)
+    known = {m["id"]: m for m in _table()["markers"]}
+    for marker_id, corners in detections.items():
+        centre = np.rint(corners.mean(axis=0)).astype(int)
+        point = (truth[:3, :3] @ np.asarray(known[marker_id]["position"]) +
+                 truth[:3, 3])
+        depth[centre[1] - 8:centre[1] + 9,
+              centre[0] - 8:centre[0] + 9] = point[2]
+    refined, info = refine_panel_translation_from_depth(
+        initial, detections, _table(), shifted_k, depth)
+    assert len(info["depth_markers"]) == 3
+    assert np.linalg.norm(refined[:3, 3] - truth[:3, 3]) < 0.003
+    assert info["depth_correction_m"] > 0.03
+
+
 def test_unknown_ids_are_ignored():
     truth = _camera_from_panel()
     seen = _project(truth)
@@ -148,6 +179,70 @@ def test_tool_points_into_the_console():
         assert np.linalg.norm(np.cross(offset, normal)) < 1e-6
 
 
+def test_maintenance_fingertip_offset_keeps_tcp_outside_panel():
+    table = _table()
+    offset = 0.065
+    for control in table["controls"]:
+        way = control_waypoints(control, table, tool_contact_offset=offset)
+        tcp = way["contact"][:3, 3]
+        tool_z = way["contact"][:3, 2]
+        physical_contact = tcp + tool_z * offset
+        assert np.allclose(physical_contact, control["position"], atol=1e-9)
+        separation = way["approach"][:3, 3] - tcp
+        assert abs(np.linalg.norm(separation) - table["standoff"]) < 1e-9
+
+
+def test_closed_finger_push_uses_leading_surface_not_jaw_meeting_point():
+    table = _table()
+    closed_tip_offset = 0.084
+    for control in table["controls"]:
+        if control["action"] not in ("flick", "press"):
+            continue
+        way = control_waypoints(
+            control, table, tool_contact_offset=closed_tip_offset)
+        physical_leading_surface = (
+            way["contact"][:3, 3] +
+            way["contact"][:3, 2] * closed_tip_offset)
+        assert np.allclose(
+            physical_leading_surface, control["position"], atol=1e-9)
+
+
+def test_mcb_endpoint_is_upward_in_planning_frame_and_tangent_to_panel():
+    normal = np.array([0.55, 0.10, 0.83])
+    normal /= np.linalg.norm(normal)
+    contact = np.eye(4)
+    contact[:3, :3] = tool_orientation(-normal, [0.0, 1.0, 0.0])
+    operate = upward_flick_in_planning_frame(contact, 0.012)
+    travel = operate[:3, 3] - contact[:3, 3]
+    assert travel[2] > 0.0
+    assert float(travel @ normal) == pytest.approx(0.0, abs=1e-9)
+    assert np.linalg.norm(travel) == pytest.approx(0.012)
+
+
+def test_contact_targets_are_on_modeled_surfaces_not_joint_pivots():
+    """Aiming at the buried joint pivots drove the gripper into the panel."""
+    table = _table()
+    normal = np.asarray(table["console_normal"], float)
+    normal /= np.linalg.norm(normal)
+    offsets_by_action = {"flick": [], "turn": [], "press": []}
+    for control in table["controls"]:
+        position = np.asarray(control["position"], float)
+        pivot = np.asarray(control["pivot_position"], float)
+        offset = float(control["surface_offset_m"])
+        displacement = position - pivot
+        assert np.linalg.norm(np.cross(displacement, normal)) < 2e-5
+        assert float(displacement @ normal) == pytest.approx(offset, abs=2e-5)
+        assert offset > 0.0
+        offsets_by_action[control["action"]].append(offset)
+
+    # Values are derived from the shipped control meshes. These broad bounds
+    # catch a regression to pivots without coupling the test to mesh rounding.
+    assert min(offsets_by_action["flick"]) > 0.008
+    assert max(offsets_by_action["flick"]) < 0.010
+    assert max(offsets_by_action["turn"]) > 0.036
+    assert offsets_by_action["press"] == pytest.approx([0.008] * 5)
+
+
 def test_jaw_line_runs_up_slope_for_the_disconnects():
     """The two red knobs are 65 mm across with 11.7 mm between them, so a grasp
     that closes across the console cannot fit. Up-slope has 36 mm each side."""
@@ -158,6 +253,20 @@ def test_jaw_line_runs_up_slope_for_the_disconnects():
     for control in turns:
         jaw = control_waypoints(control, table)["contact"][:3, 0]
         assert abs(float(jaw @ up_slope)) > 0.99, control["name"]
+
+
+def test_half_turn_tool_roll_is_the_same_mechanical_jaw_pose():
+    """The IK fallback changes wrist family, not the grasp geometry."""
+    way = control_waypoints(
+        next(c for c in _table()["controls"]
+             if c["name"] == "rotary_control_switch_0"),
+        _table())
+    original = way["approach"]
+    rolled = roll_about_tool_z(original, math.pi)
+    assert np.allclose(rolled[:3, 3], original[:3, 3])
+    assert np.allclose(rolled[:3, 2], original[:3, 2])
+    assert np.allclose(rolled[:3, 0], -original[:3, 0])
+    assert abs(float(rolled[:3, 0] @ original[:3, 0])) > 0.999
 
 
 def test_press_and_flick_move_the_right_way():
@@ -172,6 +281,9 @@ def test_press_and_flick_move_the_right_way():
         elif control["action"] == "flick":
             assert abs(float(travel @ normal)) < 1e-6   # across the face only
             assert abs(np.linalg.norm(travel) - control["travel"]) < 1e-6
+            upward = np.asarray(table["console_up_slope"], float)
+            upward /= np.linalg.norm(upward)
+            assert float(travel @ upward) > 0.0          # YAML true sets MCB up
         else:
             assert np.linalg.norm(travel) < 1e-12
             assert way["turn_about_approach"] > 0
@@ -187,9 +299,65 @@ def test_every_control_is_reachable_from_one_table():
     assert sum(c["action"] == "press" for c in table["controls"]) == 5
 
 
+def test_mcbs_are_numbered_left_to_right_and_command_upward_on():
+    mcbs = [c for c in _table()["controls"] if c["action"] == "flick"]
+    assert [c["name"] for c in mcbs] == [f"mcb_{index}" for index in range(14)]
+    assert [c["position"][1] for c in mcbs] == sorted(
+        (c["position"][1] for c in mcbs), reverse=True)
+    assert mcbs[12]["model_name"] == "1mcb_0"
+    assert mcbs[12]["joint"] == "1mcb_0_joint"
+    assert mcbs[13]["model_name"] == "1mcb_1"
+    assert mcbs[13]["joint"] == "1mcb_1_joint"
+    assert all(c["target_state"] == "on" for c in mcbs)
+    assert all(c["motion_direction"] == "up" for c in mcbs)
+
+
+def test_yaml_flags_match_every_control_in_task_order():
+    """A stale or misspelled YAML flag must not silently skip a control."""
+    configured = yaml.safe_load(TASK_CONFIG.read_text())
+    flags = configured["panel_operator"]["ros__parameters"]["controls"]
+    names = [c["name"] for c in _table()["controls"]]
+    assert list(flags) == names
+    assert all(type(enabled) is bool for enabled in flags.values())
+    params = configured["panel_operator"]["ros__parameters"]
+    assert params["required_camera_count"] == 2
+    assert params["latch_panel_pose"] is True
+    assert params["recalibrate_on_operate_enabled"] is True
+    assert params["tool_contact_offset_m"] == pytest.approx(0.065)
+    assert params["tool_push_contact_offset_m"] == pytest.approx(0.084)
+
+
 def test_quaternion_matches_rotation():
     rotation = tool_orientation([0.0, 0.0, -1.0], [1.0, 0.0, 0.0])
     transform = np.eye(4)
     transform[:3, :3] = rotation
     x, y, z, w = quaternion_from_matrix(transform)
     assert abs(x * x + y * y + z * z + w * w - 1.0) < 1e-9
+
+
+def test_two_camera_transform_fusion_averages_pose():
+    rover = np.eye(4)
+    gripper = np.eye(4)
+    rover[:3, :3] = _rot_z(-0.1)
+    gripper[:3, :3] = _rot_z(0.1)
+    rover[:3, 3] = [1.0, -0.02, 0.2]
+    gripper[:3, 3] = [1.04, 0.02, 0.2]
+    fused = average_transforms([rover, gripper])
+    assert np.allclose(fused[:3, 3], [1.02, 0.0, 0.2])
+    identity_at_mean = np.eye(4)
+    identity_at_mean[:3, 3] = [1.02, 0.0, 0.2]
+    translation, rotation = transform_distance(fused, identity_at_mean)
+    assert translation < 1e-9
+    assert rotation < 1e-6
+
+
+def test_pose_consensus_reports_sample_spread():
+    samples = []
+    for dx in (-0.003, 0.0, 0.002):
+        pose = np.eye(4)
+        pose[:3, 3] = [1.0 + dx, 0.2, 0.4]
+        samples.append(pose)
+    consensus, translation_spread, rotation_spread = transform_consensus(samples)
+    assert consensus[0, 3] == pytest.approx(1.0 - 0.001 / 3.0)
+    assert translation_spread < 0.004
+    assert rotation_spread < 1e-9

@@ -1,0 +1,80 @@
+# Controls set to true are operated, from top to bottom, when this is published.
+# The file is reloaded from disk on every true trigger; no relaunch is needed:
+#
+#   ros2 topic pub --once /panel/operate_enabled std_msgs/msg/Bool '{data: true}'
+#
+# Keep unused controls false. Enabled controls run from top to bottom. A failed
+# control is reported and the sequence continues with the next enabled entry.
+# The panel must first be localised from at least two ArUco tags seen across the
+# rover and gripper cameras.
+panel_operator:
+  ros__parameters:
+    # Standoff planning remains collision-aware. The final straight stroke must
+    # intentionally contact the switch, and the panel has no MoveIt ACM entry.
+    contact_avoid_collisions: false
+    # Maintenance fingertip contact (215 mm) minus gripper_tcp (150 mm).
+    tool_contact_offset_m: 0.065
+    # Closed-finger leading surface (233.7 mm) minus gripper_tcp (150 mm).
+    # Used only for MCB flicks and push buttons so they do not enter the panel.
+    tool_push_contact_offset_m: 0.084
+    # Command the active ros2_control gripper, not Gazebo's direct joint bridge.
+    # -0.03 is the modeled closed position of the v2 maintenance fingertips.
+    gripper_command_topic: /rebel_gripper_controller/joint_trajectory
+    gripper_joint_name: gripper_gear_left_joint
+    gripper_open_position: -1.20
+    gripper_close_position: -0.03
+    gripper_command_duration_sec: 0.75
+    # Slow, visible contact motion; success is also checked against measured TF.
+    max_cartesian_speed_mps: 0.03
+    motion_verify_position_m: 0.025
+    motion_verify_orientation_rad: 0.15
+    # Acquire from both cameras, then keep that pose while the arm hides tags.
+    required_camera_count: 2
+    latch_panel_pose: true
+    # Use image-time camera transforms and latch only a stable multi-frame pose.
+    camera_fusion_window_sec: 0.50
+    max_fusion_translation_m: 0.04
+    max_fusion_rotation_deg: 6.0
+    calibration_sample_count: 15
+    calibration_min_duration_sec: 0.50
+    calibration_max_translation_spread_m: 0.012
+    calibration_max_rotation_spread_deg: 1.5
+    # Registered depth constrains ArUco range/translation; RGB PnP keeps rotation.
+    use_depth_refinement: true
+    depth_sync_tolerance_sec: 0.12
+    depth_expected_band_m: 0.15
+    depth_min_m: 0.10
+    depth_max_m: 5.0
+    max_camera_tf_fallback_age_sec: 1.5
+    # Each true trigger clears the old latch, fuses new marker observations,
+    # then freezes the refreshed pose for that complete operation sequence.
+    recalibrate_on_operate_enabled: true
+    # MCB numbering is physical left-to-right. A true MCB is flicked upward
+    # into its ON position. Entries also execute in this displayed order.
+    controls:
+      mcb_0: false
+      mcb_1: false
+      mcb_2: false
+      mcb_3: false
+      mcb_4: false
+      mcb_5: false
+      mcb_6: false
+      mcb_7: false
+      mcb_8: true
+      mcb_9: false
+      mcb_10: false
+      mcb_11: false
+      mcb_12: false
+      mcb_13: false
+      rotary_control_switch_0: false
+      rotary_control_switch_1: true
+      rotary_switch_0: false
+      rotary_switch_1: false
+      rotary_switch_2: true
+      rotary_switch_3: false
+      rotary_switch_4: false
+      push_button_0: false
+      push_button_1: false
+      push_button_2: true
+      push_button_3: false
+      push_button_4: false
