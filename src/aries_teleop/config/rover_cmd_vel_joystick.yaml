@@ -4,6 +4,12 @@ rover_cmd_vel_joystick:
     cmd_vel_topic: "/cmd_vel/teleop"
     enable_button: 4
 
+    # Simulation config: Gazebo has no cmd_vel_odrive_bridge, so there is
+    # nothing for LB+Y to re-arm. Empty disables the binding rather than
+    # warning about a missing service on every press. The real rover gets the
+    # binding from aries_teleop/config/joystick.yaml instead.
+    enable_service: ""
+
     linear_axis: 1
     angular_axis: 0
     invert_linear: false

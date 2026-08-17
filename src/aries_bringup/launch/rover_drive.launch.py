@@ -32,7 +32,8 @@ LB-gated joystick stream directly to the fail-safe ODrive bridge:
   /joy -> /cmd_vel/teleop -> /cmd_vel -> cmd_vel_odrive_bridge
 
 Enable the drive explicitly through ``/aries_drive/enable`` after checking the
-rover and keeping the joystick centred.
+rover and keeping the joystick centred. Pressing LB+Y on the pad calls the same
+service, which is also how a faulted axis is recovered in the field.
 """
 
 from launch import LaunchDescription

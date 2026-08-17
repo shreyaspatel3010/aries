@@ -14,7 +14,10 @@ The real backend has one motor command owner:
        -> cmd_vel_odrive_bridge -> six ODrive ControlMessage topics
 
 The legacy joystick-to-ODrive controller is deliberately not started because
-it would bypass the waypoint arbiter and collision supervisor.
+it would bypass the waypoint arbiter and collision supervisor. Its LB+Y ODrive
+recovery is not lost with it: rover_cmd_vel_joystick binds the same combo to
+the bridge's /aries_drive/enable service, which re-arms every axis without
+taking ownership of the motor commands.
 
 In mock mode the joystick still runs, but the rover controller does not.
 mock_rover_drive owns odom -> base_footprint there.

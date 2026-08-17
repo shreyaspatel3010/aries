@@ -22,6 +22,14 @@
 # Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand
 # guiding. Hand guiding used to be a bare Y, which fired even while the rover
 # had the stick and clashed with the LB+Y combo added here.
+#
+# LB+Y is bound in both rover teleop nodes, but they reach the ODrives by
+# different routes. rover_cmd_vel_joystick (the node the real rover actually
+# runs) calls the bridge's /aries_drive/enable service, leaving the bridge as
+# the single owner of the motor commands. rover_joystick_controller talks to
+# the axes directly and is only started when joystick.launch.py is run
+# standalone -- aries_drive/drive.launch.py keeps it off precisely because that
+# direct path bypasses the waypoint arbiter.
 
 rover_joystick_controller:
   ros__parameters:
@@ -62,6 +70,17 @@ rover_cmd_vel_joystick:
     joy_topic: "/joy"
     cmd_vel_topic: "/cmd_vel/teleop"
     enable_button: 4
+
+    # LB + Y calls /aries_drive/enable with data:=true, which makes the ODrive
+    # bridge re-request CLOSED_LOOP_CONTROL on all six axes. The vendor CAN
+    # node sends kClearErrors ahead of every non-zero kSetAxisState, so this
+    # recovers a faulted axis as well. Edge-triggered; output is pinned to zero
+    # for reinit_hold_sec because LB (drive enable) is held during the combo.
+    # Set enable_service to "" on backends with no ODrive bridge.
+    enable_service: "/aries_drive/enable"
+    reinit_button: 3
+    reinit_modifier_button: 4
+    reinit_hold_sec: 1.0
 
     linear_axis: 1
     angular_axis: 0
