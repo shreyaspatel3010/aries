@@ -28,23 +28,39 @@ panel_operator:
     max_cartesian_speed_mps: 0.03
     motion_verify_position_m: 0.025
     motion_verify_orientation_rad: 0.15
-    # Acquire from both cameras, then keep that pose while the arm hides tags.
+    # Fuse both cameras when possible; depth-backed single-camera localization
+    # is allowed below. Keep the accepted pose while the arm hides tags.
     required_camera_count: 2
     latch_panel_pose: true
     # Use image-time camera transforms and latch only a stable multi-frame pose.
     camera_fusion_window_sec: 0.50
     max_fusion_translation_m: 0.04
     max_fusion_rotation_deg: 6.0
+    # Latch the densest cluster of 15 observations that agrees within these
+    # physical panel tolerances. Isolated PnP/depth outliers are discarded;
+    # the limits remain tight enough to hit the small controls.
     calibration_sample_count: 15
     calibration_min_duration_sec: 0.50
     calibration_max_translation_spread_m: 0.012
+    # Latch the densest stable time cluster; isolated depth/PnP frames outside
+    # these limits are ignored instead of poisoning the whole sample window.
     calibration_max_rotation_spread_deg: 1.5
-    # Registered depth constrains ArUco range/translation; RGB PnP keeps rotation.
+    # Registered depth constrains translation. It also supplies the surface
+    # normal for a single RGB marker; multi-marker RGB keeps its stronger
+    # wide-baseline rotation.
     use_depth_refinement: true
     depth_sync_tolerance_sec: 0.12
     depth_expected_band_m: 0.15
     depth_min_m: 0.10
     depth_max_m: 5.0
+    # Deproject aligned depth pixels inside each decoded marker into a local
+    # point cloud. A fitted surface normal plus the marker ID is a full 6-DoF
+    # observation, so either camera may work alone and the cameras may see
+    # completely different marker IDs.
+    depth_min_plane_pixels: 24
+    depth_max_normal_correction_deg: 30.0
+    allow_single_depth_camera: true
+    min_depth_markers: 1
     max_camera_tf_fallback_age_sec: 1.5
     # Each true trigger clears the old latch, fuses new marker observations,
     # then freezes the refreshed pose for that complete operation sequence.

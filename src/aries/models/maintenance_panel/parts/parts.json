@@ -1,0 +1,143 @@
+{
+  "mcb_block4": {
+    "body": {
+      "file": "mcb_block4.stl",
+      "triangles": 14828,
+      "min_uvn": [
+        -35.4,
+        -42.107,
+        -74.227
+      ],
+      "max_uvn": [
+        35.4,
+        47.984,
+        -3.174
+      ]
+    },
+    "handle": {
+      "file": "mcb_block4_handle.stl",
+      "triangles": 1456,
+      "min_uvn": [
+        -34.85,
+        1.582,
+        -19.625
+      ],
+      "max_uvn": [
+        34.85,
+        20.274,
+        0.0
+      ]
+    }
+  },
+  "mcb_single": {
+    "body": {
+      "file": "mcb_single.stl",
+      "triangles": 6916,
+      "min_uvn": [
+        -8.85,
+        -45.898,
+        -74.131
+      ],
+      "max_uvn": [
+        8.85,
+        47.984,
+        -3.057
+      ]
+    },
+    "handle": {
+      "file": "mcb_single_handle.stl",
+      "triangles": 548,
+      "min_uvn": [
+        -8.3,
+        1.587,
+        -19.527
+      ],
+      "max_uvn": [
+        8.3,
+        20.371,
+        0.0
+      ]
+    }
+  },
+  "cam_switch": {
+    "body": {
+      "file": "cam_switch.stl",
+      "triangles": 5554,
+      "min_uvn": [
+        -17.623,
+        -23.334,
+        -70.159
+      ],
+      "max_uvn": [
+        17.623,
+        23.334,
+        0.0
+      ]
+    }
+  },
+  "disconnect": {
+    "body": {
+      "file": "disconnect.stl",
+      "triangles": 14178,
+      "min_uvn": [
+        -40.0,
+        -68.503,
+        -109.204
+      ],
+      "max_uvn": [
+        40.0,
+        68.503,
+        -30.2
+      ]
+    },
+    "handle": {
+      "file": "disconnect_handle.stl",
+      "triangles": 2406,
+      "min_uvn": [
+        -32.4,
+        -32.185,
+        -29.002
+      ],
+      "max_uvn": [
+        32.4,
+        32.616,
+        0.0
+      ]
+    },
+    "bezel": {
+      "file": "disconnect_bezel.stl",
+      "triangles": 2080,
+      "min_uvn": [
+        -32.5,
+        -32.285,
+        -34.202
+      ],
+      "max_uvn": [
+        32.5,
+        32.715,
+        -11.199
+      ]
+    }
+  },
+  "iec_inlet": {
+    "body": {
+      "file": "iec_inlet.stl",
+      "triangles": 8070,
+      "min_uvn": [
+        -24.875,
+        -11.252,
+        -30.591
+      ],
+      "max_uvn": [
+        24.875,
+        11.252,
+        0.0
+      ]
+    }
+  },
+  "_frame": {
+    "note": "STL axes are the console face frame: x = u across, y = v down-slope, z = n out of the face. Origin at (u centre, v centre of the visible face, n of the frontmost point).",
+    "face_angle_deg_in_cad": 33.11,
+    "source": "Panel for Maintenance Tasks.zip"
+  }
+}

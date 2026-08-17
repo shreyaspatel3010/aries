@@ -6,21 +6,26 @@ and 15 at build time and assigned to the fixed top-left, top-right and
 bottom-left positions; the panel has no bottom-right marker. Recent agreeing
 observations are transformed into `base_link` and fused into one panel pose. A
 weaker one-tag frame cannot overwrite an accepted multi-tag pose. By default
-both cameras must agree, with at least two unique marker IDs between them.
+RGB-only localization requires both cameras to agree, with at least two unique
+marker IDs between them. Either camera can localize independently when it sees
+a marker with a valid registered depth surface.
 Camera extrinsics are looked up at each image's acquisition timestamp, which
 matters for the moving gripper camera. The node then requires 15 fused samples
-over at least 0.5 s to stay within 12 mm/1.5 degrees before averaging and
-latching them. Arm occlusion cannot corrupt that accepted consensus pose.
+over at least 0.5 s in the densest 12 mm/1.5 degree inlier cluster before
+averaging and latching them. Isolated depth/PnP outliers are rejected, and arm
+occlusion cannot corrupt that accepted consensus pose.
 
 The prop builder chooses a fresh assignment on each build. Pass
 `--panel-marker-seed <integer>` to reproduce the same assignment in a practice
 world.
 
-Both registered depth streams are also used when available. Depth inside the
-inner ArUco area back-projects each known marker centre into camera 3D and
-refines PnP translation; RGB marker corners continue to determine rotation.
-This works when the rover and gripper cameras see different marker IDs and
-falls back to RGB-only consensus if a synchronized depth frame is unavailable.
+Both registered depth streams are used when available. Depth inside the inner
+ArUco area is deprojected into a local point cloud. Its median constrains the
+known marker centre in camera 3D, and its fitted surface normal resolves the
+orientation of a single-marker observation. Multi-marker RGB PnP keeps its
+more accurate wide-baseline rotation while depth refines translation. This
+works when the cameras see different marker IDs, and falls back to two-camera
+RGB consensus if synchronized depth is unavailable.
 
 MoveGroup plans from the current arm posture to a clear standoff. Only the short
 standoff-to-contact motion is Cartesian, so the arm does not require a complete
@@ -71,31 +76,34 @@ commanded target; a controller result alone is not treated as proof of motion.
 1. In `config/panel_tasks.yaml`, change only the controls you want to operate to
    `true`. The file is reloaded from disk for every
    `/panel/operate_enabled true` trigger, so the node does not need restarting.
-2. Start the arm/MoveIt and both cameras, then launch the operator:
+2. Start the arm/MoveIt and the available RGB-D cameras, then launch the
+   operator:
 
    ```bash
    ros2 launch aries_maintenance panel_operator.launch.py
    ```
 
-3. Wait for `panel localised` in the log. The two cameras must together see at
-   least two unique IDs from 11, 13, 14 and 15; they do not need to see the same
-   marker.
+3. Wait for `panel localised` in the log. A camera may localize from one marker
+   when registered depth is valid. Without depth, the two cameras must together
+   see at least two unique IDs from 11, 13, 14 and 15; they do not need to see
+   the same marker.
 4. Trigger the configured sequence:
 
    ```bash
    ros2 topic pub --once /panel/operate_enabled std_msgs/msg/Bool '{data: true}'
    ```
 
-The two cameras may observe different marker IDs; the union must contain at
-least two unique IDs. If the trigger arrives before localization, it is queued
-and starts automatically as soon as a valid fused pose is latched.
+The two cameras may observe different marker IDs. If the trigger arrives before
+localization, it is queued and starts automatically as soon as a valid pose is
+latched.
 
 Every `/panel/operate_enabled true` trigger first validates and snapshots the
-latest YAML, then discards the previous pose latch and requires new agreeing
-observations from both cameras. After recalibration, that new pose remains
-latched for the complete sequence so marker occlusion by the arm does not
-interrupt operation. A malformed or incomplete YAML starts no motion. A new
-trigger is rejected while an existing panel sequence is moving the arm.
+latest YAML, then discards the previous pose latch and requires a new stable
+inlier cluster from the available camera observations. After recalibration,
+that new pose remains latched for the complete sequence so marker occlusion by
+the arm does not interrupt operation. A malformed or incomplete YAML starts no
+motion. A new trigger is rejected while an existing panel sequence is moving
+the arm.
 
 `false` is ignored. Progress and errors are published on `/panel/status`. The
 sequence follows the order in `panel_task.json`. If one control fails, its error

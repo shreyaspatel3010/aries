@@ -47,8 +47,12 @@ def generate_launch_description():
     virtual_diff_config_path = PathJoinSubstitution(
         [FindPackageShare('aries'), 'config', 'virtual_differential.yaml']
     )
-    joystick_config_path = PathJoinSubstitution(
-        [FindPackageShare('aries_teleop'), 'config', 'joystick.yaml']
+    rover_joystick_config_path = PathJoinSubstitution(
+        [
+            FindPackageShare('aries_teleop'),
+            'config',
+            'rover_cmd_vel_joystick.yaml',
+        ]
     )
 
     # Declare arguments
@@ -293,7 +297,7 @@ def generate_launch_description():
         name='rover_cmd_vel_joystick',
         output='screen',
         parameters=[
-            joystick_config_path,
+            rover_joystick_config_path,
             {'use_sim_time': use_sim_time},
         ],
     )

@@ -71,8 +71,9 @@ from aries_maintenance.action_utils import (
 from aries_maintenance.panel_alignment import (
     average_transforms, control_waypoints, detect_markers, load_task_table,
     panel_pose_from_markers, quaternion_from_matrix,
-    refine_panel_translation_from_depth, roll_about_tool_z,
-    transform_consensus, transform_distance, upward_flick_in_planning_frame,
+    refine_panel_pose_from_depth, roll_about_tool_z,
+    transform_distance, transform_inlier_consensus,
+    upward_flick_in_planning_frame,
 )
 
 
@@ -135,6 +136,14 @@ class PanelOperator(Node):
         p('depth_expected_band_m', 0.15)
         p('depth_min_m', 0.10)
         p('depth_max_m', 5.0)
+        p('depth_min_plane_pixels', 24)
+        p('depth_max_normal_correction_deg', 30.0)
+        # A registered marker depth cloud resolves single-marker planar PnP,
+        # so either camera may localise the panel on its own. Both cameras are
+        # still fused whenever they have agreeing observations, and they never
+        # need to see the same marker ID.
+        p('allow_single_depth_camera', True)
+        p('min_depth_markers', 1)
         # The simulated joint/TF publisher can trail rendered camera frames.
         # During calibration the arm is stationary, so a bounded latest-TF
         # fallback is more accurate than dropping that camera completely.
@@ -174,8 +183,8 @@ class PanelOperator(Node):
         # free-space trip to standoff remains collision checked by MoveGroup.
         # Enable this only if the planning scene has a panel ACM configured.
         p('contact_avoid_collisions', False)
-        # A pose fitted from one tag carries the planar-PnP ambiguity, so by
-        # default the arm refuses to move on it. Two tags remove it.
+        # RGB-only localization needs two tags to remove planar-PnP ambiguity.
+        # A registered depth-plane fit may satisfy this with one tag instead.
         p('min_markers', 2)
         p('max_reprojection_px', 3.0)
         # Estimates from both cameras inside this time window are transformed
@@ -185,18 +194,19 @@ class PanelOperator(Node):
         p('max_fusion_translation_m', 0.08)
         p('max_fusion_rotation_deg', 12.0)
         p('required_camera_count', 2)
-        # Do not latch the first valid camera pair. Average a time-spanning
-        # window and require every candidate to agree with the consensus.
+        # Do not latch the first valid camera estimate. Select the densest
+        # time-spanning inlier cluster so an isolated depth edge/PnP outlier
+        # cannot block an otherwise stable calibration.
         p('calibration_sample_count', 15)
         p('calibration_min_duration_sec', 0.50)
         p('calibration_max_translation_spread_m', 0.012)
         p('calibration_max_rotation_spread_deg', 1.5)
         # Every operate-enabled trigger starts a new acquisition. Once that
-        # fresh two-camera pose is accepted it is latched for the whole motion,
+        # fresh stable pose is accepted it is latched for the whole motion,
         # because the arm will occlude the markers on approach.
         p('recalibrate_on_operate_enabled', True)
         # The panel and rover must remain stationary after acquisition. Once a
-        # valid two-camera pose is found, freeze it: a later partial/ambiguous
+        # valid pose is found, freeze it: a later partial/ambiguous
         # view must not corrupt the pose while the arm occludes the markers.
         p('latch_panel_pose', True)
         # The panel is bolted to the world, and the gripper camera LOSES the
@@ -348,9 +358,9 @@ class PanelOperator(Node):
         if not have:
             self.get_logger().warn(
                 f"panel NOT localised. Tags in view - {view}. Point a camera at "
-                f"the panel; each camera may see a different marker, but their "
-                f"agreeing observations must contain at least two unique IDs "
-                f"from 11/13/14/15 in total.")
+                f"the panel. Different marker IDs across cameras are valid; "
+                f"one stable marker with a registered depth plane is also "
+                f"enough from either camera.")
         elif age > self.get('pose_timeout_sec'):
             self.get_logger().info(
                 f"panel localised by {source} (latched {age:.0f} s ago); ready "
@@ -429,13 +439,16 @@ class PanelOperator(Node):
             depth_age = abs((rclpy.time.Time.from_msg(msg.header.stamp) -
                              depth_stamp).nanoseconds) / 1e9
             if depth_age <= self.get('depth_sync_tolerance_sec'):
-                camera_from_panel, depth_info = refine_panel_translation_from_depth(
+                camera_from_panel, depth_info = refine_panel_pose_from_depth(
                     camera_from_panel, solve_detections, self.table,
                     np.asarray(camera['info'].k, float).reshape(3, 3), depth,
                     np.asarray(camera['info'].d, float).ravel(),
                     min_depth=self.get('depth_min_m'),
                     max_depth=self.get('depth_max_m'),
-                    expected_band=self.get('depth_expected_band_m'))
+                    expected_band=self.get('depth_expected_band_m'),
+                    minimum_plane_pixels=self.get('depth_min_plane_pixels'),
+                    max_normal_correction_deg=
+                    self.get('depth_max_normal_correction_deg'))
                 info.update(depth_info)
         image_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
         tf_stamp = (image_stamp if image_stamp.nanoseconds
@@ -506,8 +519,19 @@ class PanelOperator(Node):
                                   -item[1]['pose_info']['reprojection_px']))
             agreeing = [(anchor_topic, anchor)]
             rejected = []
+            anchor_marker_count = len(anchor['pose_info']['markers'])
             for candidate_topic, candidate in recent:
                 if candidate_topic == anchor_topic:
+                    continue
+                # A two/three-marker observation has a much wider geometric
+                # baseline than a single-marker estimate. Adding and removing
+                # the intermittent gripper estimate shifted the average every
+                # time marker 14 entered the frame, so keep the stronger pose
+                # and use the one-marker camera only when no multi-marker
+                # camera is available.
+                if (anchor_marker_count >= self.get('min_markers') and
+                        len(candidate['pose_info']['markers']) <
+                        self.get('min_markers')):
                     continue
                 distance, angle = transform_distance(
                     anchor['pose'], candidate['pose'])
@@ -531,19 +555,49 @@ class PanelOperator(Node):
             fused_markers = sorted({marker
                                     for _, candidate in agreeing
                                     for marker in candidate['pose_info']['markers']})
+            depth_pose_markers = sorted({marker
+                                         for _, candidate in agreeing
+                                         for marker in candidate['pose_info'].get(
+                                             'depth_pose_markers', [])})
+            depth_multimarker_cameras = sorted(
+                candidate_topic for candidate_topic, candidate in agreeing
+                if (len(candidate['pose_info']['markers']) >=
+                    self.get('min_markers') and
+                    candidate['pose_info'].get('depth_markers')))
+            depth_camera_fallback = (
+                bool(self.get('allow_single_depth_camera')) and
+                (len(depth_pose_markers) >= self.get('min_depth_markers') or
+                 bool(depth_multimarker_cameras)))
 
-            # Do not label a single-camera estimate as fused. In particular,
-            # never replace the good 0.23 px two-camera observation with the
-            # later estimate that disagreed by 0.88 m / 69.7 deg.
-            if (len(agreeing) < self.get('required_camera_count') or
-                    len(fused_markers) < self.get('min_markers')):
+            # RGB-only localization keeps the conservative two-camera/two-tag
+            # contract. A registered depth surface supplies the missing 3-D
+            # constraint, so one stable marker from either camera is complete.
+            camera_quorum = len(agreeing) >= self.get('required_camera_count')
+            marker_quorum = len(fused_markers) >= self.get('min_markers')
+            if not ((camera_quorum and marker_quorum) or
+                    depth_camera_fallback):
                 return
+
+            # Do not let a momentary one-tag dropout poison an otherwise
+            # stable two/three-tag calibration window. Upgrade immediately
+            # when more markers become visible; ignore lower-quality samples
+            # until the stronger observations have had enough time to latch.
+            if self.calibration_samples:
+                best_marker_count = max(
+                    len(sample['markers']) for sample in self.calibration_samples)
+                if len(fused_markers) < best_marker_count:
+                    return
+                if len(fused_markers) > best_marker_count:
+                    self.calibration_samples = []
 
             self.calibration_samples.append(dict(
                 monotonic=time.monotonic(), pose=fused_pose,
                 markers=fused_markers,
                 cameras=sorted(candidate_topic
                                for candidate_topic, _ in agreeing),
+                depth_pose_markers=depth_pose_markers,
+                depth_multimarker_cameras=depth_multimarker_cameras,
+                depth_backed=depth_camera_fallback,
                 reprojection_px=float(np.average(
                     [candidate['pose_info']['reprojection_px']
                      for _, candidate in agreeing], weights=weights)),
@@ -555,23 +609,27 @@ class PanelOperator(Node):
             self.calibration_samples = self.calibration_samples[-3 * sample_count:]
             if len(self.calibration_samples) < sample_count:
                 return
-            duration = (self.calibration_samples[-1]['monotonic'] -
-                        self.calibration_samples[0]['monotonic'])
-            if duration < self.get('calibration_min_duration_sec'):
-                return
-            consensus, translation_spread, rotation_spread = transform_consensus(
-                [sample['pose'] for sample in self.calibration_samples],
-                [sample['weight'] for sample in self.calibration_samples])
-            if (translation_spread >
-                    self.get('calibration_max_translation_spread_m') or
-                    math.degrees(rotation_spread) >
-                    self.get('calibration_max_rotation_spread_deg')):
+            consensus, translation_spread, rotation_spread, inlier_indices = (
+                transform_inlier_consensus(
+                    [sample['pose'] for sample in self.calibration_samples],
+                    self.get('calibration_max_translation_spread_m'),
+                    math.radians(
+                        self.get('calibration_max_rotation_spread_deg')),
+                    [sample['weight'] for sample in self.calibration_samples]))
+            if len(inlier_indices) < sample_count:
                 self.get_logger().warn(
                     f'panel calibration not stable yet: '
-                    f'{len(self.calibration_samples)} samples '
+                    f'{len(inlier_indices)}/{len(self.calibration_samples)} '
+                    f'samples in best maintenance-panel cluster, '
                     f'spread {translation_spread * 1000:.1f} mm/'
                     f'{math.degrees(rotation_spread):.2f} deg',
                     throttle_duration_sec=2.0)
+                return
+            inlier_samples = [self.calibration_samples[index]
+                              for index in inlier_indices]
+            duration = (inlier_samples[-1]['monotonic'] -
+                        inlier_samples[0]['monotonic'])
+            if duration < self.get('calibration_min_duration_sec'):
                 return
 
             first = self.panel_pose is None
@@ -580,19 +638,25 @@ class PanelOperator(Node):
             self.panel_stamp = now
             self.panel_info = dict(
                 markers=sorted({marker
-                                for sample in self.calibration_samples
+                                for sample in inlier_samples
                                 for marker in sample['markers']}),
                 reprojection_px=float(np.average(
-                    [sample['reprojection_px']
-                     for sample in self.calibration_samples],
-                    weights=[sample['weight']
-                             for sample in self.calibration_samples])),
+                    [sample['reprojection_px'] for sample in inlier_samples],
+                    weights=[sample['weight'] for sample in inlier_samples])),
                 cameras=sorted({camera_topic
-                                for sample in self.calibration_samples
+                                for sample in inlier_samples
                                 for camera_topic in sample['cameras']}),
-                samples=len(self.calibration_samples),
+                samples=len(inlier_samples),
                 translation_spread_m=translation_spread,
                 rotation_spread_rad=rotation_spread)
+            self.panel_info['depth_pose_markers'] = sorted({
+                marker for sample in inlier_samples
+                for marker in sample['depth_pose_markers']})
+            self.panel_info['depth_backed'] = any(
+                sample['depth_backed'] for sample in inlier_samples)
+            self.panel_info['depth_multimarker_cameras'] = sorted({
+                camera for sample in inlier_samples
+                for camera in sample['depth_multimarker_cameras']})
             depth_observations = sum(
                 len(candidate['pose_info'].get('depth_markers', []))
                 for _, candidate in agreeing)
@@ -610,7 +674,11 @@ class PanelOperator(Node):
                 f"{self.panel_info['samples']} samples over {duration:.2f} s, "
                 f"spread {translation_spread * 1000:.1f} mm/"
                 f"{math.degrees(rotation_spread):.2f} deg; "
-                f"depth tags in final pair {depth_observations}; pose latched")
+                f"depth tags in final pair {depth_observations}; "
+                f"depth 6-DoF tags {self.panel_info['depth_pose_markers']}; "
+                f"depth multi-marker cameras "
+                f"{self.panel_info['depth_multimarker_cameras']}; "
+                f"pose latched")
         for rejected_topic, distance, angle in rejected:
             self.get_logger().warn(
                 f'{rejected_topic}: not fused; camera estimates disagree by '
@@ -665,10 +733,14 @@ class PanelOperator(Node):
                               'camera at it until "panel localised" is logged')
             age = (self.get_clock().now() - self.panel_stamp).nanoseconds / 1e9
             markers = len(self.panel_info['markers'])
+            depth_markers = len(self.panel_info.get('depth_pose_markers', []))
+            depth_backed = bool(self.panel_info.get('depth_backed', False))
             pose = self.panel_pose.copy()
-        if markers < self.get('min_markers'):
+        if (markers < self.get('min_markers') and
+                not (depth_backed and
+                     depth_markers >= self.get('min_depth_markers'))):
             return None, (f'the latched pose rests on {markers} tag(s); a '
-                          f"single tag's pose is ambiguous, so show it another")
+                          f"single RGB tag needs a valid registered depth plane")
         if age > self.get('pose_timeout_sec'):
             if self.get('require_fresh_pose'):
                 return None, f'panel pose is {age:.1f} s stale'
@@ -1135,7 +1207,7 @@ class PanelOperator(Node):
                 detail = (
                     f'fresh marker recalibration requested (cycle '
                     f'{self.localization_generation}); waiting for new '
-                    'two-camera observations before operating: ' +
+                    'stable depth-backed observations before operating: ' +
                     ', '.join(names))
                 self.get_logger().info(detail)
                 self.status_pub.publish(String(data=detail))
@@ -1144,7 +1216,7 @@ class PanelOperator(Node):
                 ready = self.panel_pose is not None
             if not ready:
                 self.pending_names = names
-                detail = ('queued until two-camera panel localisation: ' +
+                detail = ('queued until stable panel localisation: ' +
                           ', '.join(names))
                 self.get_logger().info(detail)
                 self.status_pub.publish(String(data=detail))

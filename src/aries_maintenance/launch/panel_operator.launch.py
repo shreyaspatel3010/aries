@@ -24,8 +24,8 @@ def generate_launch_description():
         DeclareLaunchArgument('task_table', default_value=table),
         DeclareLaunchArgument('planning_group', default_value='igus_rebel_arm'),
         DeclareLaunchArgument('tool_frame', default_value='gripper_tcp'),
-        # Two tags, because a single tag's pose carries the planar-PnP
-        # ambiguity and the arm must not move on an ambiguous pose.
+        # RGB-only localization needs two tags. A registered depth plane can
+        # safely override this gate with one decoded marker.
         DeclareLaunchArgument('min_markers', default_value='2'),
     ]
     return LaunchDescription(args + [

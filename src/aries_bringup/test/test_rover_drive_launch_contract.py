@@ -18,6 +18,7 @@ MOVEIT_HARDWARE_PATH = (
     / "launch"
     / "aries_hardware.launch.py"
 )
+SIM_WRAPPER_PATH = LAUNCH_PATH.with_name("my_robot.launch.py")
 
 
 def _declared_default(argument_name, launch_path=LAUNCH_PATH):
@@ -59,6 +60,18 @@ def test_fail_safe_bridge_is_the_physical_command_owner():
 def test_waypoint_stack_is_not_an_implicit_dependency():
     source = LAUNCH_PATH.read_text(encoding="utf-8")
     assert "grasshopper_waypoint_follower" not in source
+
+
+def test_sim_wrapper_forwards_rover_control_to_one_owner():
+    source = SIM_WRAPPER_PATH.read_text(encoding="utf-8")
+
+    assert '"use_rover_joystick": use_rover_joystick' in source
+    assert '"use_cmd_vel_relay": use_cmd_vel_relay' in source
+    assert '"use_sim_ekf": use_sim_ekf' in source
+    assert '"use_rover_joystick": "false"' not in source
+    assert '"use_cmd_vel_relay": "false"' not in source
+    assert 'executable="rover_cmd_vel_joystick.py"' not in source
+    assert 'executable="cmd_vel_teleop_relay.py"' not in source
 
 
 def test_full_hardware_has_one_wheel_joint_state_owner():

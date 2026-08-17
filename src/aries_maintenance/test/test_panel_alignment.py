@@ -18,8 +18,9 @@ cv2 = pytest.importorskip("cv2")
 from aries_maintenance.panel_alignment import (           # noqa: E402
     average_transforms, control_waypoints, detect_markers, load_task_table,
     marker_corners, panel_pose_from_markers, quaternion_from_matrix,
-    refine_panel_translation_from_depth, roll_about_tool_z, tool_orientation,
-    transform_consensus, transform_distance,
+    refine_panel_pose_from_depth, refine_panel_translation_from_depth,
+    roll_about_tool_z, tool_orientation,
+    transform_consensus, transform_distance, transform_inlier_consensus,
     upward_flick_in_planning_frame,
 )
 
@@ -35,11 +36,16 @@ def _table():
     return load_task_table(TABLE)
 
 
-def _camera_from_panel(distance=0.45, yaw=0.0, pitch=0.0):
+def _camera_from_panel(distance=0.45, yaw=0.0, pitch=0.0, target=None):
     """A camera `distance` out in front of the console, looking back at it."""
     table = _table()
     normal = np.asarray(table["console_normal"], float)
-    target = np.array([0.0, 0.0, 0.80])           # mid console
+    # Aim at the centroid of the marker triangle rather than a hard-coded
+    # height: that point is on the control face for any panel build, where
+    # z = 0.80 was only mid-face on the taller CAD-derived console.
+    target = (np.mean([np.asarray(m["position"], float)
+                       for m in table["markers"]], axis=0)
+              if target is None else np.asarray(target, float))
     eye = target + normal * distance
     forward = target - eye
     forward /= np.linalg.norm(forward)
@@ -147,6 +153,67 @@ def test_registered_depth_corrects_aruco_translation():
     assert info["depth_correction_m"] > 0.03
 
 
+@pytest.mark.parametrize("marker_index", [0, 1, 2])
+def test_single_marker_registered_depth_cloud_recovers_full_pose(marker_index):
+    marker = _table()["markers"][marker_index]
+    truth = _camera_from_panel(
+        yaw=0.12, pitch=-0.08, target=marker["position"])
+    detections = _project(truth, ids={marker["id"]})
+    corners = detections[marker["id"]]
+    depth = np.zeros((480, 640), dtype=np.float32)
+    mask = np.zeros(depth.shape, dtype=np.uint8)
+    cv2.fillConvexPoly(mask, np.rint(corners).astype(np.int32), 1)
+    rows, cols = np.nonzero(mask)
+    panel_normal = np.asarray(_table()["console_normal"], float)
+    camera_normal = truth[:3, :3] @ panel_normal
+    camera_point = (truth[:3, :3] @ np.asarray(marker["position"], float) +
+                    truth[:3, 3])
+    rays = np.column_stack([
+        (cols - K[0, 2]) / K[0, 0],
+        (rows - K[1, 2]) / K[1, 1],
+        np.ones(rows.size)])
+    ranges = (camera_normal @ camera_point) / (rays @ camera_normal)
+    depth[rows, cols] = ranges.astype(np.float32)
+
+    initial = truth.copy()
+    initial[:3, :3] = _rot_x(math.radians(7.0)) @ initial[:3, :3]
+    initial[:3, 3] += [0.020, -0.012, 0.035]
+    refined, info = refine_panel_pose_from_depth(
+        initial, detections, _table(), K, depth)
+    translation, angle = _pose_error(refined, truth)
+    assert info["depth_pose_markers"] == [marker["id"]]
+    assert info["depth_points"] >= 24
+    assert translation < 0.004
+    assert angle < 0.75
+
+
+def test_multi_marker_depth_keeps_wide_baseline_rgb_rotation():
+    truth = _camera_from_panel(yaw=0.12, pitch=-0.08)
+    markers = _table()["markers"][:2]
+    detections = _project(truth, ids={marker["id"] for marker in markers})
+    depth = np.zeros((480, 640), dtype=np.float32)
+    # Deliberately use a fronto-parallel local depth patch for each tag. This
+    # mimics quantised/noisy depth normals at range; the two-marker RGB
+    # rotation must win while the measured centres still correct translation.
+    for marker in markers:
+        corners = detections[marker["id"]]
+        mask = np.zeros(depth.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.rint(corners).astype(np.int32), 1)
+        centre = (truth[:3, :3] @ np.asarray(marker["position"], float) +
+                  truth[:3, 3])
+        depth[mask != 0] = centre[2]
+
+    initial = truth.copy()
+    initial[:3, 3] += [0.018, -0.009, 0.030]
+    refined, info = refine_panel_pose_from_depth(
+        initial, detections, _table(), K, depth)
+    translation, angle = _pose_error(refined, truth)
+    assert info["depth_pose_markers"] == []
+    assert info["depth_markers"] == sorted(marker["id"] for marker in markers)
+    assert translation < 0.008
+    assert angle < 0.01
+
+
 def test_unknown_ids_are_ignored():
     truth = _camera_from_panel()
     seen = _project(truth)
@@ -242,7 +309,10 @@ def test_contact_targets_are_on_modeled_surfaces_not_joint_pivots():
     # catch a regression to pivots without coupling the test to mesh rounding.
     assert min(offsets_by_action["flick"]) > 0.008
     assert max(offsets_by_action["flick"]) < 0.010
-    assert max(offsets_by_action["turn"]) > 0.036
+    # Cam switches stand 25 mm proud of their sub-plate and the disconnect
+    # knobs 30 mm, both measured off the organisers' control meshes.
+    assert min(offsets_by_action["turn"]) > 0.020
+    assert max(offsets_by_action["turn"]) < 0.045
     assert offsets_by_action["press"] == pytest.approx([0.008] * 5)
 
 
@@ -307,10 +377,12 @@ def test_mcbs_are_numbered_left_to_right_and_command_upward_on():
     assert [c["name"] for c in mcbs] == [f"mcb_{index}" for index in range(14)]
     assert [c["position"][1] for c in mcbs] == sorted(
         (c["position"][1] for c in mcbs), reverse=True)
-    assert mcbs[12]["model_name"] == "1mcb_0"
-    assert mcbs[12]["joint"] == "1mcb_0_joint"
-    assert mcbs[13]["model_name"] == "1mcb_1"
-    assert mcbs[13]["joint"] == "1mcb_1_joint"
+    # Every breaker is now its own single-module device, so the links are a
+    # plain mcb_0..mcb_13; the old 1mcb_0/1 names came from the CAD split where
+    # twelve of the fourteen were poles of ganged four-module blocks.
+    assert [c["model_name"] for c in mcbs] == [f"mcb_{i}" for i in range(14)]
+    assert [c["joint"] for c in mcbs] == [f"mcb_{i}_joint" for i in range(14)]
+    assert len(set(c["model_name"] for c in mcbs)) == 14
     assert all(c["target_state"] == "on" for c in mcbs)
     assert all(c["motion_direction"] == "up" for c in mcbs)
 
@@ -324,6 +396,8 @@ def test_yaml_flags_match_every_control_in_task_order():
     assert all(type(enabled) is bool for enabled in flags.values())
     params = configured["panel_operator"]["ros__parameters"]
     assert params["required_camera_count"] == 2
+    assert params["allow_single_depth_camera"] is True
+    assert params["min_depth_markers"] == 1
     assert params["latch_panel_pose"] is True
     assert params["recalibrate_on_operate_enabled"] is True
     assert params["tool_contact_offset_m"] == pytest.approx(0.065)
@@ -364,3 +438,31 @@ def test_pose_consensus_reports_sample_spread():
     assert consensus[0, 3] == pytest.approx(1.0 - 0.001 / 3.0)
     assert translation_spread < 0.004
     assert rotation_spread < 1e-9
+
+
+def test_panel_calibration_consensus_rejects_depth_pose_outliers():
+    truth = np.eye(4)
+    truth[:3, 3] = [1.1, -0.2, 0.65]
+    samples = []
+    for index in range(18):
+        sample = truth.copy()
+        sample[:3, 3] += [0.0015 * math.sin(index),
+                          0.0010 * math.cos(index),
+                          0.0005 * math.sin(2 * index)]
+        sample[:3, :3] = _rot_z(math.radians(0.2 * math.sin(index)))
+        samples.append(sample)
+    for shift, angle in (([0.14, 0.00, 0.00], 8.0),
+                         ([-0.09, 0.05, 0.00], -6.0),
+                         ([0.04, 0.00, 0.08], 5.0)):
+        outlier = truth.copy()
+        outlier[:3, 3] += shift
+        outlier[:3, :3] = _rot_z(math.radians(angle))
+        samples.insert(4, outlier)
+
+    consensus, spread_m, spread_rad, inliers = transform_inlier_consensus(
+        samples, max_translation=0.012,
+        max_rotation=math.radians(1.5))
+    assert len(inliers) == 18
+    assert spread_m < 0.004
+    assert math.degrees(spread_rad) < 0.5
+    assert transform_distance(consensus, truth)[0] < 0.001

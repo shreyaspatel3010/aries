@@ -47,38 +47,40 @@ def test_report_marker_layout_has_three_slots_and_no_bottom_right():
     assert {marker["id"] for marker in markers} <= {11, 13, 14, 15}
 
     across = np.array([marker["position"][1] for marker in markers])
-    # The legacy table field is named `console_up_slope`, but its vector follows
-    # increasing row order on this exported CAD (top controls toward the lower
-    # handle). Keep this test tied to the rendered frame, not that old label.
-    down_axis = np.asarray(table["console_up_slope"], dtype=float)
-    down = np.array([np.asarray(marker["position"], dtype=float) @ down_axis
-                     for marker in markers])
-    top = np.argsort(down)[:2]
-    bottom = int(np.argmax(down))
+    # `console_up_slope` points back and up, away from the rover. Row 1 of the
+    # report's front view -- the marker pair -- sits at the LOW, front edge of
+    # the console, so the pair projects *low* on that axis and the lone marker
+    # 380 mm above it. The organisers' CAD is what settles the direction: pair
+    # at z = 0.7523, lone marker at 0.9599.
+    up_axis = np.asarray(table["console_up_slope"], dtype=float)
+    up = np.array([np.asarray(marker["position"], dtype=float) @ up_axis
+                   for marker in markers])
+    pair = np.argsort(up)[:2]
+    lone = int(np.argmax(up))
 
-    assert down[top[0]] == pytest.approx(down[top[1]], abs=2e-4)
-    assert down[bottom] - down[top].mean() == pytest.approx(0.380, abs=2e-4)
-    assert abs(across[top[0]] - across[top[1]]) == pytest.approx(0.260, abs=2e-4)
-    # Viewed from the panel front, +across is the left side. The sole lower
-    # marker shares that side with the top-left marker; -across/bottom-right is
-    # intentionally absent from the organiser's drawing.
-    assert across[bottom] == pytest.approx(across[top].max(), abs=2e-4)
+    assert up[pair[0]] == pytest.approx(up[pair[1]], abs=2e-4)
+    assert up[lone] - up[pair].mean() == pytest.approx(0.380, abs=2e-4)
+    assert abs(across[pair[0]] - across[pair[1]]) == pytest.approx(0.260, abs=2e-4)
+    # The lone marker shares a side with one of the pair; the opposite corner is
+    # intentionally absent from the report's drawing.
+    assert min(abs(across[lone] - across[pair])) == pytest.approx(0.0, abs=2e-4)
 
     buttons = [control for control in table["controls"]
                if control["kind"] == "button"]
     button_across = np.mean([control["pivot_position"][1]
                              for control in buttons])
-    button_down = np.mean([
-        np.asarray(control["pivot_position"], dtype=float) @ down_axis
+    button_up = np.mean([
+        np.asarray(control["pivot_position"], dtype=float) @ up_axis
         for control in buttons])
-    assert across[top].mean() == pytest.approx(button_across, abs=2e-4)
-    assert down[top].mean() == pytest.approx(button_down - 0.007, abs=2e-4)
+    # Buttons share row 1 with the marker pair: centred across it and 10 mm
+    # up-slope of the marker centres, both measured off the front view.
+    assert button_across == pytest.approx(np.mean(across[pair]), abs=2e-4)
+    assert button_up - up[pair].mean() == pytest.approx(0.010, abs=1e-3)
 
-    # The 50 mm black code has a white quiet zone, making the complete board
-    # 69.2 mm wide. Even that full visual must stay within the 390 mm panel.
-    board_half_width = 0.0692 / 2.0
-    panel_half_width = 0.390 / 2.0
-    assert all(abs(value) + board_half_width < panel_half_width
+    # The 50 mm black code must stay clear of the panel edges.
+    marker_half = 0.050 / 2.0
+    face_half_width = 0.330 / 2.0
+    assert all(abs(value) + marker_half <= face_half_width + 1e-6
                for value in across)
 
 

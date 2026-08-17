@@ -1,79 +1,79 @@
 {
  "frame": "maintenance_panel",
- "console_pitch": 0.57789,
+ "console_pitch": 0.57788,
  "console_normal": [
-  0.54626,
+  0.54625,
   0.0,
   0.83762
  ],
  "console_up_slope": [
   -0.83762,
   0.0,
-  0.54626
+  0.54625
  ],
  "standoff": 0.06,
  "markers": [
   {
    "id": 11,
    "position": [
-    0.16866,
-    0.11005,
-    0.75229
+    0.18111,
+    0.13,
+    0.75249
    ],
-   "pitch": 0.57789,
+   "pitch": 0.57788,
    "size": 0.05
   },
   {
    "id": 13,
    "position": [
-    0.16866,
-    -0.14995,
-    0.75229
+    0.18111,
+    -0.13,
+    0.75249
    ],
-   "pitch": 0.57789,
+   "pitch": 0.57788,
    "size": 0.05
   },
   {
    "id": 14,
    "position": [
-    -0.14963,
-    0.11005,
-    0.95987
+    -0.13719,
+    0.13,
+    0.96007
    ],
-   "pitch": 0.57789,
+   "pitch": 0.57788,
    "size": 0.05
   }
  ],
  "controls": [
   {
    "name": "mcb_0",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.11085,
-    0.81135
+    0.09818,
+    0.1441,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.11085,
-    0.80411
+    0.09326,
+    0.1441,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -88,33 +88,33 @@
   },
   {
    "name": "mcb_1",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.09343,
-    0.81135
+    0.09818,
+    0.0723,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.09343,
-    0.80411
+    0.09326,
+    0.0723,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -129,33 +129,33 @@
   },
   {
    "name": "mcb_2",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.07573,
-    0.81135
+    0.09818,
+    0.05428,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.07573,
-    0.80411
+    0.09326,
+    0.05428,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -170,33 +170,33 @@
   },
   {
    "name": "mcb_3",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.0583,
-    0.81135
+    0.09818,
+    0.03626,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.0583,
-    0.80411
+    0.09326,
+    0.03626,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -211,33 +211,33 @@
   },
   {
    "name": "mcb_4",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.04007,
-    0.81135
+    0.09818,
+    0.01824,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.04007,
-    0.80411
+    0.09326,
+    0.01824,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -252,33 +252,33 @@
   },
   {
    "name": "mcb_5",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.02265,
-    0.81135
+    0.09818,
+    0.00022,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.02265,
-    0.80411
+    0.09326,
+    0.00022,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -293,33 +293,33 @@
   },
   {
    "name": "mcb_6",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    0.00495,
-    0.81135
+    0.09818,
+    -0.0178,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    0.00495,
-    0.80411
+    0.09326,
+    -0.0178,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -334,33 +334,33 @@
   },
   {
    "name": "mcb_7",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    -0.01248,
-    0.81135
+    0.09818,
+    -0.03582,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.01248,
-    0.80411
+    0.09326,
+    -0.03582,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -375,33 +375,33 @@
   },
   {
    "name": "mcb_8",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    -0.03056,
-    0.81135
+    0.09818,
+    -0.05384,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.03056,
-    0.80411
+    0.09326,
+    -0.05384,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -416,33 +416,33 @@
   },
   {
    "name": "mcb_9",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    -0.04799,
-    0.81135
+    0.09818,
+    -0.07186,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.04799,
-    0.80411
+    0.09326,
+    -0.07186,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -457,33 +457,33 @@
   },
   {
    "name": "mcb_10",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    -0.06569,
-    0.81135
+    0.09818,
+    -0.08988,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.06569,
-    0.80411
+    0.09326,
+    -0.08988,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -498,33 +498,33 @@
   },
   {
    "name": "mcb_11",
-   "kind": "breaker_bank",
+   "kind": "breaker",
    "action": "flick",
    "position": [
-    0.0971,
-    -0.08311,
-    0.81135
+    0.09818,
+    -0.1079,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.08311,
-    0.80411
+    0.09326,
+    -0.1079,
+    0.81623
    ],
-   "surface_offset_m": 0.00864,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
@@ -542,39 +542,39 @@
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09706,
-    -0.10109,
-    0.81126
+    0.09818,
+    -0.12592,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.10109,
-    0.8041
+    0.09326,
+    -0.12592,
+    0.81623
    ],
-   "surface_offset_m": 0.00856,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
-   "joint": "1mcb_0_joint",
+   "joint": "mcb_12_joint",
    "limits": [
     -0.4,
     0.4
    ],
-   "model_name": "1mcb_0",
+   "model_name": "mcb_12",
    "target_state": "on",
    "motion_direction": "up"
   },
@@ -583,39 +583,39 @@
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09706,
-    -0.14568,
-    0.81126
+    0.09818,
+    -0.14394,
+    0.82377
    ],
    "pivot_position": [
-    0.09238,
-    -0.14568,
-    0.8041
+    0.09326,
+    -0.14394,
+    0.81623
    ],
-   "surface_offset_m": 0.00856,
+   "surface_offset_m": 0.009,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 0.012,
    "grip": false,
-   "joint": "1mcb_1_joint",
+   "joint": "mcb_13_joint",
    "limits": [
     -0.4,
     0.4
    ],
-   "model_name": "1mcb_1",
+   "model_name": "mcb_13",
    "target_state": "on",
    "motion_direction": "up"
   },
@@ -624,30 +624,30 @@
    "kind": "disconnect",
    "action": "turn",
    "position": [
-    -0.05381,
-    -0.06416,
-    0.93577
+    -0.05412,
+    -0.0475,
+    0.94099
    ],
    "pivot_position": [
-    -0.06572,
-    -0.06416,
-    0.91751
+    -0.0705,
+    -0.0475,
+    0.91586
    ],
-   "surface_offset_m": 0.0218,
+   "surface_offset_m": 0.03,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.5708,
    "grip": true,
@@ -655,37 +655,38 @@
    "limits": [
     0.0,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_control_switch_0"
   },
   {
    "name": "rotary_control_switch_1",
    "kind": "disconnect",
    "action": "turn",
    "position": [
-    -0.05381,
-    -0.14082,
-    0.93577
+    -0.05412,
+    -0.1175,
+    0.94099
    ],
    "pivot_position": [
-    -0.06572,
-    -0.14082,
-    0.91751
+    -0.0705,
+    -0.1175,
+    0.91586
    ],
-   "surface_offset_m": 0.0218,
+   "surface_offset_m": 0.03,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.5708,
    "grip": true,
@@ -693,37 +694,38 @@
    "limits": [
     0.0,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_control_switch_1"
   },
   {
    "name": "rotary_switch_0",
    "kind": "rotary",
    "action": "turn",
    "position": [
-    0.02869,
-    0.08772,
-    0.874
+    0.01896,
+    0.12,
+    0.88737
    ],
    "pivot_position": [
-    0.00865,
-    0.08772,
-    0.84328
+    0.0053,
+    0.12,
+    0.86643
    ],
-   "surface_offset_m": 0.03667,
+   "surface_offset_m": 0.025,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.0472,
    "grip": true,
@@ -731,37 +733,38 @@
    "limits": [
     -1.5708,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_switch_0"
   },
   {
    "name": "rotary_switch_1",
    "kind": "rotary",
    "action": "turn",
    "position": [
-    0.02869,
-    0.03272,
-    0.874
+    0.01896,
+    0.06,
+    0.88737
    ],
    "pivot_position": [
-    0.00865,
-    0.03272,
-    0.84328
+    0.0053,
+    0.06,
+    0.86643
    ],
-   "surface_offset_m": 0.03667,
+   "surface_offset_m": 0.025,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.0472,
    "grip": true,
@@ -769,37 +772,38 @@
    "limits": [
     -1.5708,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_switch_1"
   },
   {
    "name": "rotary_switch_2",
    "kind": "rotary",
    "action": "turn",
    "position": [
-    0.02876,
-    -0.02224,
-    0.87395
+    0.01896,
+    0.0,
+    0.88737
    ],
    "pivot_position": [
-    0.00864,
-    -0.02224,
-    0.84308
+    0.0053,
+    0.0,
+    0.86643
    ],
-   "surface_offset_m": 0.03685,
+   "surface_offset_m": 0.025,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.0472,
    "grip": true,
@@ -807,37 +811,38 @@
    "limits": [
     -1.5708,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_switch_2"
   },
   {
    "name": "rotary_switch_3",
    "kind": "rotary",
    "action": "turn",
    "position": [
-    0.02869,
-    -0.07712,
-    0.874
+    0.01896,
+    -0.06,
+    0.88737
    ],
    "pivot_position": [
-    0.00865,
-    -0.07712,
-    0.84328
+    0.0053,
+    -0.06,
+    0.86643
    ],
-   "surface_offset_m": 0.03667,
+   "surface_offset_m": 0.025,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.0472,
    "grip": true,
@@ -845,37 +850,38 @@
    "limits": [
     -1.5708,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_switch_3"
   },
   {
    "name": "rotary_switch_4",
    "kind": "rotary",
    "action": "turn",
    "position": [
-    0.02869,
-    -0.13228,
-    0.874
+    0.01896,
+    -0.12,
+    0.88737
    ],
    "pivot_position": [
-    0.00865,
-    -0.13228,
-    0.84328
+    0.0053,
+    -0.12,
+    0.86643
    ],
-   "surface_offset_m": 0.03667,
+   "surface_offset_m": 0.025,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    0.54581,
+    0.54625,
     0.0,
-    0.83791
+    0.83762
    ],
    "jaw_axis": [
     -0.83762,
     0.0,
-    0.54626
+    0.54625
    ],
    "travel": 1.0472,
    "grip": true,
@@ -883,197 +889,203 @@
    "limits": [
     -1.5708,
     1.5708
-   ]
+   ],
+   "model_name": "rotary_switch_4"
   },
   {
    "name": "push_button_0",
    "kind": "button",
    "action": "press",
    "position": [
-    0.1715,
-    -0.0949,
-    0.76942
+    0.17732,
+    -0.08,
+    0.76499
    ],
    "pivot_position": [
-    0.16713,
-    -0.0949,
-    0.76272
+    0.17295,
+    -0.08,
+    0.75829
    ],
    "surface_offset_m": 0.008,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    -0.54626,
-    -0.0,
+    -0.54625,
+    0.0,
     -0.83762
    ],
    "jaw_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
-   "travel": 0.004,
+   "travel": 0.0025,
    "grip": false,
    "joint": "push_button_0_joint",
    "limits": [
     0.0,
-    0.004
-   ]
+    0.0025
+   ],
+   "model_name": "push_button_0"
   },
   {
    "name": "push_button_1",
    "kind": "button",
    "action": "press",
    "position": [
-    0.17151,
-    -0.05754,
-    0.76942
+    0.17732,
+    -0.04,
+    0.76499
    ],
    "pivot_position": [
-    0.16714,
-    -0.05754,
-    0.76272
+    0.17295,
+    -0.04,
+    0.75829
    ],
    "surface_offset_m": 0.008,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    -0.54626,
-    -0.0,
+    -0.54625,
+    0.0,
     -0.83762
    ],
    "jaw_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
-   "travel": 0.004,
+   "travel": 0.0025,
    "grip": false,
    "joint": "push_button_1_joint",
    "limits": [
     0.0,
-    0.004
-   ]
+    0.0025
+   ],
+   "model_name": "push_button_1"
   },
   {
    "name": "push_button_2",
    "kind": "button",
    "action": "press",
    "position": [
-    0.17147,
-    -0.0204,
-    0.76944
+    0.17732,
+    0.0,
+    0.76499
    ],
    "pivot_position": [
-    0.1671,
-    -0.0204,
-    0.76274
+    0.17295,
+    0.0,
+    0.75829
    ],
    "surface_offset_m": 0.008,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    -0.54626,
-    -0.0,
+    -0.54625,
+    0.0,
     -0.83762
    ],
    "jaw_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
-   "travel": 0.004,
+   "travel": 0.0025,
    "grip": false,
    "joint": "push_button_2_joint",
    "limits": [
     0.0,
-    0.004
-   ]
+    0.0025
+   ],
+   "model_name": "push_button_2"
   },
   {
    "name": "push_button_3",
    "kind": "button",
    "action": "press",
    "position": [
-    0.17147,
-    0.01794,
-    0.76944
+    0.17732,
+    0.04,
+    0.76499
    ],
    "pivot_position": [
-    0.1671,
-    0.01794,
-    0.76274
+    0.17295,
+    0.04,
+    0.75829
    ],
    "surface_offset_m": 0.008,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    -0.54626,
-    -0.0,
+    -0.54625,
+    0.0,
     -0.83762
    ],
    "jaw_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
-   "travel": 0.004,
+   "travel": 0.0025,
    "grip": false,
    "joint": "push_button_3_joint",
    "limits": [
     0.0,
-    0.004
-   ]
+    0.0025
+   ],
+   "model_name": "push_button_3"
   },
   {
    "name": "push_button_4",
    "kind": "button",
    "action": "press",
    "position": [
-    0.17146,
-    0.05515,
-    0.76945
+    0.17732,
+    0.08,
+    0.76499
    ],
    "pivot_position": [
-    0.16709,
-    0.05515,
-    0.76275
+    0.17295,
+    0.08,
+    0.75829
    ],
    "surface_offset_m": 0.008,
    "approach": [
-    0.54626,
+    0.54625,
     0.0,
     0.83762
    ],
    "joint_axis": [
-    -0.54626,
-    -0.0,
+    -0.54625,
+    0.0,
     -0.83762
    ],
    "jaw_axis": [
     0.0,
-    1.0,
+    -1.0,
     0.0
    ],
-   "travel": 0.004,
+   "travel": 0.0025,
    "grip": false,
    "joint": "push_button_4_joint",
    "limits": [
     0.0,
-    0.004
-   ]
+    0.0025
+   ],
+   "model_name": "push_button_4"
   }
  ]
 }

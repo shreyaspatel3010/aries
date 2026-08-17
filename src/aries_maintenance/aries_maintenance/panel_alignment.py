@@ -226,6 +226,185 @@ def refine_panel_translation_from_depth(
         depth_residual_m=float(np.median(residuals)))
 
 
+def _rotation_aligning(source, target):
+    """Return the smallest rotation that maps one unit vector onto another."""
+    source = np.asarray(source, float)
+    target = np.asarray(target, float)
+    source /= np.linalg.norm(source)
+    target /= np.linalg.norm(target)
+    cross = np.cross(source, target)
+    sine = float(np.linalg.norm(cross))
+    cosine = float(np.clip(source @ target, -1.0, 1.0))
+    if sine < 1e-10:
+        if cosine > 0.0:
+            return np.eye(3)
+        # The 180-degree case is not expected after the depth-normal sign is
+        # matched, but keep the helper mathematically complete.
+        basis = np.array([1.0, 0.0, 0.0])
+        if abs(source @ basis) > 0.9:
+            basis = np.array([0.0, 1.0, 0.0])
+        axis = np.cross(source, basis)
+        axis /= np.linalg.norm(axis)
+        return 2.0 * np.outer(axis, axis) - np.eye(3)
+    axis = cross / sine
+    skew = np.array([[0.0, -axis[2], axis[1]],
+                     [axis[2], 0.0, -axis[0]],
+                     [-axis[1], axis[0], 0.0]])
+    angle = math.atan2(sine, cosine)
+    return (np.eye(3) + math.sin(angle) * skew +
+            (1.0 - math.cos(angle)) * (skew @ skew))
+
+
+def refine_panel_pose_from_depth(
+        camera_from_panel, detections, table, camera_matrix, depth_image,
+        dist_coeffs=None, min_depth=0.10, max_depth=5.0,
+        expected_band=0.15, minimum_pixels=6,
+        minimum_plane_pixels=24, max_normal_correction_deg=30.0):
+    """Recover a depth-backed 6-DoF panel pose from any visible marker.
+
+    The aligned depth image is deprojected into a small registered point cloud
+    inside each decoded marker.  Its median gives a robust 3-D marker centre;
+    a plane fit supplies the panel normal.  ArUco retains the marker identity
+    and in-plane orientation, while the cloud removes the single-marker planar
+    PnP ambiguity.  Marker IDs do not need to match between cameras because
+    every cloud observation is converted through the marker's known position
+    into the common panel frame.
+    """
+    import cv2
+
+    pose = np.asarray(camera_from_panel, float)
+    depth = np.asarray(depth_image, float)
+    if depth.ndim != 2:
+        raise ValueError(f"depth image must be 2D, got {depth.shape}")
+    k = np.asarray(camera_matrix, float).reshape(3, 3)
+    distortion = (np.zeros(5) if dist_coeffs is None
+                  else np.asarray(dist_coeffs, float).ravel())
+    known = {marker["id"]: marker for marker in table["markers"]}
+    known_detection_count = sum(marker_id in known for marker_id in detections)
+    height, width = depth.shape
+    observations = []
+
+    for marker_id, corners in detections.items():
+        marker = known.get(marker_id)
+        if marker is None:
+            continue
+        corners = np.asarray(corners, float).reshape(4, 2)
+        centre_uv = corners.mean(axis=0)
+        inner = centre_uv + 0.55 * (corners - centre_uv)
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.rint(inner).astype(np.int32), 1)
+        rows, cols = np.nonzero(
+            (mask != 0) & np.isfinite(depth) &
+            (depth > float(min_depth)) & (depth < float(max_depth)))
+        if rows.size < minimum_pixels:
+            continue
+
+        values = depth[rows, cols]
+        marker_position = np.asarray(marker["position"], float)
+        predicted_centre = pose[:3, :3] @ marker_position + pose[:3, 3]
+        in_band = np.abs(values - predicted_centre[2]) <= expected_band
+        if np.count_nonzero(in_band) >= minimum_pixels:
+            rows, cols, values = rows[in_band], cols[in_band], values[in_band]
+        if values.size < minimum_pixels:
+            continue
+
+        # Keep the plane fit bounded on high-resolution streams without
+        # biasing it toward one side of the marker.
+        if values.size > 4000:
+            indices = np.linspace(0, values.size - 1, 4000, dtype=int)
+            rows, cols, values = rows[indices], cols[indices], values[indices]
+        pixels = np.column_stack([cols, rows]).astype(np.float64)
+        rays = cv2.undistortPoints(
+            pixels.reshape(-1, 1, 2), k, distortion).reshape(-1, 2)
+        points = np.column_stack([rays[:, 0] * values,
+                                  rays[:, 1] * values,
+                                  values])
+        centre = np.median(points, axis=0)
+        predicted_normal = pose[:3, :3] @ _basis(marker["pitch"])[0]
+
+        observed_normal = None
+        if points.shape[0] >= minimum_plane_pixels:
+            centred = points - centre
+            # Reject gross depth outliers before the final plane fit.
+            radial = np.linalg.norm(centred, axis=1)
+            median_radius = float(np.median(radial))
+            keep = radial <= max(3.0 * median_radius, 1e-4)
+            plane_points = points[keep]
+            if plane_points.shape[0] >= minimum_plane_pixels:
+                plane_centre = plane_points.mean(axis=0)
+                _, singular, vh = np.linalg.svd(
+                    plane_points - plane_centre, full_matrices=False)
+                # Two non-trivial tangential dimensions are required; a
+                # single scanline is not a surface normal.
+                if singular.size == 3 and singular[1] > 1e-5:
+                    observed_normal = vh[-1]
+                    if observed_normal @ predicted_normal < 0.0:
+                        observed_normal = -observed_normal
+                    correction = math.degrees(math.acos(float(np.clip(
+                        observed_normal @ predicted_normal /
+                        (np.linalg.norm(observed_normal) *
+                         np.linalg.norm(predicted_normal)), -1.0, 1.0))))
+                    if correction > float(max_normal_correction_deg):
+                        observed_normal = None
+
+        observations.append(dict(
+            marker_id=marker_id, marker_position=marker_position,
+            centre=centre, points=int(points.shape[0]),
+            predicted_normal=predicted_normal,
+            observed_normal=observed_normal))
+
+    if not observations:
+        return pose.copy(), dict(
+            depth_markers=[], depth_pose_markers=[], depth_correction_m=0.0,
+            depth_normal_correction_deg=None, depth_points=0,
+            depth_residual_m=None)
+
+    refined = pose.copy()
+    # A multi-marker PnP spans a wide baseline and already has a well-
+    # conditioned rotation. Never replace that rotation with the normal of a
+    # tiny 50 mm depth patch: at rover-camera range a few millimetres of depth
+    # quantisation tilt that local plane by several degrees and move the panel
+    # origin by more than 100 mm. The plane normal is needed only to resolve a
+    # genuinely single-marker PnP observation.
+    planes = ([item for item in observations
+               if item["observed_normal"] is not None]
+              if known_detection_count == 1 else [])
+    normal_correction_deg = None
+    if planes:
+        predicted = np.average(
+            [item["predicted_normal"] for item in planes], axis=0,
+            weights=[item["points"] for item in planes])
+        observed = np.average(
+            [item["observed_normal"] for item in planes], axis=0,
+            weights=[item["points"] for item in planes])
+        predicted /= np.linalg.norm(predicted)
+        observed /= np.linalg.norm(observed)
+        delta = _rotation_aligning(predicted, observed)
+        refined[:3, :3] = delta @ pose[:3, :3]
+        normal_correction_deg = math.degrees(math.acos(float(np.clip(
+            predicted @ observed, -1.0, 1.0))))
+
+    translations = [
+        item["centre"] - refined[:3, :3] @ item["marker_position"]
+        for item in observations]
+    translation = np.median(np.asarray(translations), axis=0)
+    refined[:3, 3] = translation
+    residuals = [np.linalg.norm(
+        item["centre"] - (refined[:3, :3] @ item["marker_position"] +
+                          refined[:3, 3]))
+                 for item in observations]
+    return refined, dict(
+        depth_markers=sorted(item["marker_id"] for item in observations),
+        # Only a fitted surface normal resolves a single tag's 6-DoF planar
+        # ambiguity and is therefore allowed to relax the RGB camera quorum.
+        depth_pose_markers=sorted(item["marker_id"] for item in planes),
+        depth_correction_m=float(np.linalg.norm(
+            translation - pose[:3, 3])),
+        depth_normal_correction_deg=normal_correction_deg,
+        depth_points=int(sum(item["points"] for item in observations)),
+        depth_residual_m=float(np.median(residuals)))
+
+
 def tool_orientation(approach, jaw_axis):
     """Rotation whose +Z is the approach and whose +X is the jaw line.
 
@@ -393,6 +572,59 @@ def transform_consensus(transforms, weights=None):
     deviations = [transform_distance(mean, pose) for pose in transforms]
     return (mean, max(distance for distance, _ in deviations),
             max(angle for _, angle in deviations))
+
+
+def transform_inlier_consensus(
+        transforms, max_translation, max_rotation, weights=None):
+    """Return the densest stable transform cluster and its source indices.
+
+    Camera depth edges and planar PnP can occasionally produce a valid-looking
+    but wrong panel pose. Requiring every item in a long rolling window to
+    agree means one such frame blocks calibration until it ages out. Instead,
+    choose the maximum-weight neighbourhood inside the maintenance panel's
+    accuracy limits, refine its mean, and report only samples that agree with
+    that mean. The caller still decides how many inliers and how much elapsed
+    time are required before motion is allowed.
+    """
+    transforms = [np.asarray(transform, float) for transform in transforms]
+    if not transforms:
+        raise ValueError("at least one transform is required")
+    if max_translation <= 0.0 or max_rotation <= 0.0:
+        raise ValueError("consensus limits must be positive")
+    weights = (np.ones(len(transforms), float) if weights is None
+               else np.asarray(weights, float))
+    if (weights.shape != (len(transforms),) or np.any(weights < 0.0) or
+            not weights.sum()):
+        raise ValueError("weights must be non-negative and match transforms")
+
+    neighbourhoods = []
+    for seed_index, seed in enumerate(transforms):
+        indices = [index for index, candidate in enumerate(transforms)
+                   if ((distance := transform_distance(seed, candidate))[0] <=
+                       max_translation and distance[1] <= max_rotation)]
+        neighbourhoods.append((float(weights[indices].sum()), len(indices),
+                               seed_index, indices))
+    # Prefer the newest seed on an exact tie so a panel/camera that was moved
+    # can recalibrate without waiting for the previous cluster to age out.
+    _, _, _, indices = max(neighbourhoods,
+                           key=lambda item: (item[0], item[1], item[2]))
+
+    # Re-centre twice: neighbourhoods are seeded on a measured frame, whereas
+    # the final gate should be relative to the weighted cluster centre.
+    for _ in range(2):
+        mean = average_transforms(
+            [transforms[index] for index in indices], weights[indices])
+        refined = [index for index, candidate in enumerate(transforms)
+                   if ((distance := transform_distance(mean, candidate))[0] <=
+                       max_translation and distance[1] <= max_rotation)]
+        if not refined or refined == indices:
+            break
+        indices = refined
+
+    selected = [transforms[index] for index in indices]
+    mean, translation_spread, rotation_spread = transform_consensus(
+        selected, weights[indices])
+    return mean, translation_spread, rotation_spread, indices
 
 
 def quaternion_from_matrix(transform):
