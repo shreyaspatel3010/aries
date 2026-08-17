@@ -37,7 +37,7 @@ ARUCO_DICT_NAME = "DICT_ARUCO_ORIGINAL"
 
 
 def load_task_table(path):
-    """Read `panel_task.json` as emitted by scripts/build_erc2026_props.py."""
+    """Read `panel_task.json` as emitted by scripts/build_maintenance_panel.py."""
     table = json.loads(pathlib.Path(path).read_text())
     for key in ("markers", "controls", "console_normal", "standoff"):
         if key not in table:

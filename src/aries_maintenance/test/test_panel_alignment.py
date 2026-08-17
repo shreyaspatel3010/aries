@@ -32,7 +32,7 @@ K = np.array([[615.0, 0.0, 320.0], [0.0, 615.0, 240.0], [0.0, 0.0, 1.0]])
 
 def _table():
     if not TABLE.is_file():
-        pytest.skip(f"{TABLE} not built; run scripts/build_erc2026_props.py")
+        pytest.skip(f"{TABLE} not built; run scripts/build_maintenance_panel.py")
     return load_task_table(TABLE)
 
 
