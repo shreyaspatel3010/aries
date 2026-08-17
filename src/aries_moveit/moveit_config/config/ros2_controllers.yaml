@@ -1,3 +1,48 @@
+# ============================================================================
+# SIMULATION ONLY. This file is loaded by the gz_ros2_control plugin declared in
+# aries/urdf/igus_rebel2.control.xacro, i.e. only on hardware_protocol:=gazebo.
+# The real arm's controllers are built inline in Python by
+# aries_moveit/launch/aries_hardware.launch.py and never read this file.
+# ============================================================================
+
+# Gazebo's joint servo. gz_ros2_control drives a position command interface by
+# converting position error into a joint velocity command:
+#
+#     target_vel = position_proportional_gain * update_rate * (cmd - measured)
+#
+# so the EFFECTIVE gain is gain * update_rate (1/s), here 0.8 * 200 = 160.
+#
+# This MUST be set here, on the gz_ros_control node. igus_rebel2.control.xacro
+# used to carry <param name="position_proportional_gain">5.0</param> inside its
+# <hardware> block, which gz_ros2_control never reads — it declares the value as
+# a ROS parameter on its own node instead. The URDF param was silently ignored
+# and the package default of 0.1 ran instead, giving an effective gain of 20/s.
+#
+# That is what made joystick teleop crawl in Gazebo. rebel_servo_teleop_gamepad
+# re-anchors its position command to the MEASURED position every cycle and only
+# leads it by velocity * lookahead, because on the real arm the trajectory's
+# velocity field is what moves the joint (velocity command interface with
+# ff_velocity_scale 1.0 — see aries_hardware.launch.py). Gazebo has no velocity
+# feed-forward: the position error is the ONLY thing that moves the joint, and
+# with a lead that is re-established from the measurement every 12.5 ms the
+# error averages just velocity * (period/2). Achieved speed is therefore
+#
+#     achieved / commanded ~= effective_gain * period / 2
+#
+# 20/s gave 20 * 0.00625 = 0.125, i.e. the arm ran at an eighth of the
+# commanded joint velocity (measured: 0.0195 rad/s achieved against a 0.156
+# rad/s command). 160/s puts that ratio at ~1.0, so Gazebo now tracks the
+# joystick at the speed it is actually asked for.
+#
+# CEILING: the command is refreshed every controller_manager cycle
+# (1/update_rate = 5 ms) and the loop is a plain discrete P controller, so it
+# needs gain * update_rate * 0.005 < 2, i.e. position_proportional_gain < 2.0.
+# Past that the joint oscillates instead of converging. 0.8 leaves a 2.5x
+# margin. Raising update_rate below moves this ceiling too — keep them in step.
+gz_ros_control:
+  ros__parameters:
+    position_proportional_gain: 0.8
+
 controller_manager:
   ros__parameters:
     update_rate: 200 # Hz, higher is better for servo

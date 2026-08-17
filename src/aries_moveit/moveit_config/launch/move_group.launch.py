@@ -288,13 +288,45 @@ def opaque_func(context, *args, **kwargs):
             "teleop_speeds.yaml",
         ]
     )
+    # Simulation-only overlay, loaded after teleop_speeds.yaml so its keys win.
+    # Gazebo runs at RTF ~0.54 here, so identical commands look ~1.85x slower on
+    # screen than on the rover; this multiplies the scales back up so a given
+    # stick deflection moves the arm at real-arm WALL-CLOCK speed.
+    #
+    # The condition is what keeps the real arm out of it. This launch file is
+    # shared: igus_rebel_hardware.launch.py includes it with
+    # hardware_protocol:='rebel', which fails the check below, and the rover's
+    # own aries_hardware.launch.py does not include this file at all. So the
+    # overlay can only reach a Gazebo or mock-hardware session.
+    teleop_speeds_sim_file = PathJoinSubstitution(
+        [
+            FindPackageShare("aries_moveit"),
+            "config",
+            "teleop_speeds_sim.yaml",
+        ]
+    )
+
+    # We are inside an OpaqueFunction, so the launch configurations already have
+    # concrete values and the overlay can simply be appended (or not) to the
+    # parameter list. This is what keeps the real arm out of it: this launch file
+    # is shared, and igus_rebel_hardware.launch.py includes it with
+    # hardware_protocol:='rebel', which fails the check below. The rover's own
+    # aries_hardware.launch.py does not include this file at all.
+    use_sim_speeds = (
+        LaunchConfiguration("use_sim_teleop_speeds").perform(context) == "true"
+        and hardware_protocol.perform(context) in ("gazebo", "mock_hardware")
+    )
+    teleop_speed_params = [teleop_speeds_file]
+    if use_sim_speeds:
+        teleop_speed_params.append(teleop_speeds_sim_file)
     teleop_twist_joy_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
         executable="rebel_servo_teleop_gamepad",
         namespace=namespace,
         name="rebel_servo_teleop_gamepad",
-        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file, teleop_speeds_file],
+        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file,
+                    *teleop_speed_params],
         output="screen",
     )
 
@@ -304,7 +336,8 @@ def opaque_func(context, *args, **kwargs):
         executable="rebel_movegroup_joystick.py",
         namespace=namespace,
         name="rebel_movegroup_joystick",
-        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file, teleop_speeds_file],
+        parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file,
+                    *teleop_speed_params],
         output="screen",
     )
 
@@ -408,9 +441,22 @@ def generate_launch_description():
         description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps",
     )
     use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time', 
-        default_value='false', 
+        'use_sim_time',
+        default_value='false',
         description='Use sim time if true')
+
+    use_sim_teleop_speeds_arg = DeclareLaunchArgument(
+        "use_sim_teleop_speeds",
+        default_value="true",
+        choices=["true", "false"],
+        description="Apply config/teleop_speeds_sim.yaml on top of "
+                    "config/teleop_speeds.yaml. Ignored unless hardware_protocol "
+                    "is gazebo or mock_hardware, so it can never change the real "
+                    "arm. The overlay multiplies the joystick scales by ~1.85 to "
+                    "cancel Gazebo's ~0.54 real-time factor, so a stick "
+                    "deflection moves the arm at real-arm wall-clock speed. Set "
+                    "false to run the sim on the shared hardware numbers.",
+    )
 
     hardware_protocol_arg = DeclareLaunchArgument(
         "hardware_protocol",
@@ -441,6 +487,7 @@ def generate_launch_description():
 
     ld = LaunchDescription()
     ld.add_action(use_sim_time_arg)
+    ld.add_action(use_sim_teleop_speeds_arg)
     ld.add_action(gripper_type_arg)
     ld.add_action(finger_type_arg)
     ld.add_action(namespace_arg)

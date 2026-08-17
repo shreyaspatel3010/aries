@@ -1,0 +1,79 @@
+# ============================================================================
+# ARIES joystick teleop — SIMULATION-ONLY speed overlay
+# ============================================================================
+#
+# Loaded AFTER config/teleop_speeds.yaml and ONLY when the stack is launched
+# against Gazebo or mock hardware (hardware_protocol:=gazebo|mock_hardware).
+# See launch/move_group.launch.py, which gates it. The real-arm launch,
+# launch/aries_hardware.launch.py, never loads this file: on hardware the
+# numbers in teleop_speeds.yaml still decide everything, unchanged.
+#
+# Only the keys below are overridden — ROS 2 merges parameter files key by key,
+# so everything this file does not mention (button/axis mapping, gripper speeds,
+# solver damping, the stop/release behaviour) keeps its teleop_speeds.yaml value.
+#
+# ----------------------------------------------------------------------------
+# Why sim needs its own numbers: real-time factor
+# ----------------------------------------------------------------------------
+# teleop_speeds.yaml is tuned in SIM-INDEPENDENT units (rad/s, m/s) and the
+# teleop node runs on the sim clock, so a joystick push produces the same motion
+# per simulated second in Gazebo as on the real arm. What differs is how long a
+# simulated second takes: measured RTF on the MarsYard world is ~0.54, i.e.
+# Gazebo advances ~0.54 s of sim time per wall second. Everything therefore
+# looks about 1.85x slower on screen than the same input does on the rover, even
+# when the command stream is identical.
+#
+# The scales below are teleop_speeds.yaml's multiplied by ~1.85, so that a given
+# stick deflection moves the arm at the same WALL-CLOCK speed you would see on
+# the real rover. They are not "fast" settings — they cancel the RTF, nothing
+# more. If your machine runs the sim closer to real time, or you would rather
+# have sim match hardware in sim-seconds, launch with
+#   use_sim_teleop_speeds:=false
+# and Gazebo falls back to the shared teleop_speeds.yaml values.
+#
+# Re-measure RTF before retuning these:
+#   gz topic -e -t /world/empty/stats | head
+# and remember the C++ clamps in src/rebel_servo_teleop_gamepad.cpp:200-215 —
+# a value past the clamp is silently pulled back to the edge, not rejected.
+#
+# NOTE: this file compensates the RTF only. The reason Gazebo teleop used to
+# crawl at roughly an EIGHTH of the commanded joint velocity was a separate and
+# much larger bug — gz_ros2_control's position_proportional_gain was never
+# actually applied — fixed in config/ros2_controllers.yaml. Do not use this file
+# to paper over a tracking problem: if the arm is not reaching the commanded
+# velocity, check that gain first.
+#   ros2 param get /gz_ros_control position_proportional_gain
+# ============================================================================
+
+
+/**/rebel_servo_teleop_gamepad:
+  ros__parameters:
+    # 0.10 * 1.85 = 0.185, held at the 0.20 clamp ceiling.
+    linear_scale: 0.18          # m/s    TCP translate      [clamp 0.01 - 0.20]
+    angular_scale: 0.33         # rad/s  TCP rotate         [clamp 0.02 - 0.80]
+    # 0.38 * 1.85 = 0.70 would exceed the 0.60 clamp, so joint jog only gets
+    # 1.58x and stays slightly below real-arm wall-clock speed. Raising it
+    # further needs the clamp in rebel_servo_teleop_gamepad.cpp to move, which
+    # would also relax the ceiling for the real arm — deliberately not done.
+    joint_scale: 0.60           # rad/s  per joint, JOINT mode  [clamp 0.01 - 0.60]
+
+    # The ceiling has to rise with the scales or it clamps the Jacobian solution
+    # straight back down and the increases above achieve nothing. 0.52 rad/s is
+    # ~35% of the 1.5 rad/s that config/joint_limits.yaml rates these joints at.
+    max_joint_velocity: 0.52    # rad/s                      [clamp 0.05 - 0.60]
+
+    # Scaled with the speeds so time-from-rest-to-full-speed stays ~0.16 s
+    # rather than the ramp becoming the thing you feel.
+    max_joint_accel: 3.3        # rad/s^2                    [clamp 0.2 - 12.0]
+
+
+/**/rebel_movegroup_joystick:
+  ros__parameters:
+    # Planned-nudge mode: speed is step size / period, so scale the steps.
+    cartesian_step_m: 0.046     # m    per nudge, cartesian mode
+    angular_step_rad: 0.185     # rad  per nudge, cartesian mode
+    joint_step_rad: 0.13        # rad  per nudge, joint mode
+
+    # Fraction of the joint_limits.yaml maxima each planned nudge may use.
+    velocity_scale: 0.65
+    acceleration_scale: 0.65

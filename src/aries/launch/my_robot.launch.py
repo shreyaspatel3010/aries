@@ -154,6 +154,19 @@ def generate_launch_description():
         )
     )
 
+    use_sim_teleop_speeds_arg = DeclareLaunchArgument(
+        'use_sim_teleop_speeds',
+        default_value='true',
+        choices=['true', 'false'],
+        description=(
+            'Scale the joystick arm speeds up by ~1.85 to cancel Gazebo\'s '
+            '~0.54 real-time factor, so a stick deflection moves the arm at the '
+            'same wall-clock speed as on the rover. See '
+            'aries_moveit/config/teleop_speeds_sim.yaml. Set false to run the '
+            'sim on the shared hardware numbers in teleop_speeds.yaml.'
+        )
+    )
+
     spawn_x_arg = DeclareLaunchArgument(
         'spawn_x',
         default_value='0.0',
@@ -364,6 +377,7 @@ def generate_launch_description():
             'joy_layout': joy_layout,
             'joy_dev': joy_dev,
             'joystick_control_mode': joystick_control_mode,
+            'use_sim_teleop_speeds': LaunchConfiguration('use_sim_teleop_speeds'),
         }.items()
     )
 
@@ -401,6 +415,7 @@ def generate_launch_description():
         joy_layout_arg,
         joy_dev_arg,
         joystick_control_mode_arg,
+        use_sim_teleop_speeds_arg,
         spawn_x_arg,
         spawn_y_arg,
         spawn_z_arg,

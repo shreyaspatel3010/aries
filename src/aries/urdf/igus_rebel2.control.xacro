@@ -25,7 +25,17 @@
                 </xacro:if>
                 <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
                     <plugin>gz_ros2_control/GazeboSimSystem</plugin>
-                    <param name="position_proportional_gain">5.0</param>
+                    <!-- position_proportional_gain does NOT belong here.
+                         gz_ros2_control ignores <param> tags in <hardware> for
+                         this setting and declares it as a ROS parameter on its
+                         own gz_ros_control node, so the 5.0 that used to sit
+                         here never applied — the package default of 0.1 ran
+                         instead and the arm tracked joystick teleop at an
+                         eighth of the commanded joint velocity. Verify with
+                           ros2 param get /gz_ros_control position_proportional_gain
+                         It is now set, with the derivation and the stability
+                         ceiling, in aries_moveit/config/ros2_controllers.yaml,
+                         which this plugin block already loads below. -->
                 </xacro:if>
                 <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
                     <plugin>Igus/Rebel</plugin>
