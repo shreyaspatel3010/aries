@@ -161,6 +161,11 @@ def generate_launch_description():
                 "imu_port": LaunchConfiguration("rover_imu_port"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
+                # The rover has two cameras; the checker has to be told about
+                # both or a front camera that never started reads as healthy.
+                # Same flags aries_hardware.launch.py resolves the drivers with.
+                "gripper_camera_mode": LaunchConfiguration("enable_depth_sensor"),
+                "front_camera_mode": LaunchConfiguration("enable_front_camera"),
             }.items(),
         ),
     ])

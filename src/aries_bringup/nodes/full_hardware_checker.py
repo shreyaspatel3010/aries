@@ -12,7 +12,8 @@ Checks:
   • Rover MicroStrain 3DM-GX5-AHRS, when forced or auto-detected
   • Mock rover fallback heartbeat
   • Joystick /joy
-  • Optional RealSense USB detection and image stream activity
+  • RealSense USB device count, and the colour stream of BOTH cameras the
+    bringup can start: the wrist "gripper_camera" and the front "camera"
 
 Manual check:
   ros2 service call /check_full_hardware std_srvs/srv/Trigger
@@ -26,6 +27,7 @@ from pathlib import Path
 import rclpy
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from geometry_msgs.msg import Twist
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, Imu, Joy, JointState
@@ -129,7 +131,32 @@ class FullHardwareChecker(Node):
         self.declare_parameter("imu_topic", "/microstrain/imu/data")
         self.declare_parameter("imu_frame", "imu_frame")
         self.declare_parameter("expected_odrive_axes", 6)
-        self.declare_parameter("realsense_color_topic", "/gripper_camera/color/image_raw")
+        # The rover carries TWO RealSense cameras and aries_hardware.launch.py
+        # starts a driver for each: camera_name "gripper_camera" on the wrist and
+        # "camera" at the front. Checking only the wrist one reported a
+        # single-camera robot, and a front camera that never came up looked
+        # exactly like a healthy one.
+        #
+        # One scalar pair per camera rather than parallel arrays: a launch file
+        # cannot pass a substitution-valued string array (the substitutions are
+        # concatenated into a single string), and these two are the cameras the
+        # robot has.
+        self.declare_parameter("gripper_camera_color_topic",
+                               "/gripper_camera/color/image_raw")
+        self.declare_parameter("front_camera_color_topic",
+                               "/camera/color/image_raw")
+        # Mirrors aries_hardware.launch.py's enable_depth_sensor /
+        # enable_front_camera: "auto" reports the camera but never calls it an
+        # error, "true" means it was explicitly asked for so a missing one is
+        # flagged, "false" drops the row.
+        #
+        # Dynamically typed because these read as tri-state text but two of the
+        # three values look boolean: `-p front_camera_mode:=false` arrives as a
+        # BOOL and would be rejected against a declared string, taking the whole
+        # checker down over a debugging flag. `_camera_config` normalises it.
+        tri_state = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter("gripper_camera_mode", "auto", tri_state)
+        self.declare_parameter("front_camera_mode", "auto", tri_state)
 
         check_interval = float(self.get_parameter("check_interval").value)
         self.timeout = float(self.get_parameter("timeout").value)
@@ -158,7 +185,7 @@ class FullHardwareChecker(Node):
         self.imu_topic = str(self.get_parameter("imu_topic").value)
         self.imu_frame = str(self.get_parameter("imu_frame").value)
         self.expected_odrive_axes = int(self.get_parameter("expected_odrive_axes").value)
-        self.realsense_color_topic = str(self.get_parameter("realsense_color_topic").value)
+        self.cameras = self._camera_config()
 
         # ── State memory ──────────────────────────────────────────────────────
         self.ctrl_times  = [None] * NUM_AXES
@@ -178,7 +205,7 @@ class FullHardwareChecker(Node):
         self.cmd_vel_time = None
         self.arm_joystick_time = None
         self.arm_joystick_status = "waiting for arm joystick status"
-        self.realsense_color_time = None
+        self.camera_times = {camera["topic"]: None for camera in self.cameras}
         self.imu_time = None
         self.imu_frame_id = ""
 
@@ -228,7 +255,12 @@ class FullHardwareChecker(Node):
         self.create_subscription(String, "/arm_joystick/status", self._arm_joystick_cb, sensor_qos)
         self.create_subscription(Twist, "/cmd_vel", self._cmd_vel_cb, sensor_qos)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, sensor_qos)
-        self.create_subscription(Image, self.realsense_color_topic, self._realsense_color_cb, sensor_qos)
+        for camera in self.cameras:
+            self.create_subscription(
+                Image, camera["topic"],
+                lambda msg, topic=camera["topic"]: self._camera_cb(topic),
+                sensor_qos,
+            )
 
         # ── Manual service ────────────────────────────────────────────────────
         self.create_service(Trigger, "/check_full_hardware", self._service_cb)
@@ -288,10 +320,24 @@ class FullHardwareChecker(Node):
         self.imu_time = self.get_clock().now()
         self.imu_frame_id = msg.header.frame_id
 
-    def _realsense_color_cb(self, msg: Image):
-        self.realsense_color_time = self.get_clock().now()
+    def _camera_cb(self, topic: str):
+        self.camera_times[topic] = self.get_clock().now()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _camera_config(self):
+        """The cameras to watch, in bringup order: wrist first, then front."""
+        cameras = []
+        for label in ("gripper", "front"):
+            mode = str(self.get_parameter(f"{label}_camera_mode").value).strip().lower()
+            if mode == "false":
+                continue
+            cameras.append({
+                "label": label,
+                "topic": str(self.get_parameter(f"{label}_camera_color_topic").value),
+                "mode": mode,
+            })
+        return cameras
 
     def _is_recent(self, ts) -> bool:
         if ts is None:
@@ -333,7 +379,16 @@ class FullHardwareChecker(Node):
         except PackageNotFoundError:
             return False
 
-    def _realsense_present(self) -> bool:
+    def _realsense_device_count(self) -> int:
+        """How many RealSense D4xx are on USB.
+
+        Counted from sysfs rather than asked of librealsense: enumerating opens
+        the devices, and the drivers already hold them. The count is enough to
+        catch the case this exists for -- more cameras plugged in than cameras
+        streaming. Note the sysfs `serial` here is the ASIC serial and does NOT
+        match what the driver binds on, so it is deliberately not reported.
+        """
+        count = 0
         for dev_path in glob.glob("/sys/bus/usb/devices/*/"):
             vendor_file = os.path.join(dev_path, "idVendor")
             product_file = os.path.join(dev_path, "idProduct")
@@ -342,15 +397,16 @@ class FullHardwareChecker(Node):
                     continue
                 product = int(open(product_file).read().strip(), 16)
                 if 0x0AD1 <= product <= 0x0B64:
-                    return True
+                    count += 1
             except Exception:
                 continue
-        return False
+        return count
 
     def _image_topics_with_publishers(self):
+        known = {camera["topic"] for camera in self.cameras}
         image_topics = []
         for topic_name, topic_types in self.get_topic_names_and_types():
-            if topic_name == self.realsense_color_topic:
+            if topic_name in known:
                 continue
             if "sensor_msgs/msg/Image" not in topic_types:
                 continue
@@ -424,9 +480,13 @@ class FullHardwareChecker(Node):
             "imu_ok": self._is_recent(selected_imu_time) if self.check_imu else False,
             "imu_publishers": self.count_publishers(selected_imu_topic) if selected_imu_topic else 0,
             "imu_frame_id": selected_imu_frame,
-            "realsense": self._realsense_present() if self.check_realsense else False,
-            "realsense_color_ok": self._is_recent(self.realsense_color_time),
-            "realsense_color_publishers": self.count_publishers(self.realsense_color_topic),
+            "realsense_devices": self._realsense_device_count() if self.check_realsense else 0,
+            "cameras": [
+                dict(camera,
+                     streaming=self._is_recent(self.camera_times[camera["topic"]]),
+                     publishers=self.count_publishers(camera["topic"]))
+                for camera in self.cameras
+            ] if self.check_realsense else [],
             "other_image_topics": self._image_topics_with_publishers() if self.check_realsense else [],
             "joy_ok": self._is_recent(self.joy_time) if self.check_joystick else False,
             "joint_states_ok": self._is_recent(self.joint_state_time),
@@ -707,28 +767,56 @@ class FullHardwareChecker(Node):
         elif self.check_joystick:
             print(f"  {Y}○{RST} /joy — Not detected yet", flush=True)
 
-        if s["realsense"]:
-            print(f"  {G}✓{RST} RealSense USB — {G}present{RST}", flush=True)
-        elif self.check_realsense:
-            print(f"  {Y}○{RST} RealSense USB — not detected / optional", flush=True)
+        if self.check_realsense:
+            devices = s["realsense_devices"]
+            streaming = [c for c in s["cameras"] if c["streaming"]]
+            tally = (f", {len(streaming)}/{len(s['cameras'])} streaming"
+                     if s["cameras"] else "")
+            if devices:
+                print(
+                    f"  {G}✓{RST} RealSense USB — {G}{devices} "
+                    f"device{'s' if devices != 1 else ''} present{RST}{tally}",
+                    flush=True,
+                )
+            else:
+                print(f"  {Y}○{RST} RealSense USB — no device detected / optional", flush=True)
 
-        if self.check_realsense and not s["realsense_color_ok"]:
-            if s["realsense_color_publishers"] > 0:
+            # One row per camera, whether or not it is healthy. A camera that
+            # never started must not be indistinguishable from a working one.
+            for camera in s["cameras"]:
+                topic, label = camera["topic"], camera["label"]
+                required = camera["mode"] == "true"
+                if camera["streaming"]:
+                    print(f"  {G}✓{RST} {label} camera — {G}streaming{RST} on {topic}",
+                          flush=True)
+                elif camera["publishers"] > 0:
+                    print(
+                        f"  {Y}~{RST} {label} camera — {Y}publisher present, "
+                        f"no recent frames{RST} on {topic}",
+                        flush=True,
+                    )
+                else:
+                    color = R if required else Y
+                    mark = "✗" if required else "○"
+                    why = ("requested but no driver publishing" if required
+                           else "not running")
+                    print(f"  {color}{mark}{RST} {label} camera — {color}{why}{RST} "
+                          f"on {topic}", flush=True)
+
+            if s["cameras"] and devices > len(streaming):
                 print(
-                    f"  {Y}~{RST} {self.realsense_color_topic} — "
-                    f"{Y}publisher present, no recent frames{RST}",
+                    f"  {Y}→  {devices} RealSense plugged in but {len(streaming)} "
+                    f"streaming. If both cameras are connected, pin them with "
+                    f"gripper_camera_serial:= / front_camera_serial:= — an "
+                    f"unpinned second camera is skipped so the drivers cannot "
+                    f"race for one device.{RST}",
                     flush=True,
                 )
-            elif s["other_image_topics"]:
+
+            if s["other_image_topics"]:
                 print(
-                    f"  {Y}~{RST} {self.realsense_color_topic} — "
-                    f"{Y}no publisher; image topics found: {', '.join(s['other_image_topics'])}{RST}",
-                    flush=True,
-                )
-            elif s["realsense"]:
-                print(
-                    f"  {Y}~{RST} {self.realsense_color_topic} — "
-                    f"{Y}no publisher yet; check realsense2_camera logs{RST}",
+                    f"  {Y}~{RST} other image topics publishing: "
+                    f"{', '.join(s['other_image_topics'])}",
                     flush=True,
                 )
 
@@ -773,6 +861,21 @@ class FullHardwareChecker(Node):
                 physical_status.append(
                     (Y, "○", "Rover IMU", "not selected; wheel odom fallback")
                 )
+
+        if self.check_realsense and s["cameras"]:
+            live = [c["label"] for c in s["cameras"] if c["streaming"]]
+            missing = [c["label"] for c in s["cameras"] if not c["streaming"]]
+            detail = f"{len(live)}/{len(s['cameras'])} streaming"
+            if live:
+                detail += f" ({', '.join(live)})"
+            if missing:
+                detail += f"; no frames from {', '.join(missing)}"
+            if not missing:
+                physical_status.append((G, "✓", "Cameras", detail))
+            elif any(c["mode"] == "true" for c in s["cameras"] if not c["streaming"]):
+                physical_status.append((R, "✗", "Cameras", detail))
+            else:
+                physical_status.append((Y, "~", "Cameras", detail))
 
         def print_physical_status():
             if not physical_status:
