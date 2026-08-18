@@ -39,7 +39,13 @@
     <joint name="imu_joint" type="fixed">
         <parent link="base_link"/>
         <child link="imu_frame"/>
-        <origin xyz="0.0 0.0 0.08" rpy="0.0 0.0 0.0"/>
+        <!-- On the top deck, behind the front D435i. The deck plate in
+             base_link_v3.stl is the large up-facing surface at z = 0.212, so
+             0.222 puts the sensor body 10 mm above it; the camera mount post
+             occupies x ~ 0.24, and the camera itself sits at x = 0.2756
+             (d435i.xacro), so x = 0.18 clears both on open deck. Was
+             0 0 0.08, which was buried mid-chassis. -->
+        <origin xyz="0.19 0.06 0.222" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!-- Base Footprint - root link for mobile robot (odom frame provided by odometry, not URDF) -->
