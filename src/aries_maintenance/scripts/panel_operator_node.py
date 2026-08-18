@@ -16,7 +16,8 @@ Controls enabled in ``config/panel_tasks.yaml`` can be run as one sequence:
 
 Three shapes of action, taken from the table rather than decided here:
 
-  flick  14 MCB toggles - jaws CLOSED, drive into the toggle and sweep up-slope.
+  flick  14 MCB toggles - jaws CLOSED, drive into the toggle and sweep along the
+         control's own `on_direction`, which lifts the lever (lever up is ON).
          They sit on a 17.7 mm pitch (3.9 mm between modules) so they cannot be
          grasped, only pushed. Same for the 5 buttons, which are pressed along
          the console normal.
@@ -69,11 +70,11 @@ from aries_maintenance.action_utils import (
     run_action,
 )
 from aries_maintenance.panel_alignment import (
-    average_transforms, control_waypoints, detect_markers, load_task_table,
+    average_transforms, control_waypoints, detect_markers,
+    flick_endpoint_in_planning_frame, load_task_table,
     panel_pose_from_markers, quaternion_from_matrix,
     refine_panel_pose_from_depth, roll_about_tool_z,
     transform_distance, transform_inlier_consensus,
-    upward_flick_in_planning_frame,
 )
 
 
@@ -1099,13 +1100,21 @@ class PanelOperator(Node):
         contact = base_from_panel @ way['contact']
         operate = base_from_panel @ way['operate']
         if way['action'] == 'flick':
-            operate = upward_flick_in_planning_frame(
-                contact, control['travel'])
+            # The model states which way ON is; carry it into the planning
+            # frame with the recovered panel pose rather than deriving it from
+            # world up or from the face's up-slope, either of which reverses
+            # depending on how the console happens to be mounted.
+            on_dir = base_from_panel[:3, :3] @ np.asarray(
+                control['on_direction'], float)
+            operate = flick_endpoint_in_planning_frame(
+                contact, control['travel'], on_dir)
             delta = operate[:3, 3] - contact[:3, 3]
             self.get_logger().info(
                 f'[{name}] MCB ON stroke in {self.get("planning_frame")}: '
-                f'[{delta[0]:.3f} {delta[1]:.3f} {delta[2]:.3f}] m '
-                '(positive Z is upward)')
+                f'[{delta[0]:.3f} {delta[1]:.3f} {delta[2]:.3f}] m, '
+                f'{control["motion_direction"]} on the console face; '
+                f'the handle rises {delta[2] * 1000:+.0f} mm '
+                '(positive = lever up = ON)')
 
         selected, why = self._select_reachable_waypoints(
             approach, contact, operate, way)

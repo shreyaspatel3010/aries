@@ -50,14 +50,14 @@
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.1441,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.1441,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -67,7 +67,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -84,21 +84,26 @@
    ],
    "model_name": "mcb_0",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_1",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.0723,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.0723,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -108,7 +113,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -125,21 +130,26 @@
    ],
    "model_name": "mcb_1",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_2",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.05428,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.05428,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -149,7 +159,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -166,21 +176,26 @@
    ],
    "model_name": "mcb_2",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_3",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.03626,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.03626,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -190,7 +205,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -207,21 +222,26 @@
    ],
    "model_name": "mcb_3",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_4",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.01824,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.01824,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -231,7 +251,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -248,21 +268,26 @@
    ],
    "model_name": "mcb_4",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_5",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     0.00022,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     0.00022,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -272,7 +297,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -289,21 +314,26 @@
    ],
    "model_name": "mcb_5",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_6",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.0178,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.0178,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -313,7 +343,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -330,21 +360,26 @@
    ],
    "model_name": "mcb_6",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_7",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.03582,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.03582,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -354,7 +389,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -371,21 +406,26 @@
    ],
    "model_name": "mcb_7",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_8",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.05384,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.05384,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -395,7 +435,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -412,21 +452,26 @@
    ],
    "model_name": "mcb_8",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_9",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.07186,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.07186,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -436,7 +481,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -453,21 +498,26 @@
    ],
    "model_name": "mcb_9",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_10",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.08988,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.08988,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -477,7 +527,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -494,21 +544,26 @@
    ],
    "model_name": "mcb_10",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_11",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.1079,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.1079,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -518,7 +573,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -535,21 +590,26 @@
    ],
    "model_name": "mcb_11",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_12",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.12592,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.12592,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -559,7 +619,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -576,21 +636,26 @@
    ],
    "model_name": "mcb_12",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "mcb_13",
    "kind": "breaker",
    "action": "flick",
    "position": [
-    0.09818,
+    0.08863,
     -0.14394,
-    0.82377
+    0.82999
    ],
    "pivot_position": [
-    0.09326,
+    0.08372,
     -0.14394,
-    0.81623
+    0.82245
    ],
    "surface_offset_m": 0.009,
    "approach": [
@@ -600,7 +665,7 @@
    ],
    "joint_axis": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "jaw_axis": [
@@ -617,7 +682,12 @@
    ],
    "model_name": "mcb_13",
    "target_state": "on",
-   "motion_direction": "up"
+   "on_direction": [
+    0.83762,
+    -0.0,
+    -0.54625
+   ],
+   "motion_direction": "down-slope"
   },
   {
    "name": "rotary_control_switch_0",

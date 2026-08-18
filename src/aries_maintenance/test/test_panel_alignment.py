@@ -16,12 +16,12 @@ import yaml
 cv2 = pytest.importorskip("cv2")
 
 from aries_maintenance.panel_alignment import (           # noqa: E402
-    average_transforms, control_waypoints, detect_markers, load_task_table,
+    average_transforms, control_waypoints, detect_markers,
+    flick_endpoint_in_planning_frame, load_task_table,
     marker_corners, panel_pose_from_markers, quaternion_from_matrix,
     refine_panel_pose_from_depth, refine_panel_translation_from_depth,
     roll_about_tool_z, tool_orientation,
     transform_consensus, transform_distance, transform_inlier_consensus,
-    upward_flick_in_planning_frame,
 )
 
 TABLE = (pathlib.Path(__file__).resolve().parents[2]
@@ -277,16 +277,72 @@ def test_closed_finger_push_uses_leading_surface_not_jaw_meeting_point():
             physical_leading_surface, control["position"], atol=1e-9)
 
 
-def test_mcb_endpoint_is_upward_in_planning_frame_and_tangent_to_panel():
+def test_mcb_endpoint_follows_the_on_direction_and_is_tangent_to_panel():
     normal = np.array([0.55, 0.10, 0.83])
     normal /= np.linalg.norm(normal)
+    on = np.cross(np.cross(normal, [0.0, 0.0, 1.0]), normal)
+    on /= np.linalg.norm(on)
     contact = np.eye(4)
     contact[:3, :3] = tool_orientation(-normal, [0.0, 1.0, 0.0])
-    operate = upward_flick_in_planning_frame(contact, 0.012)
+    operate = flick_endpoint_in_planning_frame(contact, 0.012, on)
     travel = operate[:3, 3] - contact[:3, 3]
-    assert travel[2] > 0.0
     assert float(travel @ normal) == pytest.approx(0.0, abs=1e-9)
+    assert float(travel @ on) == pytest.approx(0.012)
     assert np.linalg.norm(travel) == pytest.approx(0.012)
+
+
+def _panel_as_the_worlds_mount_it(pitch=-1.57, position=(1.35, 0.0, 0.3)):
+    """The pose both worlds spawn the console with: face out, but rolled, so
+    the drawing's up-slope points below horizontal."""
+    transform = np.eye(4)
+    transform[:3, :3] = np.array([[math.cos(pitch), 0.0, math.sin(pitch)],
+                                  [0.0, 1.0, 0.0],
+                                  [-math.sin(pitch), 0.0, math.cos(pitch)]])
+    transform[:3, 3] = position
+    return transform
+
+
+def test_every_mcb_lever_travels_upward_in_the_world_to_reach_on():
+    """The one property the user cares about: lever up is ON, lever down is OFF.
+
+    Regression for two ways of getting it wrong on this mount, where the face is
+    rolled so the drawing's up-slope points 57 deg BELOW horizontal: deriving
+    the stroke from planning-frame +Z (what the code first did) and deriving it
+    from ``console_up_slope`` both reverse here. The model states the direction
+    and this checks the result in the world, which is where the user sees it."""
+    table = _table()
+    base_from_panel = _panel_as_the_worlds_mount_it()
+    up_slope = base_from_panel[:3, :3] @ np.asarray(
+        table["console_up_slope"], float)
+    assert up_slope[2] < 0.0, "this fixture is meant to be the rolled mount"
+
+    breakers = [c for c in table["controls"] if c["action"] == "flick"]
+    assert len(breakers) == 14
+    for control in breakers:
+        on = base_from_panel[:3, :3] @ np.asarray(control["on_direction"], float)
+        contact = base_from_panel @ control_waypoints(control, table)["contact"]
+        operate = flick_endpoint_in_planning_frame(
+            contact, control["travel"], on)
+        stroke = operate[:3, 3] - contact[:3, 3]
+        assert np.linalg.norm(stroke) == pytest.approx(control["travel"])
+        assert stroke[2] > 0.0, f"{control['name']} lever travels downward"
+        stroke /= np.linalg.norm(stroke)
+        # 1e-5 rather than exact: the table rounds its direction vectors to
+        # five decimals, which is ~0.1 mdeg of tilt against the face.
+        assert float(stroke @ on) == pytest.approx(1.0, abs=1e-5), control["name"]
+        assert float(stroke @ up_slope) < 0.0, "ON is down-slope on this mount"
+
+
+def test_mcb_flick_rejects_an_on_direction_left_in_the_panel_frame():
+    """Forgetting the panel rotation leaves a direction that is not tangent to
+    the face; silently projecting it would aim the stroke somewhere else."""
+    table = _table()
+    control = next(c for c in table["controls"] if c["action"] == "flick")
+    base_from_panel = _panel_as_the_worlds_mount_it()
+    contact = base_from_panel @ control_waypoints(control, table)["contact"]
+    with pytest.raises(ValueError, match="tangent"):
+        flick_endpoint_in_planning_frame(
+            contact, control["travel"], control["on_direction"])
 
 
 def test_contact_targets_are_on_modeled_surfaces_not_joint_pivots():
@@ -354,9 +410,11 @@ def test_press_and_flick_move_the_right_way():
         elif control["action"] == "flick":
             assert abs(float(travel @ normal)) < 1e-6   # across the face only
             assert abs(np.linalg.norm(travel) - control["travel"]) < 1e-6
-            upward = np.asarray(table["console_up_slope"], float)
-            upward /= np.linalg.norm(upward)
-            assert float(travel @ upward) > 0.0          # YAML true sets MCB up
+            # YAML true sets the breaker ON, along the direction the model
+            # declares - not up-slope, which on this mount is the OFF end.
+            on = np.asarray(control["on_direction"], float)
+            on /= np.linalg.norm(on)
+            assert float(travel @ on) == pytest.approx(control["travel"])
         else:
             assert np.linalg.norm(travel) < 1e-12
             assert way["turn_about_approach"] > 0
@@ -384,7 +442,15 @@ def test_mcbs_are_numbered_left_to_right_and_command_upward_on():
     assert [c["joint"] for c in mcbs] == [f"mcb_{i}_joint" for i in range(14)]
     assert len(set(c["model_name"] for c in mcbs)) == 14
     assert all(c["target_state"] == "on" for c in mcbs)
-    assert all(c["motion_direction"] == "up" for c in mcbs)
+    # The model states the ON direction rather than leaving it to be derived
+    # from a frame convention, and on this mount ON is down-slope on the face -
+    # which is what puts the lever UP in the world. See the world-frame test.
+    assert all(c["motion_direction"] == "down-slope" for c in mcbs)
+    down_slope = -np.asarray(_table()["console_up_slope"], float)
+    for control in mcbs:
+        assert np.allclose(control["on_direction"], down_slope, atol=1e-5)
+        assert np.dot(control["on_direction"], control["approach"]) == \
+            pytest.approx(0.0, abs=1e-5)
 
 
 def test_yaml_flags_match_every_control_in_task_order():

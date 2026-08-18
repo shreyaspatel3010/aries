@@ -33,7 +33,7 @@
     </visual>
   </link>
   <link name='mcb_0'>
-    <pose>0.0932616 0.1441 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.1441 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -45,7 +45,7 @@
     </collision>
   </link>
   <link name='mcb_1'>
-    <pose>0.0932616 0.0723 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.0723 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -57,7 +57,7 @@
     </collision>
   </link>
   <link name='mcb_2'>
-    <pose>0.0932616 0.05428 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.05428 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -69,7 +69,7 @@
     </collision>
   </link>
   <link name='mcb_3'>
-    <pose>0.0932616 0.03626 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.03626 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -81,7 +81,7 @@
     </collision>
   </link>
   <link name='mcb_4'>
-    <pose>0.0932616 0.01824 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.01824 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -93,7 +93,7 @@
     </collision>
   </link>
   <link name='mcb_5'>
-    <pose>0.0932616 0.000220001 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 0.000220001 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -105,7 +105,7 @@
     </collision>
   </link>
   <link name='mcb_6'>
-    <pose>0.0932616 -0.0178 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.0178 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -117,7 +117,7 @@
     </collision>
   </link>
   <link name='mcb_7'>
-    <pose>0.0932616 -0.03582 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.03582 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -129,7 +129,7 @@
     </collision>
   </link>
   <link name='mcb_8'>
-    <pose>0.0932616 -0.05384 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.05384 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -141,7 +141,7 @@
     </collision>
   </link>
   <link name='mcb_9'>
-    <pose>0.0932616 -0.07186 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.07186 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -153,7 +153,7 @@
     </collision>
   </link>
   <link name='mcb_10'>
-    <pose>0.0932616 -0.08988 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.08988 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -165,7 +165,7 @@
     </collision>
   </link>
   <link name='mcb_11'>
-    <pose>0.0932616 -0.1079 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.1079 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -177,7 +177,7 @@
     </collision>
   </link>
   <link name='mcb_12'>
-    <pose>0.0932616 -0.12592 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.12592 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -189,7 +189,7 @@
     </collision>
   </link>
   <link name='mcb_13'>
-    <pose>0.0932616 -0.14394 0.816229 -0.577878 -0 -1.5708</pose>
+    <pose>0.0837181 -0.14394 0.822453 -0.577878 -0 -1.5708</pose>
     <inertial><mass>0.05</mass>
       <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -347,7 +347,7 @@
   <joint name='mcb_0_joint' type='revolute'>
     <parent>body</parent><child>mcb_0</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -356,7 +356,7 @@
   <joint name='mcb_1_joint' type='revolute'>
     <parent>body</parent><child>mcb_1</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -365,7 +365,7 @@
   <joint name='mcb_2_joint' type='revolute'>
     <parent>body</parent><child>mcb_2</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -374,7 +374,7 @@
   <joint name='mcb_3_joint' type='revolute'>
     <parent>body</parent><child>mcb_3</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -383,7 +383,7 @@
   <joint name='mcb_4_joint' type='revolute'>
     <parent>body</parent><child>mcb_4</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -392,7 +392,7 @@
   <joint name='mcb_5_joint' type='revolute'>
     <parent>body</parent><child>mcb_5</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -401,7 +401,7 @@
   <joint name='mcb_6_joint' type='revolute'>
     <parent>body</parent><child>mcb_6</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -410,7 +410,7 @@
   <joint name='mcb_7_joint' type='revolute'>
     <parent>body</parent><child>mcb_7</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -419,7 +419,7 @@
   <joint name='mcb_8_joint' type='revolute'>
     <parent>body</parent><child>mcb_8</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -428,7 +428,7 @@
   <joint name='mcb_9_joint' type='revolute'>
     <parent>body</parent><child>mcb_9</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -437,7 +437,7 @@
   <joint name='mcb_10_joint' type='revolute'>
     <parent>body</parent><child>mcb_10</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -446,7 +446,7 @@
   <joint name='mcb_11_joint' type='revolute'>
     <parent>body</parent><child>mcb_11</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -455,7 +455,7 @@
   <joint name='mcb_12_joint' type='revolute'>
     <parent>body</parent><child>mcb_12</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>
@@ -464,7 +464,7 @@
   <joint name='mcb_13_joint' type='revolute'>
     <parent>body</parent><child>mcb_13</child>
     <axis>
-      <xyz>1 0 0</xyz>
+      <xyz>-1 0 0</xyz>
       <limit><lower>-0.4</lower><upper>0.4</upper>
              <effort>1.0</effort><velocity>8.0</velocity></limit>
       <dynamics><damping>0.08</damping><friction>0.12</friction></dynamics>

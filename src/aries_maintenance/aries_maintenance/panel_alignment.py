@@ -462,43 +462,66 @@ def control_waypoints(control, table, standoff=None, tool_contact_offset=0.0):
         turn = float(control["travel"])
     elif control["action"] == "press":
         operate = contact - approach_dir * float(control["travel"])
-    else:                                   # flick an enabled MCB upward
-        # A YAML ``true`` means operate/set the breaker upward. Do not inherit
-        # the sign of jaw_axis here: that axis describes an undirected jaw line
-        # and reversing it is mechanically equivalent for a grasp, whereas an
-        # MCB's switching direction is not equivalent.
-        upward = np.asarray(table["console_up_slope"], float)
-        upward = upward / np.linalg.norm(upward)
-        operate = contact + upward * float(control["travel"])
+    else:                                   # flick an enabled MCB to ON
+        # A YAML ``true`` means set the breaker ON, and the model says which way
+        # that is (``on_direction``) - it is not a frame convention to be
+        # rederived here, because the console is not mounted the way its drawing
+        # assumes. Do not inherit the sign of jaw_axis either: that axis
+        # describes an undirected jaw line and reversing it is mechanically
+        # equivalent for a grasp, whereas an MCB's switching direction is not.
+        on = np.asarray(control["on_direction"], float)
+        on = on / np.linalg.norm(on)
+        operate = contact + on * float(control["travel"])
     return dict(approach=pose(approach), contact=pose(contact),
                 operate=pose(operate), turn_about_approach=turn,
                 grip=bool(control["grip"]), action=control["action"],
                 name=control["name"], joint=control["joint"])
 
 
-def upward_flick_in_planning_frame(contact_pose, travel,
-                                   planning_up=(0.0, 0.0, 1.0)):
-    """Return an MCB endpoint that is unambiguously upward in robot space.
+def flick_endpoint_in_planning_frame(contact_pose, travel, on_direction):
+    """Return the MCB endpoint that carries the toggle to its ON end.
 
-    Marker texture orientation and a panel-frame convention must never decide
-    whether an ON command moves up or down. Project planning-frame +Z onto the
-    panel face recovered from the tool's contact orientation. The resulting
-    motion remains tangent to the console and always has a positive +Z part.
+    ``on_direction`` is the control's own ``on_direction`` from the task table,
+    rotated into the planning frame by the caller. It is projected onto the face
+    recovered from the tool's contact orientation so the stroke stays exactly
+    tangent to the console.
+
+    Which way ON lies is the model's to state, never this function's to derive.
+    An earlier version projected planning-frame +Z, so that no panel convention
+    could decide it; that silently becomes the OFF direction the moment the
+    console is not standing upright. Deriving it from ``console_up_slope``
+    instead is just as wrong whenever the console is mounted rolled, as it is in
+    the worlds here - the drawing's up-slope then points 57 deg below horizontal.
+    So the table carries the answer and this only carries it out. A mirrored or
+    quarter-turned marker solve is caught upstream by the pose reprojection
+    gate, not here.
+
+    ``jaw_axis`` is still never consulted for this: that axis describes an
+    undirected jaw line and reversing it is mechanically equivalent for a
+    grasp, whereas an MCB's switching direction is not.
     """
     contact = np.asarray(contact_pose, float)
     result = contact.copy()
     # Tool +Z points into the panel at contact; negate it for the outward normal.
     normal = -contact[:3, 2]
     normal /= np.linalg.norm(normal)
-    up = np.asarray(planning_up, float)
-    up = up - normal * float(up @ normal)
-    length = np.linalg.norm(up)
-    if length < 1e-6:
-        raise ValueError("planning-frame up is parallel to the panel normal")
-    up /= length
-    if float(up @ np.asarray(planning_up, float)) <= 0.0:
-        raise ValueError("projected MCB direction is not upward")
-    result[:3, 3] += up * float(travel)
+    on = np.asarray(on_direction, float)
+    norm = np.linalg.norm(on)
+    if norm < 1e-6:
+        raise ValueError("ON direction is not a direction")
+    on = on / norm
+    tangent = on - normal * float(on @ normal)
+    length = np.linalg.norm(tangent)
+    # The ON direction is perpendicular to the console normal by construction
+    # and both come from the same recovered pose, so the projection must be a
+    # no-op. A short one means the caller passed a vector from the wrong frame -
+    # most likely the panel-frame direction with the panel rotation left off.
+    if length < 0.99:
+        raise ValueError(
+            "ON direction is not tangent to the console face "
+            f"(projection kept {length:.3f}); it must be given in the "
+            "planning frame")
+    result[:3, 3] += tangent / length * float(travel)
     return result
 
 

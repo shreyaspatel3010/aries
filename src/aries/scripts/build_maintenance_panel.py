@@ -132,7 +132,11 @@ DIN_RAIL_U0, DIN_RAIL_U1 = 12.2, 317.6  # bluish rail measured 12.62 .. 317.24
 DIN_V0, DIN_V1 = 114.0, 160.0          # the 45 mm nose that shows through
 DIN_PROUD = 15.0                       # toggle tip above the sub-plate
 DIN_BLANK_N = 11.8                     # blanking strip, flush with the module noses
-DIN_TOGGLE_V = 143.4                   # toggle band centre, from the front view
+# The front view's toggle band centres on v = 143.4, but the organisers' 1mcb
+# part carries its handle ~11 mm up-slope of that once the module is placed by
+# its housing. Report placement wins for the module; the handle's own hinge and
+# contact point are measured off the part (`outer_face_centre`), because an axis
+# that misses the handle swings it through the console instead of rocking it.
 DIN_TOGGLE_PIVOT_DEPTH = 9.0           # hinge below the toggle's outer face
 
 # row 3 -- rotary cam switches, lever handle hanging down-slope
@@ -389,6 +393,25 @@ def face_world(u, v, n):
     return O_FACE + E_U * (u * MM) + E_V * (v * MM) + E_N * (n * MM)
 
 
+def face_of(point):
+    """Inverse of `face_world`: a world point as face coordinates (u, v, n) mm."""
+    d = Vector(point) - O_FACE
+    return Vector((d.dot(E_U), d.dot(E_V), d.dot(E_N))) / MM
+
+
+def outer_face_centre(obj, skin=3.0):
+    """Face coordinates (v, n) of the outermost face of a placed part.
+
+    Where a moving part is hinged has to be read off the part, not assumed from
+    where the part was placed: a CAD module is placed by its housing and its
+    handle can sit well off that centre.
+    """
+    points = [face_of(obj.matrix_world @ vert.co) for vert in obj.data.vertices]
+    outer_n = max(p.z for p in points)
+    outer = [p.y for p in points if p.z > outer_n - skin]
+    return sum(outer) / len(outer), outer_n
+
+
 def place(obj, u, v, n, spin_deg=0.0):
     """Put a part centred at face coordinates (u, v, n)."""
     rot = FACE_ROT
@@ -585,11 +608,20 @@ def build_din_row(col, mats, parts_dir):
     # index right to left, so mcb_13 stays the lone breaker at the left end
     for j, (u, obj) in enumerate(sorted(zip(centres, handles),
                                         key=lambda p: p[0])):
+        # Hinge the toggle under ITSELF. The 1mcb handle is not centred on its
+        # housing - placed by the housing it lands ~11 mm up-slope of the
+        # drawing's toggle band - so taking the hinge from DIN_TOGGLE_V put the
+        # axis 14 mm off the handle. The handle then ORBITED that axis instead
+        # of rocking: at the +0.4 ON end it swung 5 mm INTO the console face
+        # (n 16.9 -> 11.9) rather than tipping up-slope, i.e. an operated
+        # breaker sank into the panel. The same constant also aimed the
+        # fingertip at bare housing 11 mm below the handle.
+        toggle_v, toggle_n = outer_face_centre(obj)
         register_control(f"mcb_{j}", "breaker", "flick", [obj], u,
-                         DIN_TOGGLE_V,
-                         pivot_n=n_mount - DIN_TOGGLE_PIVOT_DEPTH,
-                         surface_n=n_mount,
-                         axis="across", travel=0.012,
+                         toggle_v,
+                         pivot_n=toggle_n - DIN_TOGGLE_PIVOT_DEPTH,
+                         surface_n=toggle_n,
+                         axis=BREAKER_AXIS, travel=0.012,
                          limits=(-0.4, 0.4), grip=False)
 
     # blanking strip over the empty rail between the lone breaker and the run
@@ -700,9 +732,25 @@ SDF_STANDOFF = 0.06
 CONTROL_MASS = 0.05
 BODY_MASS = 40.0
 
-AXIS_LOCAL = {"across": (1.0, 0.0, 0.0),      # e_u
+AXIS_LOCAL = {"across": (1.0, 0.0, 0.0),      # e_u; +ve throws a part up-slope
+              "across_reversed": (-1.0, 0.0, 0.0),   # +ve throws it down-slope
               "normal": (0.0, 0.0, 1.0),      # e_n, out of the face
               "push":   (0.0, 0.0, -1.0)}     # into the face
+
+# Which way a breaker's handle travels to reach ON, in face coordinates.
+#
+# On the drawing that is up-slope, and if the console ever stands on its base
+# that is also up in the world. The worlds mount it face-out but rolled: rows
+# run buttons(high) -> MCB -> cam -> sockets(low), i.e. the face is upside down
+# and up-slope points 57 deg BELOW horizontal. The user's call (2026-08-18) is
+# that the mount stays and the breakers follow the world: lever UP is ON, lever
+# DOWN is OFF, as on any real MCB you look at. So ON is DOWN-slope on the face,
+# which is upward in the world on this mount, and the breaker joints are given
+# the reversed axis so a positive joint angle is also the ON direction.
+#
+# If the mount is ever turned right way up, flip these two back together.
+BREAKER_ON_IS_UP_SLOPE = False
+BREAKER_AXIS = "across" if BREAKER_ON_IS_UP_SLOPE else "across_reversed"
 
 
 def _export_glb(objects, path, basis=None):
@@ -807,8 +855,14 @@ def export_gazebo_model(out_dir, ids):
             "model_name": name,
         }
         if ctl["kind"] == "breaker":
+            # The model states which way ON is; nothing downstream may guess it
+            # from a frame convention. See BREAKER_ON_IS_UP_SLOPE for why it is
+            # down-slope on this mount.
             entry["target_state"] = "on"
-            entry["motion_direction"] = "up"
+            entry["on_direction"] = (up_slope if BREAKER_ON_IS_UP_SLOPE else
+                                     [round(-x, 5) for x in UP_SLOPE])
+            entry["motion_direction"] = ("up-slope" if BREAKER_ON_IS_UP_SLOPE
+                                         else "down-slope")
         table.append(entry)
 
     markers = []
