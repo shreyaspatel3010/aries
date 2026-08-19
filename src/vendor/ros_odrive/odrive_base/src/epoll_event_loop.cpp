@@ -39,6 +39,10 @@ bool EpollEventLoop::run_until_empty() {
         if (n_triggered_events_ == -1) return false;
         for (int i = 0; i < n_triggered_events_; ++i) {
             EventContext* handler = static_cast<EventContext*>(triggered_events_[i].data.ptr);
+            // drop_event() nulls out entries whose event was deregistered
+            // earlier in this same batch — closing the CAN socket from its own
+            // error callback does exactly that.
+            if (handler == nullptr) continue;
             handler->callback(triggered_events_[i].events);
         }
     }

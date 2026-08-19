@@ -1,0 +1,53 @@
+# Every physical device on Aries, in one place.
+#
+# This file is the single source of truth for device *identity* — which port,
+# which serial, which address. It is not for tuning: speeds, limits and gains
+# stay in the config file of the package that owns them.
+#
+# Launch files read these as their argument defaults, so editing here changes
+# every launch path at once. A command-line argument still wins over the file,
+# and `ARIES_DEVICES_FILE=/path/to/other.yaml` swaps the whole set for a second
+# robot or a bench rig.
+#
+# The workspace is built with --symlink-install, so an edit here takes effect on
+# the next launch with no rebuild.
+
+arm:
+  # igus ReBeL control box, reachable over Ethernet.
+  host: "192.168.3.11"
+  port: 3920
+
+gripper:
+  # Teensy running the gripper firmware. Always the by-id path: /dev/ttyACM*
+  # numbering moves when another board is plugged in, and a swapped board that
+  # still enumerates silently resolves to mock hardware instead of failing.
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
+
+rover:
+  # SocketCAN interface to the six ODrives. The bitrate has to match the
+  # /etc/sudoers.d/rover_can rule, which permits exactly one bring-up line.
+  can_interface: "can0"
+  can_bitrate: 250000
+
+imu:
+  # Persistent symlink from aries_imu/setup/99-microstrain.rules to the
+  # MicroStrain 3DM-GX5-AHRS.
+  port: "/dev/microstrain_main"
+
+cameras:
+  # D435i camera serials as librealsense reports them — what the driver matches
+  # on. NOT the sysfs serial, which is the ASIC serial: a different number that
+  # makes the driver retry "device ... is NOT found" forever.
+  #
+  #   rs-enumerate-devices -s
+  #
+  # Pinned, not auto-assigned: two identical cameras can only be ordered by
+  # serial, and that order says nothing about which end of the robot they are
+  # bolted to. Unpinned, the grasp stack can silently run on the front camera.
+  # Verified 2026-08-19 from a frame off each: the wrist one looks across the
+  # rover deck, the front one at whatever stands in front of the rover.
+  gripper_serial: "216322070216"
+  front_serial: "207522077539"
+
+joystick:
+  device: "/dev/input/js0"

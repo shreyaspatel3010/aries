@@ -481,6 +481,38 @@ It checks:
 - Joystick `/joy`
 - Optional RealSense detection
 
+## New computer setup
+
+Everything the stack needs from root is in one script. Run it once per machine,
+as the account that will launch the robot (not with `sudo` — it needs to know
+which account to grant the rules to):
+
+```bash
+./scripts/setup_system.sh
+```
+
+It installs:
+
+- `/etc/sudoers.d/rover_can` — passwordless `ip link set <can> up/down` for the
+  interface and bitrate in `src/aries_common/config/devices.yaml`, and nothing
+  else. The drive stack needs it at launch and again whenever the CAN adapter is
+  unplugged and plugged back in.
+- `/etc/udev/rules.d/99-aries-realsense.rules` — keeps USB autosuspend from
+  powering a D435i down mid-session.
+- `/etc/udev/rules.d/99-aries-teensy.rules` — serial and flashing access to the
+  Teensy gripper board.
+- Membership of `dialout`, `plugdev` and `input`. **These only take effect after
+  logging out and back in.**
+
+It does not install apt packages or bring the CAN interface up; anything missing
+is printed at the end with the exact command. Re-running is safe — every step is
+idempotent and reports whether it changed anything.
+
+```bash
+./scripts/setup_system.sh --check      # verify only, change nothing
+./scripts/setup_system.sh --dry-run    # print what would change
+```
+
 ## Rover CAN Setup
 
 Bringup launches do not configure CAN with sudo by default. You can set CAN up
@@ -512,12 +544,11 @@ ros2 launch aries_bringup rover_drive.launch.py setup_can:=false
 ros2 launch aries_bringup full_hardware.launch.py setup_rover_can:=false
 ```
 
-To use automatic CAN setup without a password prompt, install the limited
-sudoers rule provided by this workspace:
+To use automatic CAN setup without a password prompt, run the one-time system
+setup (see [New computer setup](#new-computer-setup)):
 
 ```bash
-sudo visudo -cf src/aries_drive/setup/rover_can
-sudo install -m 440 src/aries_drive/setup/rover_can /etc/sudoers.d/rover_can
+./scripts/setup_system.sh
 ```
 
 That rule allows only these commands without a password:

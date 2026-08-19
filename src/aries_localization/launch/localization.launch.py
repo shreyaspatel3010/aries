@@ -29,6 +29,8 @@ from launch_ros.actions import Node
 
 from aries_common.detect import resolve_imu_source, resolve_rover_backend
 
+from aries_common.devices import device_str
+
 ODOM_ONLY_CONFIG = [
     False, False, False,  # x, y, z
     False, False, False,  # roll, pitch, yaw
@@ -175,11 +177,11 @@ def generate_launch_description():
 
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto",
                               choices=["auto", "odrive", "mock_hardware"]),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
 
         DeclareLaunchArgument("use_imu", default_value="auto",
                               choices=["auto", "true", "false", "microstrain"]),
-        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+        DeclareLaunchArgument("imu_port", default_value=device_str("imu.port")),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
 

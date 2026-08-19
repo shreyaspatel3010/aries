@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
 import threading
 import time
 from typing import Iterable
 
 import rclpy
+from aries_common.detect import can_link_state, describe_can_link
 from geometry_msgs.msg import Twist
 from odrive_can.msg import ControlMessage
 from odrive_can.srv import AxisState
@@ -17,7 +19,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import Bool, String
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 
 CLOSED_LOOP_CONTROL = 8
@@ -118,6 +120,18 @@ class CmdVelOdriveBridge(Node):
         self.declare_parameter("arm_retry_period_s", 2.0)
         self.declare_parameter("axis_state_request_timeout_s", 3.0)
         self.declare_parameter("auto_arm", False)
+        # An explicit enable (the operator's LB+Y) re-establishes CAN before it
+        # tries to arm. Unplugging the USB CAN adapter leaves every socket in
+        # this stack bound to an interface index that no longer exists, and
+        # plugging it back in returns the interface administratively DOWN with
+        # a new index, so nothing recovers on its own however often the arm is
+        # retried. Periodic re-arm attempts deliberately skip this: the link
+        # must not be cycled underneath a bus that is merely busy.
+        self.declare_parameter("can_recovery", True)
+        self.declare_parameter("can_interface", "can0")
+        self.declare_parameter("can_bitrate", 250000)
+        self.declare_parameter("can_device_wait_s", 3.0)
+        self.declare_parameter("can_reconnect_timeout_s", 8.0)
 
         self.cmd_vel_topic = self._topic("cmd_vel_topic")
         self.enable_service = self._topic("enable_service")
@@ -154,6 +168,13 @@ class CmdVelOdriveBridge(Node):
             float(self.get_parameter("axis_state_request_timeout_s").value),
         )
         self.auto_arm = bool(self.get_parameter("auto_arm").value)
+        self.can_recovery = bool(self.get_parameter("can_recovery").value)
+        self.can_interface = str(self.get_parameter("can_interface").value)
+        self.can_bitrate = int(self.get_parameter("can_bitrate").value)
+        self.can_device_wait_s = max(0.0, float(self.get_parameter("can_device_wait_s").value))
+        self.can_reconnect_timeout_s = max(
+            0.5, float(self.get_parameter("can_reconnect_timeout_s").value)
+        )
 
         self._validate_drivetrain()
         self._period = 1.0 / self.publish_rate_hz
@@ -167,6 +188,12 @@ class CmdVelOdriveBridge(Node):
         self._armed = False
         self._pending_axes = set(range(self.num_axes))
         self._arm_in_progress = False
+        self._recover_can_pending = False
+        self._can_link = can_link_state(self.can_interface)
+        # What the ODrive nodes' sockets are bound to. They bound at startup,
+        # so it starts as whatever is there now; a later mismatch against the
+        # live index is a re-plug, and every one of those sockets is then dead.
+        self._bound_ifindex = self._can_link["ifindex"]
         self._state_lock = threading.Lock()
 
         self.axis_publishers = [
@@ -179,6 +206,10 @@ class CmdVelOdriveBridge(Node):
             self.create_client(
                 AxisState, f"/odrive_axis{i}/request_axis_state"
             )
+            for i in range(self.num_axes)
+        ]
+        self.reconnect_clients = [
+            self.create_client(Trigger, f"/odrive_axis{i}/reconnect")
             for i in range(self.num_axes)
         ]
 
@@ -204,7 +235,8 @@ class CmdVelOdriveBridge(Node):
         self.get_logger().info(
             "Fail-safe ODrive bridge ready: "
             f"{self.cmd_vel_topic} -> axes 0..{self.num_axes - 1}; "
-            f"enable with {self.enable_service}; auto_arm={self.auto_arm}"
+            f"enable with {self.enable_service}; auto_arm={self.auto_arm}; "
+            f"{self.can_interface} {describe_can_link(self._can_link)}"
         )
 
         if self.auto_arm:
@@ -271,6 +303,7 @@ class CmdVelOdriveBridge(Node):
                 self._pending_axes = set(range(self.num_axes))
                 self._last_cmd_at = None
                 self._command_valid = False
+                self._recover_can_pending = self.can_recovery
             self._publish_enabled(False)
             self._retry_arm()
             response.success = True
@@ -302,16 +335,38 @@ class CmdVelOdriveBridge(Node):
                 and bool(self._pending_axes)
                 and not self._arm_in_progress
             )
+            recover_can = self._recover_can_pending
             if should_arm:
                 self._arm_in_progress = True
-        if should_arm:
-            threading.Thread(target=self._arm_thread, daemon=True).start()
+        if not should_arm:
+            return
+
+        # A periodic retry over a link that cannot carry a frame only produces
+        # six timeouts and a wall of log. Recovery is the operator's call, so
+        # wait here until an explicit enable arrives to make it.
+        if not recover_can and not self._can_link["usable"]:
+            with self._state_lock:
+                self._arm_in_progress = False
+            self.get_logger().warn(
+                f"Not arming: {self.can_interface} is "
+                f"{describe_can_link(self._can_link)}. Press LB+Y to bring it back "
+                f"up and re-bind every ODrive socket.",
+                throttle_duration_sec=10.0,
+            )
+            return
+
+        threading.Thread(target=self._arm_thread, daemon=True).start()
 
     def _arm_thread(self) -> None:
         futures = {}
         failures = []
         with self._state_lock:
             pending = sorted(self._pending_axes)
+            recover_can = self._recover_can_pending
+            self._recover_can_pending = False
+
+        if recover_can:
+            self._recover_can()
 
         # Establish a zero setpoint before any axis enters CLOSED_LOOP_CONTROL.
         # The regular timer stays silent while disarmed to avoid flooding CAN.
@@ -368,6 +423,148 @@ class CmdVelOdriveBridge(Node):
             self.get_logger().warn(
                 "Drive remains disabled: " + "; ".join(failures)
             )
+
+    # ── CAN recovery ──────────────────────────────────────────────────────
+
+    def _recover_can(self) -> None:
+        """Put the CAN link and every ODrive socket back into a usable state.
+
+        Runs on the arming thread, before any axis state is requested, so the
+        axes are asked to close the loop only over a link that can carry the
+        request. Each step is skipped when it is already satisfied, so pressing
+        the re-arm combo on a healthy rover costs one sysfs read.
+        """
+        link = self._wait_for_can_device()
+        if not link["present"]:
+            self.get_logger().error(
+                f"CAN recovery: {self.can_interface} is not present after "
+                f"{self.can_device_wait_s:.1f} s — plug the CAN adapter back in"
+            )
+            self._can_link = link
+            return
+
+        if not link["usable"]:
+            self.get_logger().warn(
+                f"CAN recovery: {self.can_interface} is "
+                f"{describe_can_link(link)}; bringing it up at {self.can_bitrate} bit/s"
+            )
+            if not self._bring_can_link_up():
+                self._can_link = can_link_state(self.can_interface)
+                return
+            link = can_link_state(self.can_interface)
+            if not link["usable"]:
+                self.get_logger().error(
+                    f"CAN recovery: {self.can_interface} is still "
+                    f"{describe_can_link(link)} after the bring-up"
+                )
+                self._can_link = link
+                return
+
+        if self._bound_ifindex is not None and self._bound_ifindex != link["ifindex"]:
+            self.get_logger().warn(
+                f"CAN recovery: {self.can_interface} came back as a new device "
+                f"(ifindex {self._bound_ifindex} -> {link['ifindex']}); every socket "
+                f"bound to the old one is dead and must be re-bound"
+            )
+        self._can_link = link
+        if self._reconnect_axes():
+            self._bound_ifindex = link["ifindex"]
+
+    def _wait_for_can_device(self) -> dict:
+        """Poll for the interface node, which reappears a moment after a re-plug."""
+        link = can_link_state(self.can_interface)
+        if link["present"] or self.can_device_wait_s <= 0.0:
+            return link
+        deadline = time.monotonic() + self.can_device_wait_s
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            link = can_link_state(self.can_interface)
+            if link["present"]:
+                break
+        return link
+
+    def _bring_can_link_up(self) -> bool:
+        """Re-run the bring-up the launch file does, via the rover_can sudoers rule.
+
+        The rule permits these two exact command lines and nothing else, so the
+        interface name and bitrate have to match it or sudo asks for a password
+        that nothing here can answer.
+        """
+        # A down first is what clears a bus-off controller; it fails harmlessly
+        # when the interface is already down.
+        self._run_can_command(["sudo", "-n", "ip", "link", "set", self.can_interface, "down"])
+        result = self._run_can_command([
+            "sudo", "-n", "ip", "link", "set", self.can_interface,
+            "up", "type", "can", "bitrate", str(self.can_bitrate),
+        ])
+        if result is not None and result.returncode == 0:
+            return True
+
+        detail = "timed out" if result is None else (result.stderr or "").strip()
+        self.get_logger().error(
+            f"CAN recovery: could not bring {self.can_interface} up: {detail}  "
+            f"Install the passwordless rule by running scripts/setup_system.sh once; "
+            f"it grants exactly this command for {self.can_interface} at "
+            f"{self.can_bitrate} bit/s and nothing else."
+        )
+        return False
+
+    def _run_can_command(self, command: list[str]):
+        try:
+            return subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.get_logger().warn(f"CAN recovery: {' '.join(command)} failed: {exc}")
+            return None
+
+    def _reconnect_axes(self) -> bool:
+        """Ask every odrive_can_node to bind a fresh socket to the interface.
+
+        Returns True when every axis confirmed it re-bound.
+        """
+        futures = {}
+        failures = []
+        for axis, client in enumerate(self.reconnect_clients):
+            if not client.wait_for_service(timeout_sec=0.2):
+                failures.append(f"axis {axis}: reconnect service unavailable")
+                continue
+            futures[axis] = client.call_async(Trigger.Request())
+
+        reconnected = []
+        deadline = time.monotonic() + self.can_reconnect_timeout_s
+        while futures and time.monotonic() < deadline:
+            for axis in [item for item, future in futures.items() if future.done()]:
+                future = futures.pop(axis)
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    failures.append(f"axis {axis}: reconnect error: {exc}")
+                    continue
+                if result is None:
+                    failures.append(f"axis {axis}: empty reconnect result")
+                elif result.success:
+                    reconnected.append(axis)
+                else:
+                    failures.append(f"axis {axis}: {result.message}")
+            if futures:
+                time.sleep(0.02)
+
+        for axis in futures:
+            failures.append(f"axis {axis}: reconnect timed out")
+
+        if reconnected:
+            self.get_logger().info(
+                f"CAN recovery: re-bound axes {sorted(reconnected)} to "
+                f"{self.can_interface} (ifindex {self._can_link['ifindex']})"
+            )
+        if failures:
+            self.get_logger().warn("CAN recovery incomplete: " + "; ".join(failures))
+        return not failures
 
     def _request_axis_state(self, state: int) -> None:
         for client in self.axis_clients:
@@ -451,6 +648,7 @@ class CmdVelOdriveBridge(Node):
         )
 
     def _publish_status(self) -> None:
+        self._check_can_link()
         now = time.monotonic()
         with self._state_lock:
             age = (
@@ -461,6 +659,8 @@ class CmdVelOdriveBridge(Node):
             status = {
                 "enable_requested": self._enable_requested,
                 "armed": self._armed,
+                "can_interface": self.can_interface,
+                "can_link": describe_can_link(self._can_link),
                 "pending_axes": sorted(self._pending_axes),
                 "command_valid": self._command_valid,
                 "command_age_s": age,
@@ -471,6 +671,35 @@ class CmdVelOdriveBridge(Node):
         self.status_pub.publish(
             String(data=json.dumps(status, sort_keys=True))
         )
+
+    def _check_can_link(self) -> None:
+        """Keep the reported arm state honest about the link underneath it.
+
+        Losing the interface does not disarm the ODrives — they hold whatever
+        they were last commanded — so "armed" would otherwise stay lit while
+        this node has no way to reach them at all.
+        """
+        link = can_link_state(self.can_interface)
+        self._can_link = link
+        if link["usable"]:
+            return
+
+        with self._state_lock:
+            was_armed = self._armed
+            if was_armed:
+                self._armed = False
+                self._pending_axes = set(range(self.num_axes))
+                self._command_valid = False
+                self._last_cmd_at = None
+                self._current_right_rps = 0.0
+                self._current_left_rps = 0.0
+        if was_armed:
+            self._publish_enabled(False)
+            self.get_logger().error(
+                f"{self.can_interface} is {describe_can_link(link)} while the drive was "
+                f"armed — reporting disarmed. Press LB+Y once the adapter is plugged "
+                f"back in to re-establish CAN and close the loop again."
+            )
 
     def stop(self) -> None:
         with self._state_lock:

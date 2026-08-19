@@ -77,10 +77,17 @@ rover_cmd_vel_joystick:
     # recovers a faulted axis as well. Edge-triggered; output is pinned to zero
     # for reinit_hold_sec because LB (drive enable) is held during the combo.
     # Set enable_service to "" on backends with no ODrive bridge.
+    #
+    # The same call also re-establishes CAN after the adapter was unplugged and
+    # plugged back in, so arming can take a few seconds. Output stays at zero
+    # until the bridge reports on enabled_topic, then for reinit_hold_sec more;
+    # reinit_hold_max_sec caps the wait if that report never comes.
     enable_service: "/aries_drive/enable"
+    enabled_topic: "/aries_drive/enabled"
     reinit_button: 3
     reinit_modifier_button: 4
     reinit_hold_sec: 1.0
+    reinit_hold_max_sec: 8.0
 
     linear_axis: 1
     angular_axis: 0

@@ -4,7 +4,7 @@ Rover drive backend: six ODrive axes over CAN, or the mock drive when CAN is abs
 
 `rover_hardware_protocol:=auto` picks odrive when the CAN interface exists and
 mock_hardware otherwise. On the real backend the CAN interface is brought up
-first (setup_can, which needs the sudoers rule in setup/rover_can), and the
+first (setup_can, which needs the sudoers rule scripts/setup_system.sh installs), and the
 poller, fail-safe cmd_vel bridge, and joystick-to-Twist path start two seconds
 behind the ODrive nodes so they do not race the CAN bus coming up.
 
@@ -19,14 +19,19 @@ recovery is not lost with it: rover_cmd_vel_joystick binds the same combo to
 the bridge's /aries_drive/enable service, which re-arms every axis without
 taking ownership of the motor commands.
 
+That enable also recovers a CAN adapter that was physically unplugged and
+plugged back in: the bridge brings the interface up again with the same sudo
+rule used here, then calls /odrive_axisN/reconnect so each ODrive node binds a
+socket to the new interface index, and only then requests CLOSED_LOOP_CONTROL.
+
 In mock mode the joystick still runs, but the rover controller does not.
 mock_rover_drive owns odom -> base_footprint there.
 
-CAN setup is automatic by default. Install the limited sudoers rule to avoid a
-password prompt:
+CAN setup is automatic by default and needs a limited sudoers rule to avoid a
+password prompt. It is one of the things scripts/setup_system.sh installs, which
+is run once per machine:
 
-  sudo visudo -cf src/aries_drive/setup/rover_can
-  sudo install -m 440 src/aries_drive/setup/rover_can /etc/sudoers.d/rover_can
+  ./scripts/setup_system.sh
 
 Or configure CAN yourself and launch with `setup_can:=false`.
 """
@@ -53,6 +58,7 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 from aries_common.detect import as_bool, resolve_imu_source, resolve_rover_backend
+from aries_common.devices import device_str
 
 ODRIVE_AXES = 6
 ODRIVE_STARTUP_DELAY = 2.0
@@ -103,7 +109,7 @@ def _mock_actions(imu_present):
     ]
 
 
-def _odrive_actions(can_interface):
+def _odrive_actions(can_interface, can_bitrate):
     drive_config = os.path.join(
         get_package_share_directory("aries_drive"),
         "config",
@@ -154,6 +160,10 @@ def _odrive_actions(can_interface):
             {
                 "cmd_vel_topic": LaunchConfiguration("drive_cmd_vel_topic"),
                 "auto_arm": LaunchConfiguration("drive_auto_arm"),
+                # Needed so an explicit enable can bring a re-plugged CAN
+                # adapter back up before it asks the axes to close the loop.
+                "can_interface": can_interface,
+                "can_bitrate": int(can_bitrate),
                 "command_timeout_s": LaunchConfiguration("drive_command_timeout_s"),
                 "max_linear_mps": LaunchConfiguration("drive_max_linear_mps"),
                 "max_angular_rps": LaunchConfiguration("drive_max_angular_rps"),
@@ -231,7 +241,7 @@ def _start_rover_hardware(context, *args, **kwargs):
         actions.extend(_mock_actions(imu_source == "microstrain"))
         return actions
 
-    start_nodes = _odrive_actions(can_interface)
+    start_nodes = _odrive_actions(can_interface, can_bitrate)
 
     if not setup_can:
         actions.extend(start_nodes)
@@ -253,8 +263,8 @@ def generate_launch_description():
             choices=["auto", "odrive", "mock_hardware"],
             description="auto picks odrive when the CAN interface exists, otherwise mock.",
         ),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
-        DeclareLaunchArgument("can_bitrate", default_value="250000"),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
+        DeclareLaunchArgument("can_bitrate", default_value=device_str("rover.can_bitrate")),
         DeclareLaunchArgument(
             "setup_can",
             default_value="true",
@@ -319,7 +329,7 @@ def generate_launch_description():
             default_value="auto",
             choices=["auto", "true", "false", "microstrain"],
         ),
-        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+        DeclareLaunchArgument("imu_port", default_value=device_str("imu.port")),
 
         OpaqueFunction(function=_start_rover_hardware),
     ])

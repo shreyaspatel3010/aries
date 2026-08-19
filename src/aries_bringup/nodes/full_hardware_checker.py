@@ -34,6 +34,9 @@ from sensor_msgs.msg import Image, Imu, Joy, JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from aries_common.detect import can_link_state, describe_can_link
+from aries_common.devices import device
+
 try:
     from odrive_can.msg import ControllerStatus, ODriveStatus
 except Exception:
@@ -116,18 +119,17 @@ class FullHardwareChecker(Node):
         self.declare_parameter("require_closed_loop", True)
         self.declare_parameter("check_odrive_status", True)
 
-        self.declare_parameter("arm_host", "192.168.3.11")
-        self.declare_parameter("arm_port", 3920)
+        # Defaults come from aries_common/config/devices.yaml so a checker run
+        # bare, with no launch file feeding it, still probes the real hardware.
+        self.declare_parameter("arm_host", device("arm.host"))
+        self.declare_parameter("arm_port", int(device("arm.port")))
         self.declare_parameter("arm_socket_timeout", 0.25)
         self.declare_parameter("arm_joint_names", ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"])
 
-        self.declare_parameter(
-            "gripper_serial_port",
-            "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00",
-        )
-        self.declare_parameter("can_interface", "can0")
+        self.declare_parameter("gripper_serial_port", device("gripper.serial_port"))
+        self.declare_parameter("can_interface", device("rover.can_interface"))
         self.declare_parameter("use_imu", "auto")
-        self.declare_parameter("imu_port", "/dev/microstrain_main")
+        self.declare_parameter("imu_port", device("imu.port"))
         self.declare_parameter("imu_topic", "/microstrain/imu/data")
         self.declare_parameter("imu_frame", "imu_frame")
         self.declare_parameter("expected_odrive_axes", 6)
@@ -366,8 +368,16 @@ class FullHardwareChecker(Node):
             return True
         return False
 
-    def _can_present(self) -> bool:
-        return Path(f"/sys/class/net/{self.can_interface}").exists()
+    def _can_link(self) -> dict:
+        """Link state, not just presence.
+
+        A USB CAN adapter that was unplugged and plugged back in is 'present'
+        again within milliseconds while being unable to carry a single frame:
+        it returns administratively DOWN, and every socket still bound to the
+        old interface index fails with ENXIO. Reporting only presence made that
+        state read as healthy on this row while the whole drive stack was dead.
+        """
+        return can_link_state(self.can_interface)
 
     def _imu_port_present(self) -> bool:
         return Path(self.imu_port).exists()
@@ -468,10 +478,19 @@ class FullHardwareChecker(Node):
             selected_imu_time = self.imu_time
             selected_imu_frame = self.imu_frame_id
 
+        can_link = (
+            self._can_link()
+            if self.check_rover
+            else {"present": False, "usable": False, "ifindex": None, "up": False,
+                  "carrier": False, "interface": self.can_interface}
+        )
+
         return {
             "arm_tcp": self._arm_tcp_reachable() if self.check_arm else False,
             "gripper_serial": self._gripper_serial_present() if self.check_gripper else False,
-            "can_present": self._can_present() if self.check_rover else False,
+            "can_link": can_link,
+            "can_present": can_link["present"],
+            "can_usable": can_link["usable"],
             "imu_expected": selected_imu != "none",
             "selected_imu": selected_imu,
             "selected_imu_topic": selected_imu_topic,
@@ -661,8 +680,13 @@ class FullHardwareChecker(Node):
         # ── Rover rows ────────────────────────────────────────────────────────
         print(f"\n{B}  Rover Backend:{RST}", flush=True)
 
-        if s["can_present"]:
-            print(f"  {G}✓{RST} CAN interface {self.can_interface} — {G}present{RST}", flush=True)
+        if s["can_usable"]:
+            print(f"  {G}✓{RST} CAN interface {self.can_interface} — {G}{describe_can_link(s['can_link'])}{RST}", flush=True)
+        elif s["can_present"]:
+            print(
+                f"  {R}✗{RST} CAN interface {self.can_interface} — {R}{describe_can_link(s['can_link'])}{RST}",
+                flush=True,
+            )
         else:
             print(f"  {Y}~{RST} CAN interface {self.can_interface} — {Y}not present, mock rover expected{RST}", flush=True)
 
@@ -934,7 +958,14 @@ class FullHardwareChecker(Node):
                     flush=True,
                 )
 
-            if s["can_present"] and not any(axis_has_data):
+            if s["can_present"] and not s["can_usable"]:
+                print(
+                    f"  {R}→  {self.can_interface} is {describe_can_link(s['can_link'])}. "
+                    f"Press LB+Y to bring it back up and re-bind every ODrive socket, or run: "
+                    f"sudo ip link set {self.can_interface} up type can bitrate 250000{RST}",
+                    flush=True,
+                )
+            elif s["can_present"] and not any(axis_has_data):
                 print(f"  {Y}→  CAN exists but no ODrive heartbeat received. Check ODrive power + CAN wiring.{RST}", flush=True)
 
             if rover_any_err:

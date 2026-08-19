@@ -11,6 +11,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.devices import device_str
+
 
 def generate_launch_description():
     return LaunchDescription([
@@ -26,13 +28,16 @@ def generate_launch_description():
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
-        DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
+        DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
         DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
-        DeclareLaunchArgument("gripper_camera_serial", default_value=""),
+        # Pinned by default: with two identical D435is connected, anything that
+        # assigns them by detection order can hand the grasp stack the front
+        # camera. See aries_common.detect for which serial is on which end.
+        DeclareLaunchArgument("gripper_camera_serial", default_value=device_str("cameras.gripper_serial")),
         DeclareLaunchArgument("enable_front_camera", default_value="auto", choices=["auto", "true", "false"]),
-        DeclareLaunchArgument("front_camera_serial", default_value=""),
+        DeclareLaunchArgument("front_camera_serial", default_value=device_str("cameras.front_serial")),
         DeclareLaunchArgument(
             "use_static_wheel_joint_publisher",
             default_value="false",
@@ -44,7 +49,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument("start_rover", default_value="true"),
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto", choices=["auto", "odrive", "mock_hardware"]),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
         DeclareLaunchArgument("setup_rover_can", default_value="true"),
         DeclareLaunchArgument("drive_auto_arm", default_value="true"),
         DeclareLaunchArgument(
@@ -58,7 +63,7 @@ def generate_launch_description():
             ],
         ),
         DeclareLaunchArgument(
-            "rover_imu_port", default_value="/dev/microstrain_main"
+            "rover_imu_port", default_value=device_str("imu.port")
         ),
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("rover_imu_frame", default_value="imu_frame"),

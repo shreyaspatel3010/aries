@@ -177,8 +177,8 @@ To use automatic CAN setup without a password prompt, install the limited
 sudoers rule:
 
 ```bash
-sudo visudo -cf src/aries_drive/setup/rover_can
-sudo install -m 440 src/aries_drive/setup/rover_can /etc/sudoers.d/rover_can
+# from the workspace root, once per machine
+./scripts/setup_system.sh
 ```
 
 It only permits:

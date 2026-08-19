@@ -33,6 +33,12 @@ ODriveCanNode::ODriveCanNode(const std::string& node_name) : rclcpp::Node(node_n
     rclcpp::Node::declare_parameter<std::string>("interface", "can0");
     rclcpp::Node::declare_parameter<uint16_t>("node_id", 0);
     rclcpp::Node::declare_parameter<bool>("axis_idle_on_shutdown", false);
+    // Upper bound on how long request_axis_state may wait for the axis to
+    // report back. Without one, a bus that goes quiet — CAN adapter unplugged,
+    // ODrive powered down — parks this node's only executor thread in the
+    // service callback forever, and the node then answers nothing at all:
+    // not a later state request, and not the reconnect that would fix it.
+    rclcpp::Node::declare_parameter<double>("axis_state_timeout_s", 3.0);
 
     // Encoder estimates arrive cyclically at high rate on the Aries bus.
     // Keep only recent ROS samples so a slow visualization or odometry
@@ -60,6 +66,7 @@ ODriveCanNode::ODriveCanNode(const std::string& node_name) : rclcpp::Node(node_n
 
     service_ = rclcpp::Node::create_service<AxisState>("request_axis_state", std::bind(&ODriveCanNode::service_callback, this, _1, _2), srv_qos_profile);
     service_clear_errors_ = rclcpp::Node::create_service<Empty>("clear_errors", std::bind(&ODriveCanNode::service_clear_errors_callback, this, _1, _2), srv_qos_profile);
+    service_reconnect_ = rclcpp::Node::create_service<Trigger>("reconnect", std::bind(&ODriveCanNode::service_reconnect_callback, this, _1, _2), srv_qos_profile);
 }
 
 void ODriveCanNode::deinit() {
@@ -80,6 +87,7 @@ bool ODriveCanNode::init(EpollEventLoop* event_loop) {
 
     node_id_ = rclcpp::Node::get_parameter("node_id").as_int();
     axis_idle_on_shutdown_ = rclcpp::Node::get_parameter("axis_idle_on_shutdown").as_bool();
+    axis_state_timeout_s_ = std::max(0.5, rclcpp::Node::get_parameter("axis_state_timeout_s").as_double());
     std::string interface = rclcpp::Node::get_parameter("interface").as_string();
 
     if (!can_intf_.init(interface, event_loop, std::bind(&ODriveCanNode::recv_callback, this, _1))) {
@@ -134,6 +142,7 @@ void ODriveCanNode::recv_callback(const can_frame& frame) {
             ctrl_stat_.axis_state        = read_le<uint8_t>(frame.data + 4);
             ctrl_stat_.procedure_result  = read_le<uint8_t>(frame.data + 5);
             ctrl_stat_.trajectory_done_flag = read_le<bool>(frame.data + 6);
+            last_heartbeat_at_ = std::chrono::steady_clock::now();
             ctrl_pub_flag_ |= 0b0001;
             fresh_heartbeat_.notify_one();
             break;
@@ -221,6 +230,19 @@ void ODriveCanNode::subscriber_callback(const ControlMessage::SharedPtr msg) {
 }
 
 void ODriveCanNode::service_callback(const std::shared_ptr<AxisState::Request> request, std::shared_ptr<AxisState::Response> response) {
+    if (!can_intf_.is_ready()) {
+        // Answer straight away rather than sitting out the whole timeout: with
+        // no socket the request frame cannot leave, so no reply can arrive.
+        RCLCPP_WARN(rclcpp::Node::get_logger(),
+                    "axis state request refused: CAN interface is disconnected — call the reconnect service first");
+        std::lock_guard<std::mutex> guard(ctrl_stat_mutex_);
+        response->axis_state = ODriveAxisState::AXIS_STATE_UNDEFINED;
+        response->active_errors = ctrl_stat_.active_errors;
+        response->procedure_result = ctrl_stat_.procedure_result;
+        return;
+    }
+
+    auto call_time = std::chrono::steady_clock::now();
     {
         std::unique_lock<std::mutex> guard(axis_state_mutex_);
         axis_state_ = request->axis_requested_state;
@@ -232,15 +254,30 @@ void ODriveCanNode::service_callback(const std::shared_ptr<AxisState::Request> r
     // If the requested state is something other than CLOSED_LOOP_CONTROL, also
     // wait for the procedure to complete (procedure_result != BUSY).
     std::unique_lock<std::mutex> guard(ctrl_stat_mutex_); // define lock for controller status
-    auto call_time = std::chrono::steady_clock::now();
-    fresh_heartbeat_.wait(guard, [this, &call_time, &request]() {
+    const auto deadline = call_time + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                          std::chrono::duration<double>(axis_state_timeout_s_));
+    bool answered = fresh_heartbeat_.wait_until(guard, deadline, [this, &call_time, &request]() {
+        // Only a heartbeat received after the request went out says anything
+        // about the axis now. The stored status alone would keep reporting the
+        // state the axis held when the bus was last alive.
+        if (this->last_heartbeat_at_ < call_time) return false;
         bool is_busy = this->ctrl_stat_.procedure_result == ODriveProcedureResult::PROCEDURE_RESULT_BUSY;
         bool requested_closed_loop = request->axis_requested_state == ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL;
         bool minimum_time_passed = (std::chrono::steady_clock::now() - call_time >= std::chrono::seconds(1));
         bool complete = (requested_closed_loop || !is_busy) && minimum_time_passed;
         return complete;
         }); // wait for procedure_result
-    
+
+    if (!answered) {
+        RCLCPP_WARN(rclcpp::Node::get_logger(),
+                    "no heartbeat from axis %d within %.1fs of the state request; reporting UNDEFINED",
+                    node_id_, axis_state_timeout_s_);
+        response->axis_state = ODriveAxisState::AXIS_STATE_UNDEFINED;
+        response->active_errors = ctrl_stat_.active_errors;
+        response->procedure_result = ctrl_stat_.procedure_result;
+        return;
+    }
+
     response->axis_state = ctrl_stat_.axis_state;
     response->active_errors = ctrl_stat_.active_errors;
     response->procedure_result = ctrl_stat_.procedure_result;
@@ -249,6 +286,30 @@ void ODriveCanNode::service_callback(const std::shared_ptr<AxisState::Request> r
 void ODriveCanNode::service_clear_errors_callback(const std::shared_ptr<Empty::Request> /*request*/, std::shared_ptr<Empty::Response> /*response*/) {
     RCLCPP_INFO(rclcpp::Node::get_logger(), "clearing errors");
     srv_clear_errors_evt_.set();
+}
+
+void ODriveCanNode::service_reconnect_callback(const std::shared_ptr<Trigger::Request> /*request*/, std::shared_ptr<Trigger::Response> response) {
+    const std::string interface = rclcpp::Node::get_parameter("interface").as_string();
+    const bool was_ready = can_intf_.is_ready();
+
+    if (!can_intf_.reinit()) {
+        response->success = false;
+        response->message = "failed to bind " + interface + "; is the interface up?";
+        RCLCPP_ERROR(rclcpp::Node::get_logger(), "CAN reconnect failed on %s", interface.c_str());
+        return;
+    }
+
+    {
+        // The axis is silent until its next heartbeat, so nothing that arrived
+        // before the reconnect may be presented as current afterwards.
+        std::lock_guard<std::mutex> guard(ctrl_stat_mutex_);
+        last_heartbeat_at_ = std::chrono::steady_clock::time_point{};
+    }
+
+    response->success = true;
+    response->message = "bound " + interface + " (ifindex " + std::to_string(can_intf_.interface_index()) +
+                        (was_ready ? "), socket was healthy" : "), socket was disconnected");
+    RCLCPP_INFO(rclcpp::Node::get_logger(), "CAN reconnect: %s", response->message.c_str());
 }
 
 void ODriveCanNode::request_state_callback() {

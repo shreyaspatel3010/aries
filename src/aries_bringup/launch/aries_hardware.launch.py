@@ -15,6 +15,8 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.devices import device_str
+
 
 def _serials_from_librealsense():
     """Camera serials as librealsense reports them, or None if it could not be asked.
@@ -159,6 +161,10 @@ def launch_setup(context, *args, **kwargs):
     if not front_camera_serial and unclaimed:
         front_camera_serial = unclaimed.pop(0)
 
+    # Empty entries are devices counted in sysfs when librealsense could not be
+    # asked; they say a camera is there but not which one it is.
+    identified_serials = [s for s in detected_serials if s]
+
     if len(detected_serials) > 1:
         actions.append(
             LogInfo(msg=(
@@ -167,7 +173,7 @@ def launch_setup(context, *args, **kwargs):
                 "gripper_camera_serial:=<serial> front_camera_serial:=<serial> if "
                 "that is the wrong way round.".format(
                     len(detected_serials),
-                    ", ".join(detected_serials),
+                    ", ".join(s or "<unidentified>" for s in detected_serials),
                     gripper_camera_serial or "<none>",
                     front_camera_serial or "<none>",
                 )
@@ -176,13 +182,23 @@ def launch_setup(context, *args, **kwargs):
 
     # "auto" follows what is actually plugged in; "true" starts the driver anyway
     # so a camera behind a hub that hides its sysfs serial can still be used.
+    #
+    # A pinned serial that no *identified* device matches is not evidence the
+    # camera is absent when nothing could be identified in the first place: the
+    # sysfs fallback only ever counts. Fall back to that count there, and let the
+    # driver do the matching itself -- it enumerates the cameras properly.
+    def _present(serial, needed_devices):
+        if identified_serials:
+            return serial in detected_serials
+        return len(detected_serials) >= needed_devices
+
     if depth_sensor_mode == "auto":
-        enable_depth_sensor = gripper_camera_serial in detected_serials
+        enable_depth_sensor = _present(gripper_camera_serial, 1)
     else:
         enable_depth_sensor = depth_sensor_mode == "true"
 
     if front_camera_mode == "auto":
-        enable_front_camera = front_camera_serial in detected_serials
+        enable_front_camera = _present(front_camera_serial, 2)
     else:
         enable_front_camera = front_camera_mode == "true"
 
@@ -312,7 +328,7 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"]),
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
-        DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
+        DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="false"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false"),
         DeclareLaunchArgument(
@@ -323,11 +339,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gripper_camera_serial",
-            default_value="",
+            default_value=device_str("cameras.gripper_serial"),
             description=(
-                "Serial number of the gripper-mounted D435i (see rs-enumerate-devices "
-                "or lsusb -v). Empty auto-assigns the lowest detected serial, which is "
-                "only unambiguous with a single camera connected."
+                "Camera serial of the gripper-mounted D435i, as reported by "
+                "rs-enumerate-devices -s (NOT the sysfs serial). Defaults to the "
+                "fitted wrist camera so the two cameras cannot trade places "
+                "between launches. Empty auto-assigns the lowest detected serial, "
+                "which is only unambiguous with a single camera connected."
             ),
         ),
         DeclareLaunchArgument(
@@ -338,8 +356,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "front_camera_serial",
-            default_value="",
-            description="Serial number of the rover front D435i; empty takes whichever detected camera the gripper did not claim",
+            default_value=device_str("cameras.front_serial"),
+            description=(
+                "Camera serial of the rover front D435i, as reported by "
+                "rs-enumerate-devices -s. Empty takes whichever detected camera "
+                "the gripper did not claim."
+            ),
         ),
         DeclareLaunchArgument(
             "use_wheel_joint_publisher",
@@ -361,13 +383,13 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rover_joystick", default_value="true"),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
         DeclareLaunchArgument("use_rover_imu", default_value="auto"),
-        DeclareLaunchArgument("rover_imu_port", default_value="/dev/microstrain_main"),
+        DeclareLaunchArgument("rover_imu_port", default_value=device_str("imu.port")),
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("rover_imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument(
             "rover_imu_topic", default_value="/microstrain/imu/data"
         ),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
         DeclareLaunchArgument("setup_rover_can", default_value="true"),
 
         OpaqueFunction(function=launch_setup),

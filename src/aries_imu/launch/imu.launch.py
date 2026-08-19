@@ -38,6 +38,8 @@ from launch_ros.actions import Node
 
 from aries_common.detect import AUTO_VALUES, as_bool, as_int, resolve_imu_source
 
+from aries_common.devices import device_str
+
 # Must match the key inside config/microstrain.yaml.
 DRIVER_NAMESPACE = "microstrain"
 DRIVER_NODE_NAME = "microstrain_inertial_driver"
@@ -134,7 +136,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "imu_port",
-                default_value="/dev/microstrain_main",
+                default_value=device_str("imu.port"),
                 description=(
                     "Persistent symlink created by the driver package's own "
                     "60-ros-jazzy-microstrain-inertial-driver.rules. Not "

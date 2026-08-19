@@ -30,6 +30,8 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.devices import device, device_str
+
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 GRIPPER_JOINTS = ["gripper_gear_left_joint"]
 
@@ -268,7 +270,8 @@ def launch_setup(context, *args, **kwargs):
 
     if arm_hardware_protocol == "auto":
         try:
-            with socket.create_connection(("192.168.3.11", 3920), timeout=0.25):
+            arm_endpoint = (device("arm.host"), int(device("arm.port")))
+            with socket.create_connection(arm_endpoint, timeout=0.25):
                 arm_hardware_protocol = "rebel"
         except OSError:
             arm_hardware_protocol = "mock_hardware"
@@ -712,9 +715,9 @@ def generate_launch_description():
             DeclareLaunchArgument("use_joystick", default_value="false", description="Start joystick arm teleop"),
             DeclareLaunchArgument("joy_driver", default_value="game_controller_node", choices=["game_controller_node", "joy_node"], description="Joystick driver executable from the joy package"),
             DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"], description="Normalize joystick layout before teleop nodes consume /joy"),
-            DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0", description="Joystick device used by joy_node and the layout normalizer"),
+            DeclareLaunchArgument("joy_dev", default_value=device_str("joystick.device"), description="Joystick device used by joy_node and the layout normalizer"),
             DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"], description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps"),
-            DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00", description="USB-serial port for the Teensy gripper controller"),
+            DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port"), description="USB-serial port for the Teensy gripper controller"),
             DeclareLaunchArgument("gripper_detect_timeout", default_value="8.0", description="Seconds to wait for the Teensy serial device before falling back to mock_hardware. Covers USB re-enumeration after a board reset."),
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),

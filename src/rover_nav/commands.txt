@@ -2,8 +2,7 @@
 sudo ip link set can0 up type can bitrate 250000
 
 # one-time passwordless CAN setup for aries_bringup automatic CAN setup
-sudo visudo -cf src/aries_bringup/setup/rover_can
-sudo install -m 440 src/aries_bringup/setup/rover_can /etc/sudoers.d/rover_can
+./scripts/setup_system.sh
 
 # launch CAN setup without password prompt
 ros2 launch aries_bringup rover_drive.launch.py can_interface:=can0

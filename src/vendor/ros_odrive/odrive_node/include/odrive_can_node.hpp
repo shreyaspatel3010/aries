@@ -8,8 +8,10 @@
 #include "odrive_can/msg/control_message.hpp"
 #include "odrive_can/srv/axis_state.hpp"
 #include "std_srvs/srv/empty.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "socket_can.hpp"
 
+#include <chrono>
 #include <mutex>
 #include <condition_variable>
 #include <array>
@@ -26,6 +28,7 @@ using ControlMessage = odrive_can::msg::ControlMessage;
 
 using AxisState = odrive_can::srv::AxisState;
 using Empty = std_srvs::srv::Empty;
+using Trigger = std_srvs::srv::Trigger;
 
 class ODriveCanNode : public rclcpp::Node {
 public:
@@ -37,6 +40,7 @@ private:
     void subscriber_callback(const ControlMessage::SharedPtr msg);
     void service_callback(const std::shared_ptr<AxisState::Request> request, std::shared_ptr<AxisState::Response> response);
     void service_clear_errors_callback(const std::shared_ptr<Empty::Request> request, std::shared_ptr<Empty::Response> response);
+    void service_reconnect_callback(const std::shared_ptr<Trigger::Request> request, std::shared_ptr<Trigger::Response> response);
     void request_state_callback();
     void request_clear_errors_callback();
     void ctrl_msg_callback();
@@ -44,10 +48,14 @@ private:
     
     uint16_t node_id_;
     bool axis_idle_on_shutdown_;
+    double axis_state_timeout_s_;
     SocketCanIntf can_intf_ = SocketCanIntf();
     
     short int ctrl_pub_flag_ = 0;
     std::mutex ctrl_stat_mutex_;
+    // Guarded by ctrl_stat_mutex_. Distinguishes "the axis just told us its
+    // state" from "this is the state it had before the bus went quiet".
+    std::chrono::steady_clock::time_point last_heartbeat_at_{};
     ControllerStatus ctrl_stat_ = ControllerStatus();
     rclcpp::Publisher<ControllerStatus>::SharedPtr ctrl_publisher_;
     
@@ -69,6 +77,8 @@ private:
 
     EpollEvent srv_clear_errors_evt_;
     rclcpp::Service<Empty>::SharedPtr service_clear_errors_;
+
+    rclcpp::Service<Trigger>::SharedPtr service_reconnect_;
 
 };
 

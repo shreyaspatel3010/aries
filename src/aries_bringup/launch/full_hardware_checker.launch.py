@@ -6,6 +6,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from aries_common.devices import device_str
+
 
 def _text(argument):
     """A launch argument forced to STRING.
@@ -22,10 +24,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("checker_interval", default_value="3.0"),
         DeclareLaunchArgument("timeout", default_value="5.0"),
-        DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
+        DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
         DeclareLaunchArgument("use_imu", default_value="auto"),
-        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+        DeclareLaunchArgument("imu_port", default_value=device_str("imu.port")),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
         DeclareLaunchArgument("check_imu", default_value="true"),

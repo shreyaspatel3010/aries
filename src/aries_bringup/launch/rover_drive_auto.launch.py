@@ -12,6 +12,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.devices import device_str
+
 
 def generate_launch_description():
     rover = IncludeLaunchDescription(
@@ -59,8 +61,8 @@ def generate_launch_description():
                 default_value="auto",
                 choices=["auto", "odrive", "mock_hardware"],
             ),
-            DeclareLaunchArgument("can_interface", default_value="can0"),
-            DeclareLaunchArgument("can_bitrate", default_value="250000"),
+            DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
+            DeclareLaunchArgument("can_bitrate", default_value=device_str("rover.can_bitrate")),
             DeclareLaunchArgument("setup_can", default_value="true"),
             DeclareLaunchArgument("drive_auto_arm", default_value="false"),
             DeclareLaunchArgument("use_joystick", default_value="true"),
@@ -97,7 +99,7 @@ def generate_launch_description():
                     "microstrain",
                 ],
             ),
-            DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
+            DeclareLaunchArgument("imu_port", default_value=device_str("imu.port")),
             DeclareLaunchArgument("imu_baudrate", default_value="115200"),
             DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
             DeclareLaunchArgument(

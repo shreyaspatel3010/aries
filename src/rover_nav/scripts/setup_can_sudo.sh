@@ -1,16 +1,19 @@
 #!/bin/bash
-# Run once on any new machine to allow passwordless CAN interface setup.
-# Usage: sudo bash setup_can_sudo.sh
+# Superseded by aries/scripts/setup_system.sh.
+#
+# This script used to write the sudoers rule itself, and the rule it wrote could
+# never match: run as `sudo bash setup_can_sudo.sh`, $(whoami) is root rather
+# than the account that launches the robot, and it named /sbin/ip while sudo
+# resolves `ip` through secure_path to /usr/sbin/ip. It also granted only
+# `link set up`, not the `down` the drive stack issues first.
+#
+# The canonical setup covers the same rule (generated for the right account,
+# every ip path, both commands, taken from devices.yaml) plus udev rules and
+# group membership.
 
-RULE=''"$(whoami)"' ALL=(ALL) NOPASSWD: /sbin/ip link set can0 up type can bitrate 250000'
-DEST=/etc/sudoers.d/rover_can
+set -e
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CANONICAL="$(cd "$HERE/../../.." && pwd)/scripts/setup_system.sh"
 
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root: sudo bash $0"
-    exit 1
-fi
-
-echo "$RULE" > "$DEST"
-chmod 0440 "$DEST"
-visudo -c -f "$DEST" || { rm "$DEST"; echo "ERROR: sudoers rule is invalid, removed."; exit 1; }
-echo "Done. Passwordless sudo for CAN setup enabled for $(whoami)."
+echo "setup_can_sudo.sh is superseded — running $CANONICAL instead."
+exec "$CANONICAL" "$@"

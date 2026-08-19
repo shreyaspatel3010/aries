@@ -15,6 +15,8 @@ from moveit_configs_utils import MoveItConfigsBuilder
 import glob
 import os
 
+from aries_common.devices import device_str
+
 
 def default_teensy_device():
     """Whichever Teensy is plugged in, not the one we happened to own first.
@@ -24,7 +26,7 @@ def default_teensy_device():
     aries_hardware.launch.py.
     """
     found = sorted(glob.glob("/dev/serial/by-id/*Teensy*-if00"))
-    return found[0] if found else "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
+    return found[0] if found else device_str("gripper.serial_port")
 
 
 def generate_launch_description():

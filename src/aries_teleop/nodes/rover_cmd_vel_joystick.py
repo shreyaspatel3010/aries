@@ -5,8 +5,10 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 
 
@@ -38,12 +40,21 @@ class RoverCmdVelJoystick(Node):
         # kSetAxisState frame, so a faulted axis recovers on the same call.
         # An empty enable_service disables the binding.
         self.declare_parameter("enable_service", "/aries_drive/enable")
+        self.declare_parameter("enabled_topic", "/aries_drive/enabled")
         self.declare_parameter("reinit_button", 3)              # Y
         self.declare_parameter("reinit_modifier_button", 4)     # LB
         # LB is held by definition during the combo, so the drive gate is open
         # the instant the axes arm. Publish zero for this long afterwards so a
         # deflected stick cannot lurch the rover on re-arm.
         self.declare_parameter("reinit_hold_sec", 1.0)
+        # The bridge answers the enable call immediately and arms in the
+        # background, so the settle above can only be measured from the moment
+        # it reports the drive enabled — which is anywhere from about a second
+        # to several, since the same call re-establishes a CAN interface that
+        # was unplugged. Zero is held until that report arrives, and this caps
+        # the wait for the case where it never does (nothing armed, so nothing
+        # can move either).
+        self.declare_parameter("reinit_hold_max_sec", 8.0)
 
         self.joy_topic = str(self.get_parameter("joy_topic").value)
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
@@ -62,11 +73,15 @@ class RoverCmdVelJoystick(Node):
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
 
         self.enable_service = str(self.get_parameter("enable_service").value).strip()
+        self.enabled_topic = str(self.get_parameter("enabled_topic").value).strip()
         self.reinit_button = int(self.get_parameter("reinit_button").value)
         self.reinit_modifier_button = int(
             self.get_parameter("reinit_modifier_button").value
         )
         self.reinit_hold_sec = float(self.get_parameter("reinit_hold_sec").value)
+        self.reinit_hold_max_sec = max(
+            self.reinit_hold_sec, float(self.get_parameter("reinit_hold_max_sec").value)
+        )
 
         self.target_linear = 0.0
         self.target_angular = 0.0
@@ -78,6 +93,8 @@ class RoverCmdVelJoystick(Node):
         # Initialised before the callbacks that read them are registered.
         self._prev_reinit_combo = False
         self._reinit_hold_until = 0.0
+        self._reinit_deadline = 0.0
+        self._awaiting_enable = False
         self._reinit_call_pending = False
 
         self.enable_client = (
@@ -88,6 +105,17 @@ class RoverCmdVelJoystick(Node):
 
         self.pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.create_subscription(Joy, self.joy_topic, self._joy_cb, 10)
+        if self.enabled_topic:
+            self.create_subscription(
+                Bool,
+                self.enabled_topic,
+                self._enabled_cb,
+                QoSProfile(
+                    depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                ),
+            )
         self.create_timer(1.0 / max(self.publish_rate_hz, 1.0), self._timer_cb)
 
         combo = (
@@ -182,12 +210,23 @@ class RoverCmdVelJoystick(Node):
         self.target_angular = 0.0
         self.current_linear = 0.0
         self.current_angular = 0.0
-        self._reinit_hold_until = time.monotonic() + self.reinit_hold_sec
+        now = time.monotonic()
+        self._reinit_hold_until = now + self.reinit_hold_sec
+        self._reinit_deadline = now + self.reinit_hold_max_sec
+        self._awaiting_enable = bool(self.enabled_topic)
 
         self.get_logger().warn(f"LB+Y: re-arming the drive via {self.enable_service}")
         self._reinit_call_pending = True
         future = self.enable_client.call_async(SetBool.Request(data=True))
         future.add_done_callback(self._on_reinit_response)
+
+    def _enabled_cb(self, msg):
+        """The bridge reported the arm result; start the settle from here."""
+        if not self._awaiting_enable or not msg.data:
+            return
+        self._awaiting_enable = False
+        self._reinit_hold_until = time.monotonic() + self.reinit_hold_sec
+        self.get_logger().info("LB+Y: drive reported enabled; releasing the zero hold")
 
     def _on_reinit_response(self, future):
         self._reinit_call_pending = False
@@ -208,7 +247,14 @@ class RoverCmdVelJoystick(Node):
 
         # The bridge arms asynchronously, so LB alone would let a deflected
         # stick command motion the moment the axes close the loop.
-        if time.monotonic() < self._reinit_hold_until:
+        now = time.monotonic()
+        if self._awaiting_enable and now >= self._reinit_deadline:
+            self._awaiting_enable = False
+            self.get_logger().warn(
+                f"LB+Y: drive never reported enabled within {self.reinit_hold_max_sec:.0f} s; "
+                f"releasing the zero hold (the axes did not arm)"
+            )
+        if self._awaiting_enable or now < self._reinit_hold_until:
             self.target_linear = 0.0
             self.target_angular = 0.0
             self.current_linear = 0.0

@@ -44,8 +44,19 @@
              0.222 puts the sensor body 10 mm above it; the camera mount post
              occupies x ~ 0.24, and the camera itself sits at x = 0.2756
              (d435i.xacro), so x = 0.18 clears both on open deck. Was
-             0 0 0.08, which was buried mid-chassis. -->
-        <origin xyz="0.19 0.06 0.222" rpy="0.0 0.0 0.0"/>
+             0 0 0.08, which was buried mid-chassis.
+
+             Yaw is pi because the 3DM-GX5-AHRS is bolted into its cradle with
+             the printed X arrow (and the connector it points at) facing the
+             rover's REAR, so device X = -base_link X and device Y = -base_link Y.
+
+             Roll stays 0 even though the printed triad shows Z into the
+             mounting plate: microstrain.yaml sets use_enu_frame: true, so the
+             driver has already rolled the native NED device frame 180 deg into
+             ENU before publishing. This link describes the frame the driver
+             publishes in (X fwd, Y left, Z up), not the silkscreen; adding that
+             flip here would apply it twice and invert roll and yaw sign. -->
+        <origin xyz="0.19 0.06 0.222" rpy="0.0 0.0 ${pi}"/>
     </joint>
 
     <!-- Base Footprint - root link for mobile robot (odom frame provided by odometry, not URDF) -->

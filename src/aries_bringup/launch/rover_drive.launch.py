@@ -45,6 +45,8 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.devices import device_str
+
 
 def _include(package, filename, forward=(), literals=None, **renamed):
     """Include a subsystem launch file.
@@ -115,8 +117,8 @@ def generate_launch_description():
             choices=["auto", "odrive", "mock_hardware"],
             description="auto picks odrive when the CAN interface exists, otherwise mock.",
         ),
-        DeclareLaunchArgument("can_interface", default_value="can0"),
-        DeclareLaunchArgument("can_bitrate", default_value="250000"),
+        DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
+        DeclareLaunchArgument("can_bitrate", default_value=device_str("rover.can_bitrate")),
         DeclareLaunchArgument(
             "setup_can",
             default_value="true",
@@ -186,7 +188,7 @@ def generate_launch_description():
                                           "present, on any drive backend; false disables it."),
         DeclareLaunchArgument("use_imu", default_value="auto",
                               choices=["auto", "true", "false", "microstrain"]),
-        DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main",
+        DeclareLaunchArgument("imu_port", default_value=device_str("imu.port"),
                               description="3DM-GX5-AHRS serial port."),
         DeclareLaunchArgument("imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
