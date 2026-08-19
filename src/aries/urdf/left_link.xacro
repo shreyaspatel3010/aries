@@ -41,7 +41,7 @@
         <child link="L_Rocker_Link"/>
         <axis xyz="0 0 1"/>
         <limit lower="-0.226" upper="0.323" effort="1000" velocity="5"/>
-        <dynamics damping="50" friction="50"/>
+        <dynamics damping="500" friction="500" effort="1000"/>
     </joint>
 
     <!-- Left Wheel 1 -->
