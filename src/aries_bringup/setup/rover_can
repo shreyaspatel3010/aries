@@ -1,5 +1,0 @@
-# Allow Aries rover bringup to set up can0 without a sudo password.
-# Install with:
-#   sudo visudo -cf src/aries_bringup/setup/rover_can
-#   sudo install -m 440 src/aries_bringup/setup/rover_can /etc/sudoers.d/rover_can
-shreyas ALL=(root) NOPASSWD: /usr/sbin/ip link set can0 down, /usr/sbin/ip link set can0 up type can bitrate 250000
