@@ -59,8 +59,9 @@ def generate_launch_description():
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
         default_value='v2',
-        choices=['old', 'new', 'v2'],
-        description='Gripper type: "v2", "new" or "old"'
+        choices=['v2'],
+        description='Gripper type. Only "v2" exists; "new" and "old" are '
+                    'retired to aries/urdf/legacy/ and are not built any more.'
     )
 
     world_arg = DeclareLaunchArgument(

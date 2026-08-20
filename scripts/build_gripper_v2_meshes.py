@@ -15,6 +15,18 @@ regenerated rather than trusted.
 
 Run from the repo root:  python3 scripts/build_gripper_v2_meshes.py
 Add --report to skip writing and only print the measurements.
+
+CAUTION (2026-08-20): gripper_bucket_left.stl and gripper_bucket_right.stl in
+OUT_DIR are no longer this script's output.  They were replaced by the
+2026-08-19 CAD re-export (new_mesh/gripper_bucket.stl -> left,
+gripper_bucket_2.stl -> right), re-expressed in the fingertip link frames by
+matching the mount shank.  It is the same solid - 0.14 mm mean / 0.29 mm p95
+against what bucket_mesh() cuts out of the assembly GLB - just tessellated
+finer across the bowl's back wall, and gripper_v2.xacro's bucket inertials and
+collision bands were re-integrated from it.  A plain re-run of this script
+overwrites those two files with the GLB version again, which is not wrong but
+is a step back from the CAD-current mesh; use --report if you only want the
+numbers.
 """
 
 from __future__ import annotations

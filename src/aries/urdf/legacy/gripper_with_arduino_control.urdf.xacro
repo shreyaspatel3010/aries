@@ -33,7 +33,7 @@
     </joint>
     
     <!-- Include gripper xacro (it will attach to link6) -->
-    <xacro:include filename="$(find aries)/urdf/gripper.xacro"/>
+    <xacro:include filename="$(find aries)/urdf/legacy/gripper.xacro"/>
     
     <!-- ros2_control using Teensy hardware -->
     <ros2_control name="TeensyGripperHardware" type="system">

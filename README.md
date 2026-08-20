@@ -318,8 +318,11 @@ ros2 launch aries_bringup display.launch.xml
 The shared rover joystick config is:
 
 ```text
-src/aries_bringup/config/joystick.yaml
+src/aries_teleop/config/joystick.yaml
 ```
+
+Simulation overrides it with `src/aries_teleop/config/rover_cmd_vel_joystick.yaml`,
+which exists only because Gazebo has no ODrive bridge for LB+Y to re-arm.
 
 The arm/gripper joystick config is:
 

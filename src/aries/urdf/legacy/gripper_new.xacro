@@ -172,7 +172,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_base.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_base.stl" />
             </geometry>
             <material
                 name="">
@@ -183,7 +183,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_base.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_base.stl" />
             </geometry>
         </collision>
         <!-- The four base pivot pins. The linkage is a DOUBLE-plate four-bar:
@@ -197,7 +197,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_base_pins.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_base_pins.stl" />
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1" />
@@ -214,7 +214,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_left.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_left.stl" />
             </geometry>
             <material
                 name="">
@@ -225,7 +225,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_left.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_left.stl" />
             </geometry>
         </collision>
         <!-- Near plate of this bar plus its tip pivot pin, at z = -25..-15 mm
@@ -237,7 +237,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_left_plate2.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_left_plate2.stl" />
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1" />
@@ -262,7 +262,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_right.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_right.stl" />
             </geometry>
             <material
                 name="">
@@ -273,14 +273,14 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_right.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_right.stl" />
             </geometry>
         </collision>
         <!-- Near plate + tip pin; mirror of gripper_gear_left_link. -->
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_gear_right_plate2.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_gear_right_plate2.stl" />
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1" />
@@ -306,7 +306,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_left.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_left.stl" />
             </geometry>
             <material
                 name="">
@@ -317,14 +317,14 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_left.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_left.stl" />
             </geometry>
         </collision>
         <!-- Near plate + tip pin of the follower bar. -->
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_left_plate2.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_left_plate2.stl" />
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1" />
@@ -371,7 +371,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_right.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_right.stl" />
             </geometry>
             <material
                 name="">
@@ -382,14 +382,14 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_right.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_right.stl" />
             </geometry>
         </collision>
         <!-- Near plate + tip pin; mirror of gripper_left_link. -->
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/gripper_link_right_plate2.stl" />
+                <mesh filename="${mesh_location}/unused/gripper/gripper_link_right_plate2.stl" />
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1" />
@@ -437,7 +437,7 @@
             <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
+                <mesh filename="${mesh_location}/unused/gripper/${finger_mesh}" />
             </geometry>
             <material
                 name="">
@@ -507,7 +507,7 @@
             <origin xyz="0 0 ${finger_axial_correction}"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/gripper/${finger_mesh}" />
+                <mesh filename="${mesh_location}/unused/gripper/${finger_mesh}" />
             </geometry>
             <material
                 name="">
@@ -636,6 +636,6 @@
     </joint>
 
     <!-- Gripper Camera (D435i) — defined in gripper_camera.xacro -->
-    <xacro:include filename="gripper_camera.xacro" />
+    <xacro:include filename="$(find aries)/urdf/gripper_camera.xacro" />
 
 </robot>

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!--
+      The drill mesh was exported in base_link coordinates, so the fixed joint
+      has no offset. Its mass remains part of base_link's aggregate inertial
+      model; this link separates the drill geometry without changing the
+      rover's mass or dynamics.
+    -->
+    <link name="drill_link">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill.glb"/>
+            </geometry>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill.stl"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="drill_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="drill_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+</robot>

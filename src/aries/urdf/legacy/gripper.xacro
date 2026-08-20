@@ -24,7 +24,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_base.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_base.stl" />
             </geometry>
             <material
                 name="">
@@ -35,7 +35,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_base.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_base.stl" />
             </geometry>
         </collision>
     </link>
@@ -60,7 +60,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_left.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_left.stl" />
             </geometry>
             <material
                 name="">
@@ -71,7 +71,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_left.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_left.stl" />
             </geometry>
         </collision>
     </link>
@@ -102,7 +102,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_right.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_right.stl" />
             </geometry>
             <material
                 name="">
@@ -113,7 +113,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="file://$(find aries)/meshes/gripper_right.stl" />
+                <mesh filename="file://$(find aries)/meshes/unused/gripper_right.stl" />
             </geometry>
         </collision>
     </link>
@@ -130,6 +130,6 @@
     
 
     <!-- Gripper Camera (D435i) — defined in gripper_camera.xacro -->
-    <xacro:include filename="gripper_camera.xacro" />
+    <xacro:include filename="$(find aries)/urdf/gripper_camera.xacro" />
 
 </robot>

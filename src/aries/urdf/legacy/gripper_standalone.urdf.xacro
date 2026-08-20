@@ -27,6 +27,6 @@
     </joint>
     
     <!-- Include gripper xacro (it will attach to link6) -->
-    <xacro:include filename="$(find aries)/urdf/gripper.xacro"/>
+    <xacro:include filename="$(find aries)/urdf/legacy/gripper.xacro"/>
     
 </robot>

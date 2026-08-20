@@ -40,8 +40,9 @@ def generate_launch_description():
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
         default_value='v2',
-        choices=['old', 'new', 'v2'],
-        description='Which gripper URDF to load'
+        choices=['v2'],
+        description='Which gripper URDF to load. Only "v2" exists; "new" and '
+                    '"old" are retired to aries/urdf/legacy/.'
     )
 
     finger_type_arg = DeclareLaunchArgument(
@@ -253,17 +254,12 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_gui'))
     )
     
-    # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
-    # Geometry tables model the 85.563 mm four-bar of gripper_new only, so this
-    # stays off for v2 (50 mm parallelogram, 83 mm stroke) rather than drawing a
-    # sweep that is wrong by 100 mm. Re-enable once the tables are re-fitted.
-    gripper_arc_visualizer_node = Node(
-        package="aries_moveit",
-        executable="gripper_arc_visualizer.py",
-        name="gripper_arc_visualizer",
-        output="screen",
-        condition=IfCondition(PythonExpression(["'", gripper_type, "' == 'new'"])),
-    )
+    # Gripper arc overlay for RViz (aries_moveit/scripts/gripper_arc_visualizer.py)
+    # is not launched. Its geometry tables model the 85.563 mm four-bar of the
+    # retired gripper_new only; on v2 (50 mm parallelogram, 83 mm stroke) the
+    # sweep it draws is wrong by 100 mm. It used to be gated on
+    # gripper_type == 'new', which no longer exists. Re-fit the tables to v2
+    # before adding the node back.
 
     # micro-ROS agent: bridges Teensy USB serial to ROS 2 topics
     micro_ros_agent_node = Node(
@@ -292,6 +288,5 @@ def generate_launch_description():
         delay_arm_spawner,
         delay_gripper_spawner,
         move_group_node,
-        gripper_arc_visualizer_node,
         rviz_node,
     ])

@@ -1,10 +1,15 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="aries">
-  <!-- Gripper selection - 'v2' (REBEL-6DOF-04, meshing sector gears),
-       'new' (the 85.563 mm four-bar) or 'old' -->
+  <!-- The REBEL-6DOF-04 gripper (meshing sector gears) is the only gripper
+       this robot is built with. The 85.563 mm four-bar ('new') and the
+       original ('old') are retired to urdf/legacy/ and are not reachable from
+       here; nothing in the fleet runs them any more.
+
+       The argument is still declared because a dozen launch files pass
+       gripper_type:=v2 down to this file, and an undeclared arg is a hard
+       error. It is accepted and ignored - there is no branch left to take. -->
   <xacro:arg name="gripper_type" default="v2"/>
-  <xacro:property name="gripper_type" value="$(arg gripper_type)"/>
-  <!-- Swappable fingertip - 'bucket', 'maintenance', or 'probe' (new gripper only) -->
+  <!-- Swappable fingertip - 'bucket', 'maintenance', or 'probe' -->
   <xacro:arg name="finger_type" default="probe"/>
   <xacro:property name="finger_type" value="$(arg finger_type)"/>
   <!-- Hardware protocol - 'mock_hardware', 'gazebo', or 'rebel' -->
@@ -21,6 +26,7 @@
   <xacro:include filename="common_properties.xacro"/>
   <xacro:include filename="aries_gazebo.xacro"/>
   <xacro:include filename="aries_base.xacro"/>
+  <xacro:include filename="drill.xacro"/>
   <xacro:include filename="differential_link.xacro"/>
   <xacro:include filename="left_link.xacro"/>
   <xacro:include filename="right_link.xacro"/>
@@ -30,14 +36,5 @@
   <xacro:include filename="igus_rebel2.control.xacro"/>
   <!-- Instantiate the arm control macro -->
   <xacro:igus_rebel_control arm_id="aries" hardware_protocol="${hardware_protocol}" arm_hardware_protocol="${arm_hardware_protocol}" gripper_hardware_protocol="${gripper_hardware_protocol}" serial_port="${serial_port}"/>
-  <!-- Conditional gripper includes -->
-  <xacro:if value="${gripper_type == 'v2'}">
-    <xacro:include filename="gripper_v2.xacro"/>
-  </xacro:if>
-  <xacro:if value="${gripper_type == 'new'}">
-    <xacro:include filename="gripper_new.xacro"/>
-  </xacro:if>
-  <xacro:if value="${gripper_type == 'old'}">
-    <xacro:include filename="gripper.xacro"/>
-  </xacro:if>
+  <xacro:include filename="gripper_v2.xacro"/>
 </robot>

@@ -109,7 +109,22 @@
          comes straight out of the assembly; the other two are the single-side
          export placed on both jaws, which is only valid because each of those
          solids is symmetric about its own mid-plane (the build script asserts
-         it). -->
+         it).
+
+         The bucket pair is now the 2026-08-19 CAD re-export (new_mesh/
+         gripper_bucket.stl = LEFT, gripper_bucket_2.stl = RIGHT; the handedness
+         is readable off the tip, the left lip stays 50 mm wide to the end while
+         the right narrows to 29 mm so the two nest when closed). That export
+         carries its own datum, so it was re-expressed in these link frames by
+         matching the mount shank - the 15 x 11 mm prism between the base face
+         and the scoop - rather than by bounding box: the resulting solid sits
+         within 0.14 mm mean / 0.29 mm p95 of the mesh
+         build_gripper_v2_meshes.py cuts out of the assembly GLB, so it is the
+         same fingertip, only tessellated finer across the bowl's back wall
+         (the one 3 mm outlier is chord error on that curve). Re-running that
+         script REGENERATES these two files from the GLB and would undo the
+         swap; the numbers below move by under 1.5 mm / 4% if it does, so
+         nothing breaks, but the meshes stop being the CAD-current ones. -->
     <xacro:property name="finger_mesh_left" value="gripper_${finger_type}_left.stl"/>
     <xacro:property name="finger_mesh_right" value="gripper_${finger_type}_right.stl"/>
 
@@ -120,19 +135,19 @@
          it takes -cx and -ixz and leaves the rest alone. Total gripper mass is
          458 g with the bucket fitted, of which 90 g is the servo. -->
     <xacro:property name="finger_mass"
-                    value="${0.0277 if finger_type == 'probe' else (0.0433 if finger_type == 'bucket' else 0.0187)}"/>
+                    value="${0.0277 if finger_type == 'probe' else (0.0417 if finger_type == 'bucket' else 0.0187)}"/>
     <xacro:property name="finger_com_x"
-                    value="${0.01892 if finger_type == 'probe' else (0.00840 if finger_type == 'bucket' else 0.01748)}"/>
+                    value="${0.01892 if finger_type == 'probe' else (0.00745 if finger_type == 'bucket' else 0.01748)}"/>
     <xacro:property name="finger_com_z"
-                    value="${0.05805 if finger_type == 'probe' else (0.05452 if finger_type == 'bucket' else 0.04608)}"/>
+                    value="${0.05805 if finger_type == 'probe' else (0.05483 if finger_type == 'bucket' else 0.04608)}"/>
     <xacro:property name="finger_ixx"
-                    value="${2.343e-05 if finger_type == 'probe' else (3.617e-05 if finger_type == 'bucket' else 1.338e-05)}"/>
+                    value="${2.343e-05 if finger_type == 'probe' else (3.531e-05 if finger_type == 'bucket' else 1.338e-05)}"/>
     <xacro:property name="finger_iyy"
-                    value="${2.362e-05 if finger_type == 'probe' else (3.212e-05 if finger_type == 'bucket' else 1.468e-05)}"/>
+                    value="${2.362e-05 if finger_type == 'probe' else (3.110e-05 if finger_type == 'bucket' else 1.468e-05)}"/>
     <xacro:property name="finger_izz"
-                    value="${3.462e-06 if finger_type == 'probe' else (1.736e-05 if finger_type == 'bucket' else 1.999e-06)}"/>
+                    value="${3.462e-06 if finger_type == 'probe' else (1.619e-05 if finger_type == 'bucket' else 1.999e-06)}"/>
     <xacro:property name="finger_ixz"
-                    value="${-5.067e-06 if finger_type == 'probe' else (6.137e-07 if finger_type == 'bucket' else -4.098e-06)}"/>
+                    value="${-5.067e-06 if finger_type == 'probe' else (4.309e-07 if finger_type == 'bucket' else -4.098e-06)}"/>
 
     <!-- Reusable inertial block. -->
     <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
@@ -187,41 +202,41 @@
          are exact mirrors, so one set of numbers serves both with sx = +/-1.
          The visual stays the real mesh. -->
     <xacro:property name="finger_col0_sx"
-                    value="${0.0262 if finger_type == 'probe' else (0.0270 if finger_type == 'bucket' else 0.0261)}"/>
+                    value="${0.0262 if finger_type == 'probe' else (0.0269 if finger_type == 'bucket' else 0.0261)}"/>
     <xacro:property name="finger_col0_sy"
-                    value="${0.0150 if finger_type == 'probe' else (0.0150 if finger_type == 'bucket' else 0.0150)}"/>
+                    value="${0.0150 if finger_type == 'probe' else (0.0151 if finger_type == 'bucket' else 0.0150)}"/>
     <xacro:property name="finger_col0_sz"
-                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+                    value="${0.0335 if finger_type == 'probe' else (0.0369 if finger_type == 'bucket' else 0.0331)}"/>
     <xacro:property name="finger_col0_x"
-                    value="${0.00812 if finger_type == 'probe' else (0.00849 if finger_type == 'bucket' else 0.00803)}"/>
+                    value="${0.00812 if finger_type == 'probe' else (0.00847 if finger_type == 'bucket' else 0.00803)}"/>
     <xacro:property name="finger_col0_y"
-                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+                    value="${0.0 if finger_type == 'probe' else (0.00001 if finger_type == 'bucket' else 0.0)}"/>
     <xacro:property name="finger_col0_z"
                     value="${0.01180 if finger_type == 'probe' else (0.01346 if finger_type == 'bucket' else 0.01165)}"/>
     <xacro:property name="finger_col1_sx"
-                    value="${0.0173 if finger_type == 'probe' else (0.0466 if finger_type == 'bucket' else 0.0174)}"/>
+                    value="${0.0173 if finger_type == 'probe' else (0.0452 if finger_type == 'bucket' else 0.0174)}"/>
     <xacro:property name="finger_col1_sy"
-                    value="${0.0300 if finger_type == 'probe' else (0.0500 if finger_type == 'bucket' else 0.0150)}"/>
+                    value="${0.0300 if finger_type == 'probe' else (0.0502 if finger_type == 'bucket' else 0.0150)}"/>
     <xacro:property name="finger_col1_sz"
-                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+                    value="${0.0335 if finger_type == 'probe' else (0.0369 if finger_type == 'bucket' else 0.0331)}"/>
     <xacro:property name="finger_col1_x"
-                    value="${0.01627 if finger_type == 'probe' else (0.00633 if finger_type == 'bucket' else 0.01588)}"/>
+                    value="${0.01627 if finger_type == 'probe' else (0.00537 if finger_type == 'bucket' else 0.01588)}"/>
     <xacro:property name="finger_col1_y"
-                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+                    value="${0.0 if finger_type == 'probe' else (-0.00009 if finger_type == 'bucket' else 0.0)}"/>
     <xacro:property name="finger_col1_z"
-                    value="${0.04525 if finger_type == 'probe' else (0.05023 if finger_type == 'bucket' else 0.04479)}"/>
+                    value="${0.04525 if finger_type == 'probe' else (0.05033 if finger_type == 'bucket' else 0.04479)}"/>
     <xacro:property name="finger_col2_sx"
                     value="${0.0217 if finger_type == 'probe' else (0.0483 if finger_type == 'bucket' else 0.0216)}"/>
     <xacro:property name="finger_col2_sy"
-                    value="${0.0300 if finger_type == 'probe' else (0.0500 if finger_type == 'bucket' else 0.0150)}"/>
+                    value="${0.0300 if finger_type == 'probe' else (0.0502 if finger_type == 'bucket' else 0.0150)}"/>
     <xacro:property name="finger_col2_sz"
-                    value="${0.0335 if finger_type == 'probe' else (0.0368 if finger_type == 'bucket' else 0.0331)}"/>
+                    value="${0.0335 if finger_type == 'probe' else (0.0369 if finger_type == 'bucket' else 0.0331)}"/>
     <xacro:property name="finger_col2_x"
-                    value="${0.02568 if finger_type == 'probe' else (0.00883 if finger_type == 'bucket' else 0.02522)}"/>
+                    value="${0.02568 if finger_type == 'probe' else (0.00857 if finger_type == 'bucket' else 0.02522)}"/>
     <xacro:property name="finger_col2_y"
-                    value="${0.0 if finger_type == 'probe' else (-0.00005 if finger_type == 'bucket' else 0.0)}"/>
+                    value="${0.0 if finger_type == 'probe' else (-0.00013 if finger_type == 'bucket' else 0.0)}"/>
     <xacro:property name="finger_col2_z"
-                    value="${0.07870 if finger_type == 'probe' else (0.08699 if finger_type == 'bucket' else 0.07793)}"/>
+                    value="${0.07870 if finger_type == 'probe' else (0.08721 if finger_type == 'bucket' else 0.07793)}"/>
 
     <!-- The bucket's upper two bands are its scoop, and a box fills the bowl:
          the proxy is SOLID where the real tip is a shell. Nothing in these

@@ -40,7 +40,7 @@
         <parent link="base_link"/>
         <child link="imu_frame"/>
         <!-- On the top deck, behind the front D435i. The deck plate in
-             base_link_v3.stl is the large up-facing surface at z = 0.212, so
+             base.stl is the large up-facing surface at z = 0.212, so
              0.222 puts the sensor body 10 mm above it; the camera mount post
              occupies x ~ 0.24, and the camera itself sits at x = 0.2756
              (d435i.xacro), so x = 0.18 clears both on open deck. Was
@@ -95,7 +95,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/base_link_v3.glb" />
+                <mesh filename="${mesh_location}/base.glb" />
             </geometry>
             
         </visual>
@@ -103,7 +103,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/base_link_v3.stl" />
+                <mesh filename="${mesh_location}/base.stl" />
             </geometry>
         </collision>
     </link>
