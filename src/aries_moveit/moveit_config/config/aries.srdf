@@ -469,6 +469,17 @@
     <disable_collisions link1="gripper_gear_right_link" link2="link6" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="camera_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="drill_link" reason="Adjacent"/>
+    <!-- The drill's two prismatic links (2026-08-20). Each is Adjacent to the
+         mast it rides and never reaches the chassis, whose bbox stops at
+         x = -0.36 while the carriage lives at x = -0.61..-0.44.
+         drill_motor_link vs drill_container_link is deliberately absent: the
+         bin runs under the auger, so feeding down onto it is a REAL collision
+         and must stay checked. drill_bit_link has no collision geometry at
+         all and so needs no entry. -->
+    <disable_collisions link1="drill_link" link2="drill_motor_link" reason="Adjacent"/>
+    <disable_collisions link1="drill_link" link2="drill_container_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="drill_motor_link" reason="Never"/>
+    <disable_collisions link1="base_link" link2="drill_container_link" reason="Never"/>
     <disable_collisions link1="base_link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="motor1" reason="Adjacent"/>

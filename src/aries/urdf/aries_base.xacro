@@ -81,15 +81,36 @@
                  so batteries, electronics and the
                  remaining chassis hardware are represented here. The inertia
                  tensor is scaled with mass from the original CAD tensor,
-                 preserving the chassis radii of gyration. -->
-            <mass value="40.9842046133121" />
+                 preserving the chassis radii of gyration.
+
+                 2026-08-20: drill.xacro gained three links with real
+                 inertials - the feed carriage (1.9407), the auger (2.1539)
+                 and the sample container (0.2086), 4.3032 kg in total. That
+                 mass was always inside this aggregate (drill_link carries no
+                 inertial), so it is subtracted here rather than added to the
+                 rover. The same day the bucket fingertip was re-integrated
+                 from its new mesh and lost 1.6 g a side, 3.2 g over the pair,
+                 which comes back the other way. So the other links now total
+                 53.3157953866879 and this is 90 - that = 36.6842046133121,
+                 with the tensor scaled by the same 0.895082 ratio the note
+                 above describes. The 90 kg total is unchanged.
+
+                 The COM below is NOT moved, and it is now an approximation in
+                 a way it was not before: it is the aggregate COM of a set that
+                 included the drill, and the drill sits ~0.48 m behind it. The
+                 honest correction needs the chassis CAD breakdown, which is
+                 not in this repo; shifting it on a guess would be worse than
+                 leaving it stated. Net effect of the change is that 4.3 kg
+                 moved from x = -0.019 back to where the drill actually is,
+                 which is the right direction. -->
+            <mass value="36.6842046133121" />
             <inertia
-                ixx="0.567123503572166"
-                ixy="-0.000210341653344592"
-                ixz="0.0548478665577117"
-                iyy="1.20297870597186"
-                iyz="6.31719911069787E-11"
-                izz="1.55240322545973" />
+                ixx="0.507621773860222"
+                ixy="-0.000188272929114966"
+                ixz="0.0490933123721815"
+                iyy="1.07676402193725"
+                iyz="5.65440825182202E-11"
+                izz="1.38952745581972" />
         </inertial>
         <visual>
             <origin xyz="0 0 0"

@@ -18,6 +18,20 @@
     <kd>100.0</kd>
   </gazebo>
 
+  <gazebo reference="drill_motor_link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+
+  <gazebo reference="drill_container_link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+
   <gazebo reference="C_Differential_Link">
     <mu1>0.2</mu1>
     <mu2>0.2</mu2>
@@ -166,6 +180,12 @@
             <joint_name>R_3_Wheel_Joint</joint_name>
             <joint_name>aux_L_Rocker_joint</joint_name>
             <joint_name>aux_R_Rocker_joint</joint_name>
+            <!-- The drill's two prismatic axes. Not on ros2_control: they are
+                 driven by the JointPositionController plugins below, the same
+                 way the rockers are, so their state has to come from here or
+                 robot_state_publisher never moves the meshes. -->
+            <joint_name>drill_motor_joint</joint_name>
+            <joint_name>drill_container_joint</joint_name>
         </plugin>
   </gazebo>
 
@@ -188,6 +208,33 @@
       <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
       <kp>10</kp><ki>0.1</ki><kd>0.3</kd>
       <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <!-- Drill feed and sample container. These exist as much to HOLD as to
+         drive: a prismatic joint with nothing attached to it sinks to its
+         lower limit under gravity the moment physics starts, and a 4.1 kg
+         carriage riding a lead screw does not do that in reality - the screw
+         is not backdrivable. With a target of 0 they sit where the CAD says
+         they sit until something commands otherwise.
+         Gains are sized off the rockers': the carriage is a ~4.1 kg linear
+         axis rather than a torque-loaded revolute, so p_gain is lower and
+         d_gain is kept high enough to stop it ringing on the stops. -->
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>drill_motor_joint</joint_name>
+      <topic>/model/aries/joint/drill_motor_joint/cmd_pos</topic>
+      <p_gain>800</p_gain><i_gain>2</i_gain><d_gain>120</d_gain>
+      <i_min>-40</i_min><i_max>40</i_max>
+      <cmd_min>-200</cmd_min><cmd_max>200</cmd_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>drill_container_joint</joint_name>
+      <topic>/model/aries/joint/drill_container_joint/cmd_pos</topic>
+      <p_gain>200</p_gain><i_gain>1</i_gain><d_gain>30</d_gain>
+      <i_min>-20</i_min><i_max>20</i_max>
+      <cmd_min>-100</cmd_min><cmd_max>100</cmd_max>
     </plugin>
 
      

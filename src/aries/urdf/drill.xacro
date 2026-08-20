@@ -1,22 +1,50 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
     <!--
-      The drill mesh was exported in base_link coordinates, so the fixed joint
-      has no offset. Its mass remains part of base_link's aggregate inertial
-      model; this link separates the drill geometry without changing the
-      rover's mass or dynamics.
+      Soil-sampling drill, from the 2026-08-19 CAD re-export (new_mesh/GLB/
+      drill.glb), which names four groups: drill_body, drill_motor, drill_bit
+      and drill_container. It supersedes the single 8-material blob the old
+      drill.glb/drill.stl carried (now in meshes/unused/), which had no moving
+      parts at all.
+
+      FRAME. The export is in the CAD assembly frame, not base_link - it sits
+      around (0.87, 1.32, 1.65) m with the mast running along CAD +Y. Every
+      mesh below was baked into base_link coordinates on export with
+
+          x_base = z_cad - 2.0696
+          y_base = x_cad - 0.8975
+          z_base = y_cad - 0.9262
+
+      i.e. a proper rotation (rpy 1.5708 0 1.5708) plus that offset. The
+      mapping was fixed by matching the four mast extrusions, the bottom plate
+      (z = -0.022), the top plate (z = 0.6825) and the deck-level cross member
+      (z = 0.2122..0.232) against the old drill mesh, which was already correct
+      in base_link. The sign is not a free choice: the alternative that also
+      matches the (symmetric) endpoints is a reflection, det -1, which no rigid
+      CAD export can be.
+
+      Because the meshes are already in base_link coordinates, every joint
+      origin here is 0 0 0 and each link frame is coincident with base_link at
+      q = 0. That is legitimate for prismatic joints - the axis passes through
+      the origin - and it is what the previous drill.xacro did for the fixed
+      case. Inertial origins are therefore also in base_link coordinates.
     -->
+
+    <!-- ================================================================
+         Mast, frame and everything bolted to it. Carries no inertial: its
+         mass is still part of base_link's aggregate, as it always has been.
+         ================================================================ -->
     <link name="drill_link">
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/drill.glb"/>
+                <mesh filename="${mesh_location}/drill_body.glb"/>
             </geometry>
         </visual>
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/drill.stl"/>
+                <mesh filename="${mesh_location}/drill_body.stl"/>
             </geometry>
         </collision>
     </link>
@@ -25,5 +53,157 @@
         <parent link="base_link"/>
         <child link="drill_link"/>
         <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- ================================================================
+         FEED CARRIAGE (CAD "drill_motor"): the drill head, its motor, the
+         carriage plate and the ball nut. Rides four 10 mm guide rods at
+         y = -0.0534 / +0.0551, x = -0.5945 / -0.4545, driven by the lead
+         screw on the bit axis offset (x = -0.5095, y = 0.0551).
+
+         Mass properties are volume x density, not a weighed figure: 485 cm^3
+         at 4000 kg/m^3 = 1.94 kg, the average of costing the 6 mm aluminium
+         plate at 2700, the motor/gearbox body at 5000 and the steel nut at
+         7850 (1.99 kg that way). Replace all three drill masses with scale
+         readings when the hardware is assembled - see the base_link note in
+         aries_base.xacro, which was reduced by exactly the 4.3032 kg added
+         here so the rover still totals 90 kg.
+         ================================================================ -->
+    <link name="drill_motor_link">
+        <inertial>
+            <origin xyz="-0.52425 -0.01675 0.42704" rpy="0 0 0"/>
+            <mass value="1.9407"/>
+            <inertia ixx="6.74274e-03" ixy="-9.72398e-04" ixz="2.73673e-04"
+                     iyy="4.28647e-03" iyz="5.85743e-04" izz="8.66488e-03"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill_motor.glb"/>
+            </geometry>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill_motor.stl"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!--
+      Travel measured by sweeping the carriage against the frame mesh, 2 mm
+      steps, and watching where surface contact jumps off its sliding-fit
+      baseline:
+
+        DOWN  -0.377  the head's 58 mm nose (bottom z = 0.3613) lands on the
+                      base plate at z = -0.016. It does NOT continue into the
+                      50 mm bore the bit passes through - the nose is wider
+                      than the bore.
+        UP    +0.187  the carriage top (z = 0.4894) meets the mast's top plate
+                      at z = 0.6765.
+
+      Both are quoted 2 mm inside those numbers so the stop is the joint limit
+      and not a mesh interpenetration. The up-stroke is not arbitrary: lifting
+      the bit tip from z = -0.1291 clear of the container rim at z = 0.0495
+      needs 0.1787, which is what +0.185 provides with 6 mm to spare. That is
+      the sample-collection sequence - drill down, retract, run the container
+      underneath - and it is the check that the two limits below are right.
+
+      effort/velocity are placeholders sized for a lead-screw feed, not
+      measured from the drive.
+    -->
+    <joint name="drill_motor_joint" type="prismatic">
+        <parent link="drill_link"/>
+        <child link="drill_motor_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit effort="200.0" velocity="0.05" lower="-0.375" upper="0.185"/>
+        <dynamics damping="5.0" friction="2.0"/>
+    </joint>
+
+    <!-- ================================================================
+         AUGER (CAD "drill_bit"): 50 mm flighting on a 30 mm core, from
+         z = 0.4225 down to z = -0.1291 on the bit axis (x = -0.5095,
+         y = 0.0001) - 38 mm above the ground plane at the home pose, and it
+         passes through the 50 mm bore in the base plate on the way down.
+
+         VISUAL ONLY, no <collision>, as specified. It shares the carriage's
+         frame through a fixed joint, so it feeds with the motor.
+
+         It still needs an <inertial>: 2.15 kg is a real fraction of the
+         carriage's swung mass, and a fixed-joint child with no inertial is
+         given a 1 kg unit-tensor default by the SDF converter, which would be
+         both wrong and silent. 274 cm^3 of steel at 7850 kg/m^3; the tensor
+         checks out against a slender rod, (1/12)mL^2 = 0.0546 vs 0.0538 here.
+         ================================================================ -->
+    <link name="drill_bit_link">
+        <inertial>
+            <origin xyz="-0.50948 0.00013 0.14368" rpy="0 0 0"/>
+            <mass value="2.1539"/>
+            <inertia ixx="5.38379e-02" ixy="-5.78053e-07" ixz="-7.33246e-06"
+                     iyy="5.38335e-02" iyz="8.91002e-06" izz="1.02388e-03"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill_bit.glb"/>
+            </geometry>
+        </visual>
+    </link>
+
+    <joint name="drill_bit_joint" type="fixed">
+        <parent link="drill_motor_link"/>
+        <child link="drill_bit_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- ================================================================
+         SAMPLE CONTAINER (CAD "drill_container"): the open bin plus its four
+         feet and two cross plates, riding the base plate on rails. 77 cm^3 of
+         wall at 2700 kg/m^3 - the mesh is a shell, not a solid, so the
+         envelope's 607 cm^3 is not the figure to density.
+         ================================================================ -->
+    <link name="drill_container_link">
+        <inertial>
+            <origin xyz="-0.37906 0.00013 0.01433" rpy="0 0 0"/>
+            <mass value="0.2086"/>
+            <inertia ixx="1.74359e-04" ixy="1.35749e-07" ixz="-1.30521e-09"
+                     iyy="3.58964e-04" iyz="1.04583e-07" izz="4.06765e-04"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill_container.glb"/>
+            </geometry>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/drill_container.stl"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!--
+      The bin parks forward of the mast (bin centre x = -0.3791) and runs back
+      along -X to sit under the bit: the bit axis is at x = -0.5095, so the
+      stroke is exactly 0.1304. Unlike the carriage this one is NOT bounded by
+      a collision - the sweep runs clear through +/-0.2 m - so the limit is the
+      geometry of the task, not a hard stop. Two independent things agree on
+      it: the base plate's 50 mm bore is centred on that same axis (zero plate
+      material within r = 25 mm of it), and the contact count under the bin
+      bottoms out at -0.12..-0.13 as its feet straddle that bore.
+
+      q = 0 is parked, q = -0.1304 is under the bit. Sliding under while the
+      carriage is low drives the bin into the auger; that pair is deliberately
+      NOT disabled in the SRDF.
+    -->
+    <joint name="drill_container_joint" type="prismatic">
+        <parent link="drill_link"/>
+        <child link="drill_container_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="1 0 0"/>
+        <limit effort="100.0" velocity="0.1" lower="-0.1304" upper="0.0"/>
+        <dynamics damping="2.0" friction="1.0"/>
     </joint>
 </robot>
