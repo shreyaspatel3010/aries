@@ -10,6 +10,7 @@ install(
     nodes/custom_joystick_controller.py
     nodes/rover_cmd_vel_joystick.py
     nodes/cmd_vel_teleop_relay.py
+    nodes/drill_joystick.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

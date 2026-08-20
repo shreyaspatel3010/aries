@@ -28,6 +28,12 @@
       q = 0. That is legitimate for prismatic joints - the axis passes through
       the origin - and it is what the previous drill.xacro did for the fixed
       case. Inertial origins are therefore also in base_link coordinates.
+
+      drill_bit.glb is the ONE exception, and it has to be: it spins, and a
+      revolute axis passes through its link's origin, so a bit left in base_link
+      coordinates would orbit the rover's centreline half a metre away instead
+      of turning on itself. That mesh was re-datumed onto its own axis, so its
+      joint carries the axis position and its visual/inertial origins are local.
     -->
 
     <!-- ================================================================
@@ -127,18 +133,27 @@
          y = 0.0001) - 38 mm above the ground plane at the home pose, and it
          passes through the 50 mm bore in the base plate on the way down.
 
-         VISUAL ONLY, no <collision>, as specified. It shares the carriage's
-         frame through a fixed joint, so it feeds with the motor.
+         VISUAL ONLY, no <collision>, as specified. It hangs off the carriage,
+         so it feeds with the motor, and it spins on its own axis - see the
+         joint below.
 
          It still needs an <inertial>: 2.15 kg is a real fraction of the
-         carriage's swung mass, and a fixed-joint child with no inertial is
-         given a 1 kg unit-tensor default by the SDF converter, which would be
-         both wrong and silent. 274 cm^3 of steel at 7850 kg/m^3; the tensor
-         checks out against a slender rod, (1/12)mL^2 = 0.0546 vs 0.0538 here.
+         carriage's swung mass, and a link with no inertial is given a 1 kg
+         unit-tensor default by the SDF converter, which would be both wrong
+         and silent. 274 cm^3 of steel at 7850 kg/m^3. Both tensor entries that
+         matter check out: (1/12)mL^2 = 0.0546 against 0.0538 here for the
+         slender-rod terms, and izz = 1.024e-3 sits above a solid cylinder's
+         (1/2)mr^2 = 6.73e-4, which is what flighting carrying its mass out at
+         the rim should do.
+
+         Coordinates here are LOCAL to the bit, not base_link like every other
+         mesh in this file: drill_bit.glb was re-datumed onto the rotation axis
+         so the mesh origin is the axis. The COM lands 32 um / 46 um off it, so
+         the spinning mass is balanced and there is no wobble forcing.
          ================================================================ -->
     <link name="drill_bit_link">
         <inertial>
-            <origin xyz="-0.50948 0.00013 0.14368" rpy="0 0 0"/>
+            <origin xyz="0.000032 0.000046 0.143675" rpy="0 0 0"/>
             <mass value="2.1539"/>
             <inertia ixx="5.38379e-02" ixy="-5.78053e-07" ixz="-7.33246e-06"
                      iyy="5.38335e-02" iyz="8.91002e-06" izz="1.02388e-03"/>
@@ -151,10 +166,32 @@
         </visual>
     </link>
 
-    <joint name="drill_bit_joint" type="fixed">
+    <!--
+      Spindle rotation: continuous, so it turns either way without end, which is
+      what a drill that has to back out of a hole needs.
+
+      The origin is the one place in this file that is not 0 0 0, and it is not
+      optional. A revolute axis runs through the CHILD link's origin, so with
+      0 0 0 the bit would swing about base_link's centreline half a metre away
+      rather than turning on itself. x = -0.509508, y = 0.000085 is the axis
+      measured off the mesh, not eyeballed: the outer flighting holds
+      r_max = 25.000 mm about it at every height, and the 30 mm core agrees to
+      within 1 um. It is the same axis the lead screw is offset from and the
+      same one the base plate's 50 mm bore is centred on.
+
+      A continuous joint takes no lower/upper; effort and velocity are still
+      declared because ros2_control and gz both read them. 60 rad/s is ~570 rpm,
+      an upper bound for an auger of this size, and is a placeholder until the
+      drive is specified. Damping is deliberately low - this axis is meant to
+      spin freely, unlike the two feed axes.
+    -->
+    <joint name="drill_bit_joint" type="continuous">
         <parent link="drill_motor_link"/>
         <child link="drill_bit_link"/>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <origin xyz="-0.509508 0.000085 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit effort="20.0" velocity="60.0"/>
+        <dynamics damping="0.05" friction="0.02"/>
     </joint>
 
     <!-- ================================================================

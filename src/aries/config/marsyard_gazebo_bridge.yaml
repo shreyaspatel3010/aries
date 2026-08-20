@@ -147,6 +147,29 @@
   gz_type_name:   "gz.msgs.Double"
   direction:      ROS_TO_GZ
 
+# Drill axes, commanded by aries_teleop/drill_joystick (LT + d-pad / left stick).
+# The two feed axes go to JointPositionController (a target in metres); the
+# auger goes to JointController, which takes a RATE in rad/s - sign is the
+# direction of spin, and it keeps spinning until commanded otherwise.
+- ros_topic_name: "/aries/drill_motor_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/drill_motor_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/drill_container_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/drill_container_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/drill_bit_joint/cmd_vel"
+  gz_topic_name:  "/model/aries/joint/drill_bit_joint/cmd_vel"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+
 # - ros_topic_name: "/aries/L_Boggie_Joint/cmd_pos"
 #   gz_topic_name:  "/model/aries/joint/L_Boggie_Joint/cmd_pos"
 #   ros_type_name:  "std_msgs/msg/Float64"

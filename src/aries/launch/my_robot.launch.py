@@ -110,6 +110,12 @@ def generate_launch_description():
         description='Use the hardware joystick mapping for simulated rover drive'
     )
 
+    use_drill_teleop_arg = DeclareLaunchArgument(
+        'use_drill_teleop',
+        default_value='true',
+        description='LT-gated drill teleop: feed carriage, sample bin and auger'
+    )
+
     use_cmd_vel_relay_arg = DeclareLaunchArgument(
         'use_cmd_vel_relay',
         default_value='true',
@@ -316,6 +322,23 @@ def generate_launch_description():
         ],
     )
 
+    # The drill's three axes reach gz through the JointPositionController /
+    # JointController plugins in aries_gazebo.xacro, bridged by
+    # config/gazebo_bridge.yaml - not through ros2_control. This node is the
+    # only thing that commands them, and only while LT is held.
+    drill_joystick_node = Node(
+        condition=IfCondition(LaunchConfiguration('use_drill_teleop')),
+        package='aries_teleop',
+        executable='drill_joystick.py',
+        name='drill_joystick',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution(
+                [FindPackageShare('aries_teleop'), 'config', 'joystick.yaml']),
+            {'use_sim_time': use_sim_time},
+        ],
+    )
+
     cmd_vel_relay_node = Node(
         condition=IfCondition(use_cmd_vel_relay),
         package='aries_teleop',
@@ -410,6 +433,7 @@ def generate_launch_description():
         headless_arg,
         use_joystick_arg,
         use_rover_joystick_arg,
+        use_drill_teleop_arg,
         use_cmd_vel_relay_arg,
         use_sim_ekf_arg,
         joy_driver_arg,
@@ -432,6 +456,7 @@ def generate_launch_description():
         parameter_bridge_node,
         virtual_differential_node,
         rover_joystick_node,
+        drill_joystick_node,
         cmd_vel_relay_node,
         localization_launch,
         move_group_launch,

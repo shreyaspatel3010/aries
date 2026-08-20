@@ -16,7 +16,16 @@
 #   Hold RT      = arm chain/joint jog    (also the arm/gripper enable)
 #   Hold RB + Y  = real-arm physical hand guiding (ZeroTorque)
 #   Press LB + Y = re-initialise the ODrives (clear errors, re-arm CLOSED_LOOP)
+#   Hold LT + Y/A/B      = planned move to a named arm preset
+#   Hold LT + D-pad      = drill feed (up/down) and sample bin (left/right)
+#   Hold LT + left stick = auger rotation, either direction
+#                          (LB blocks the drill: LB + LT reaches nothing)
 #   Y alone      = sound
+#
+# The drill is on LT, not LB, because LB already means "rover drive" and its
+# left stick is the drive command - LB + left stick would spin the auger and
+# drive the rover at once. LT's only other binding is with the FACE buttons
+# (arm presets), so the d-pad and sticks are free under it.
 #
 # Y is shared three ways, disambiguated by which shoulder button is held: bare
 # Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand
@@ -121,3 +130,63 @@ mock_rover_drive:
     accel_limit: 1.20
     angular_accel_limit: 3.00
     publish_rate_hz: 30.0
+
+drill_joystick:
+  ros__parameters:
+    joy_topic: "/joy"
+    joint_states_topic: "/joint_states"
+
+    # Bridged to gz by aries/config/*_gazebo_bridge.yaml. Nothing consumes them
+    # on the real rover yet - there is no drill driver.
+    motor_cmd_topic: "/aries/drill_motor_joint/cmd_pos"
+    container_cmd_topic: "/aries/drill_container_joint/cmd_pos"
+    bit_cmd_topic: "/aries/drill_bit_joint/cmd_vel"
+
+    motor_joint: "drill_motor_joint"
+    container_joint: "drill_container_joint"
+
+    # LT, as a press fraction: joy_layout_normalizer republishes canonical axis
+    # 2 as 0.0 released -> 1.0 pressed whatever the driver. Release below press
+    # for hysteresis, the same pair gamepad.yaml uses for RT.
+    modifier_axis: 2
+    modifier_threshold: 0.5
+    modifier_release: 0.35
+
+    # LB (button 4) BLOCKS the drill, so LB + LT reaches nothing. The rover's
+    # drive enable has to win: two nodes on two gates would otherwise let the
+    # rover drive off with the auger spinning and the mast down. The arm teleop
+    # already yields to LB the same way. -1 disables the block.
+    block_button: 4
+
+    # Canonical d-pad: axis 7 is +1 UP / -1 DOWN, axis 6 is +1 LEFT / -1 RIGHT.
+    dpad_vertical_axis: 7
+    dpad_horizontal_axis: 6
+    dpad_threshold: 0.5
+
+    bit_axis: 1
+    bit_deadzone: 0.20
+
+    # MUST match drill.xacro's joint limits. Repeated here so the node can run
+    # without a robot description; if the URDF stroke changes, change both.
+    motor_lower: -0.375
+    motor_upper: 0.185
+    motor_speed: 0.05
+
+    container_lower: -0.1304
+    container_upper: 0.0
+    container_speed: 0.05
+
+    # drill_bit_joint's URDF velocity limit is 60 rad/s. Half of it (~285 rpm)
+    # is the manual ceiling.
+    bit_max_speed: 30.0
+
+    # D-pad UP raises the carriage; D-pad RIGHT parks the bin forward and LEFT
+    # runs it back under the auger; stick UP turns the auger clockwise seen
+    # from above (the cutting direction of a right-hand flight, and a negative
+    # rate about +Z). Flip any of them here rather than in code.
+    invert_motor: false
+    invert_container: false
+    invert_bit: false
+
+    publish_rate_hz: 30.0
+    joy_timeout_sec: 0.35

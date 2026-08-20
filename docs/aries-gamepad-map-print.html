@@ -320,6 +320,7 @@
       <div class="bind-group">
         <div class="bind-label">Inert while LB is held</div>
         <div class="bind"><span class="bind-key">Everything</span><span class="bind-val dead">Right stick, d-pad, A / B / X / Y and the whole arm do nothing.</span></div>
+        <div class="bind"><span class="bind-key">Drill too</span><span class="bind-val dead">LB + LT reaches nothing. LB wins over the drill's gate as well.</span></div>
       </div>
       <div class="note blocked">
         <b>The arm is actively blocked, not just idle.</b> The teleop node checks LB first, commands a hard
@@ -525,8 +526,8 @@
   <div class="head">
     <span class="badge">LT</span>
     <div class="head-txt">
-      <h1>Arm &mdash; stored poses</h1>
-      <div class="sub">planned MoveGroup moves &middot; arm_preset_pose_joystick</div>
+      <h1>Stored poses &amp; drill</h1>
+      <div class="sub">arm_preset_pose_joystick &middot; drill_joystick</div>
     </div>
     <div class="head-meta">
       <div class="doc">ARIES gamepad map</div>
@@ -537,18 +538,23 @@
   <div class="main">
     <figure>
       <svg viewBox="0 0 760 360" role="img"
-           aria-label="Gamepad with LT held: Y, A and B each send the arm to a stored pose. Sticks and d-pad are inert, and the combo is refused if another shoulder is held.">
+           aria-label="Gamepad with LT held: Y, A and B each send the arm to a stored pose, the d-pad raises the drill feed and slides the sample bin, and the left stick spins the auger either way. X and the right stick are unused, and holding LB blocks the drill.">
         <use href="#pad"/>
         <path class="on" d="M228 60 L232 38 L272 38 L276 60 Z"/>
+        <circle class="on" cx="252" cy="140" r="30"/>
+        <path class="on" d="M276 210 L300 210 L300 220 L310 220 L310 244 L300 244
+                            L300 254 L276 254 L276 244 L266 244 L266 220 L276 220 Z"/>
         <circle class="on" cx="458" cy="110" r="18"/>
         <circle class="on" cx="490" cy="142" r="18"/>
         <circle class="on" cx="458" cy="174" r="18"/>
         <circle class="no" cx="426" cy="142" r="18"/>
+        <circle class="no" cx="412" cy="218" r="30"/>
         <use href="#pad-letters"/>
         <text class="on-letter pad-letter" x="252" y="49">LT</text>
         <text class="on-letter pad-letter" x="458" y="110">Y</text>
         <text class="on-letter pad-letter" x="490" y="142">B</text>
         <text class="on-letter pad-letter" x="458" y="174">A</text>
+
         <path class="lead" d="M476 110 L560 110"/>
         <text class="tag" x="566" y="106">pick_home</text>
         <text class="tag-sub" x="566" y="121">0&deg; 21&deg; 68&deg; 2&deg; 89&deg; 86&deg;</text>
@@ -558,13 +564,23 @@
         <path class="lead" d="M476 174 L520 174 L520 202 L560 202"/>
         <text class="tag" x="566" y="206">probe_drop</text>
         <text class="tag-sub" x="566" y="221">104&deg; -68&deg; 113&deg; 2&deg; 87&deg; 91&deg;</text>
-        <path class="lead-no" d="M408 142 L340 142 L340 96 L300 96"/>
-        <text class="tag-no" x="294" y="92" text-anchor="end">UNUSED</text>
-        <path class="lead-no" d="M222 152 L150 152"/>
-        <text class="tag-no" x="144" y="148" text-anchor="end">STICKS INERT</text>
-        <text class="tag-sub" x="144" y="163" text-anchor="end">d-pad too</text>
+
+        <path class="lead" d="M222 140 L150 140"/>
+        <text class="tag" x="144" y="136" text-anchor="end">AUGER</text>
+        <text class="tag-sub" x="144" y="151" text-anchor="end">&#9650; cut &nbsp; &#9660; back out</text>
+
+        <path class="lead" d="M288 262 L288 302 L200 302"/>
+        <text class="tag" x="194" y="298" text-anchor="end">&#9650;&#9660; FEED</text>
+        <text class="tag-sub" x="194" y="313" text-anchor="end">axis 7 &middot; up raises</text>
+
+        <path class="lead" d="M318 232 L358 232 L358 330"/>
+        <text class="tag" x="364" y="326">&#9664;&#9654; SAMPLE BIN</text>
+        <text class="tag-sub" x="364" y="341">axis 6 &middot; left goes under</text>
+
+        <path class="lead-no" d="M408 142 L370 142 L370 96 L330 96"/>
+        <text class="tag-no" x="324" y="92" text-anchor="end">UNUSED</text>
       </svg>
-      <figcaption>Three stored poses on the face buttons. Each is a planned move, collision-checked the same way RViz Plan &amp; Execute is.</figcaption>
+      <figcaption>LT carries two things that never touch each other: the face buttons plan an arm move, the d-pad and left stick drive the drill.</figcaption>
     </figure>
 
     <div class="bindings">
@@ -574,31 +590,41 @@
         <div class="bind"><span class="bind-key">A</span><span class="bind-val"><b>probe_drop</b> <span class="axis">104&deg; -68&deg; 113&deg; 2&deg; 87&deg; 91&deg;</span></span></div>
         <div class="bind"><span class="bind-key">B</span><span class="bind-val"><b>soil_drop</b> <span class="axis">74&deg; -19&deg; 105&deg; -4&deg; 88&deg; 163&deg;</span></span></div>
         <div class="bind"><span class="bind-key">X</span><span class="bind-val dead">Unassigned.</span></div>
-        <div class="bind"><span class="bind-key">Sticks</span><span class="bind-val dead">Inert. Presets are the only thing LT does.</span></div>
+        <div class="bind"><span class="bind-key">Refused if</span><span class="bind-val">RB, RT or LB held &middot; mid-move &middot; two at once. <span class="axis">logged, never silent</span></span></div>
       </div>
       <div class="bind-group">
-        <div class="bind-label">Refused &mdash; logged, never silent</div>
-        <div class="bind"><span class="bind-key">RB held</span><span class="bind-val">That combo is hand guiding.</span></div>
-        <div class="bind"><span class="bind-key">RT held</span><span class="bind-val">Arm is under joint jog.</span></div>
-        <div class="bind"><span class="bind-key">LB held</span><span class="bind-val">Rover has the sticks.</span></div>
-        <div class="bind"><span class="bind-key">Mid-move</span><span class="bind-val">A preset is already running.</span></div>
-        <div class="bind"><span class="bind-key">Two at once</span><span class="bind-val">Refuses rather than picking one arbitrarily.</span></div>
+        <div class="bind-label">Drill feed &amp; bin &mdash; d-pad</div>
+        <div class="bind"><span class="bind-key">&#9650; &#9660;</span><span class="bind-val"><b>Feed carriage</b> <span class="axis">axis 7 &middot; up raises</span></span></div>
+        <div class="bind"><span class="bind-key">Travel</span><span class="bind-val"><b>&minus;0.375</b> to <b>+0.185</b> m <span class="axis">0.05 m/s</span></span></div>
+        <div class="bind"><span class="bind-key">&#9664; &#9654;</span><span class="bind-val"><b>Sample bin</b> <span class="axis">axis 6 &middot; left goes under</span></span></div>
+        <div class="bind"><span class="bind-key">Travel</span><span class="bind-val"><b>&minus;0.1304</b> to <b>0</b> m <span class="axis">&minus;0.1304 = on the bit axis</span></span></div>
+        <div class="bind"><span class="bind-key">Stops</span><span class="bind-val">Head on the base plate, carriage on the mast plate.</span></div>
       </div>
-      <div class="note">
-        <b>The gripper is left alone.</b> None of the three poses commands the jaw, so a preset can be used
-        while holding a probe. Moves run at 0.25 velocity and acceleration scale. Watch
-        <code>/arm_preset_pose/status</code>.
+      <div class="bind-group">
+        <div class="bind-label">Auger &mdash; left stick</div>
+        <div class="bind"><span class="bind-key">Stick &#9650;</span><span class="bind-val"><b>Clockwise</b> <span class="axis">from above &middot; cutting</span></span></div>
+        <div class="bind"><span class="bind-key">Stick &#9660;</span><span class="bind-val"><b>Anticlockwise</b> <span class="axis">backing out</span></span></div>
+        <div class="bind"><span class="bind-key">Rate</span><span class="bind-val">Up to <b>&plusmn;30</b> rad/s <span class="axis">~285 rpm &middot; deadzone 0.20</span></span></div>
+        <div class="bind"><span class="bind-key">Centre</span><span class="bind-val">Spindle stops. No end stops either way.</span></div>
+        <div class="bind"><span class="bind-key">Release LT</span><span class="bind-val">Auger stops, feed stays put.</span></div>
+      </div>
+      <div class="note blocked">
+        <b>LB blocks the drill.</b> LB + LT reaches nothing &mdash; the rover's drive enable wins over the drill's
+        gate exactly as it does over the arm, so the rover can never drive off with the auger spinning and the mast
+        down. Blocking behaves like releasing LT: auger to zero, feed latched. <b>The up-stroke is what lets the bin
+        pass under</b> &mdash; clearing the rim needs 0.1787&nbsp;m of the mast's 0.185, so the order is feed down,
+        retract, bin left, dump. Feed targets follow <code>/joint_states</code> while LT is off, so the next press
+        resumes from where the drill actually is.
       </div>
     </div>
   </div>
 
   <div class="foot">
-    <div class="foot-cell"><div class="foot-k">Canonical layout</div><div class="foot-v">As <code>joy_layout_normalizer</code> republishes it &mdash; driver-independent.</div></div>
+    <div class="foot-cell"><div class="foot-k">Canonical layout</div><div class="foot-v">D-pad is <b>axis 7</b> +1 up, <b>axis 6</b> +1 left.</div></div>
     <div class="foot-cell"><div class="foot-k">Triggers are axes</div><div class="foot-v">LT = axis 2, RT = axis 5, <b>0.0</b> released to <b>1.0</b> pressed.</div></div>
-    <div class="foot-cell"><div class="foot-k">Mapping &amp; speeds</div><div class="foot-v"><code>gamepad.yaml</code>, <code>teleop_speeds.yaml</code></div></div>
-    <div class="foot-cell"><div class="foot-k">Stored poses</div><div class="foot-v"><code>aries.srdf</code></div></div>
+    <div class="foot-cell"><div class="foot-k">Mapping &amp; limits</div><div class="foot-v"><code>gamepad.yaml</code>, <code>joystick.yaml</code>, <code>drill.xacro</code></div></div>
+    <div class="foot-cell"><div class="foot-k">Drill is sim only</div><div class="foot-v">No drill driver on the real rover yet. Poses: <code>aries.srdf</code></div></div>
   </div>
 </section>
-
 </body>
 </html>

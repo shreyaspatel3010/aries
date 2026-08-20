@@ -39,6 +39,8 @@ def generate_launch_description():
                               description="Start the joy driver and layout normalizer."),
         DeclareLaunchArgument("use_joystick_controller", default_value="true",
                               description="Start the rover joystick controller that drives the ODrives."),
+        DeclareLaunchArgument("use_drill_teleop", default_value="true",
+                              description="Start the LT-gated drill teleop (feed, sample bin, auger)."),
         DeclareLaunchArgument("joy_driver", default_value="game_controller_node",
                               choices=["game_controller_node", "joy_node"]),
         DeclareLaunchArgument("joy_layout", default_value="auto",
@@ -72,6 +74,17 @@ def generate_launch_description():
             package="aries_teleop",
             executable="custom_joystick_controller.py",
             name="rover_joystick_controller",
+            parameters=[joystick_config],
+            output="screen",
+        ),
+        # Gated behind LT, so it shares the pad with rover drive (LB) and the
+        # arm (RB/RT) without any of them contending. It only publishes while
+        # LT is held, so leaving it running costs nothing.
+        Node(
+            condition=IfCondition(LaunchConfiguration("use_drill_teleop")),
+            package="aries_teleop",
+            executable="drill_joystick.py",
+            name="drill_joystick",
             parameters=[joystick_config],
             output="screen",
         ),

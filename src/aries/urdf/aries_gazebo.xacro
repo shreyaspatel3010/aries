@@ -186,6 +186,7 @@
                  robot_state_publisher never moves the meshes. -->
             <joint_name>drill_motor_joint</joint_name>
             <joint_name>drill_container_joint</joint_name>
+            <joint_name>drill_bit_joint</joint_name>
         </plugin>
   </gazebo>
 
@@ -235,6 +236,21 @@
       <p_gain>200</p_gain><i_gain>1</i_gain><d_gain>30</d_gain>
       <i_min>-20</i_min><i_max>20</i_max>
       <cmd_min>-100</cmd_min><cmd_max>100</cmd_max>
+    </plugin>
+
+    <!-- The auger spins, so this one is a VELOCITY controller, not a position
+         one: publish rad/s to the topic and a positive value turns it one way,
+         a negative value the other, indefinitely. Holding a spindle at an
+         angle, which is what JointPositionController would do, is not a thing
+         a drill does. It needs no holding controller either - the axis is
+         vertical and the bit's COM sits on it to within 46 um, so gravity
+         applies no torque about it. -->
+    <plugin filename="gz-sim-joint-controller-system"
+        name="gz::sim::systems::JointController">
+      <joint_name>drill_bit_joint</joint_name>
+      <topic>/model/aries/joint/drill_bit_joint/cmd_vel</topic>
+      <use_force_commands>true</use_force_commands>
+      <p_gain>2.0</p_gain><i_gain>0.2</i_gain>
     </plugin>
 
      
