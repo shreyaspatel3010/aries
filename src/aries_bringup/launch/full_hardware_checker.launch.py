@@ -60,7 +60,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "front_camera_color_topic",
-            default_value="/camera/color/image_raw",
+            default_value="/rover_camera/color/image_raw",
         ),
 
         Node(

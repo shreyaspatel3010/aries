@@ -7,6 +7,8 @@ find_package(ament_cmake_python REQUIRED)
 # Python executable nodes
 install(
   PROGRAMS
+    nodes/camera_downlink.py
+    nodes/downlink_report.py
     nodes/full_hardware_checker.py
     nodes/mock_rover_drive.py
     nodes/custom_joystick_controller.py

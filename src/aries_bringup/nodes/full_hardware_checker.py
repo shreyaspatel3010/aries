@@ -13,7 +13,7 @@ Checks:
   • Mock rover fallback heartbeat
   • Joystick /joy
   • RealSense USB device count, and the colour stream of BOTH cameras the
-    bringup can start: the wrist "gripper_camera" and the front "camera"
+    bringup can start: the wrist "gripper_camera" and the front "rover_camera"
 
 Manual check:
   ros2 service call /check_full_hardware std_srvs/srv/Trigger
@@ -135,7 +135,7 @@ class FullHardwareChecker(Node):
         self.declare_parameter("expected_odrive_axes", 6)
         # The rover carries TWO RealSense cameras and aries_hardware.launch.py
         # starts a driver for each: camera_name "gripper_camera" on the wrist and
-        # "camera" at the front. Checking only the wrist one reported a
+        # "rover_camera" at the front. Checking only the wrist one reported a
         # single-camera robot, and a front camera that never came up looked
         # exactly like a healthy one.
         #
@@ -146,7 +146,7 @@ class FullHardwareChecker(Node):
         self.declare_parameter("gripper_camera_color_topic",
                                "/gripper_camera/color/image_raw")
         self.declare_parameter("front_camera_color_topic",
-                               "/camera/color/image_raw")
+                               "/rover_camera/color/image_raw")
         # Mirrors aries_hardware.launch.py's enable_depth_sensor /
         # enable_front_camera: "auto" reports the camera but never calls it an
         # error, "true" means it was explicitly asked for so a missing one is

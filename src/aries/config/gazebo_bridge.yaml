@@ -38,27 +38,27 @@
   direction: ROS_TO_GZ
 
 
-- ros_topic_name: "/camera/color/image_raw"
-  gz_topic_name:  "/camera/color/image_raw"
+- ros_topic_name: "/rover_camera/color/image_raw"
+  gz_topic_name:  "/rover_camera/color/image_raw"
   ros_type_name:  "sensor_msgs/msg/Image"
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
 
-- ros_topic_name: "/camera/color/camera_info"
-  gz_topic_name:  "/camera/color/camera_info"
+- ros_topic_name: "/rover_camera/color/camera_info"
+  gz_topic_name:  "/rover_camera/color/camera_info"
   ros_type_name:  "sensor_msgs/msg/CameraInfo"
   gz_type_name:   "gz.msgs.CameraInfo"
   direction:      GZ_TO_ROS
 
-- ros_topic_name: "/camera/depth/camera_info"
-  gz_topic_name:  "/camera/depth/camera_info"
+- ros_topic_name: "/rover_camera/depth/camera_info"
+  gz_topic_name:  "/rover_camera/depth/camera_info"
   ros_type_name:  "sensor_msgs/msg/CameraInfo"
   gz_type_name:   "gz.msgs.CameraInfo"
   direction:      GZ_TO_ROS
 
-- ros_topic_name: "/camera/depth/image_rect_raw"
-  gz_topic_name:  "/camera/depth/image_rect_raw"
+- ros_topic_name: "/rover_camera/depth/image_rect_raw"
+  gz_topic_name:  "/rover_camera/depth/image_rect_raw"
   ros_type_name:  "sensor_msgs/msg/Image"
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
@@ -66,13 +66,13 @@
 # Gazebo renders depth and color with identical intrinsics and optical frames,
 # so the raw depth is already registered. Mirror the RealSense driver's aligned
 # topic so the colored DepthCloud uses the same interface in sim and hardware.
-- ros_topic_name: "/camera/aligned_depth_to_color/image_raw"
-  gz_topic_name:  "/camera/depth/image_rect_raw"
+- ros_topic_name: "/rover_camera/aligned_depth_to_color/image_raw"
+  gz_topic_name:  "/rover_camera/depth/image_rect_raw"
   ros_type_name:  "sensor_msgs/msg/Image"
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
-# The /camera/.../points and /camera/infra* bridges were removed: the infra
+# The /rover_camera/.../points and /rover_camera/infra* bridges were removed: the infra
 # render sensors no longer exist in simulation and nothing consumed the point
 # cloud. Every bridged image stream costs serialization CPU on both sides.
 

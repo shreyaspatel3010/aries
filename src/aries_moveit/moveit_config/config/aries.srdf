@@ -244,7 +244,7 @@
     <disable_collisions link1="C_Differential_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="C_Differential_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="C_Differential_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="C_Differential_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="C_Differential_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="C_Differential_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="C_Differential_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="C_Differential_Link" link2="link3" reason="Adjacent"/>
@@ -265,7 +265,7 @@
     <disable_collisions link1="L_1_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="L_1_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_1_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_1_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_1_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_1_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_1_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_1_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -287,7 +287,7 @@
     <disable_collisions link1="L_2_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="L_2_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_2_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_2_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_2_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_2_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_2_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_2_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -306,7 +306,7 @@
     <disable_collisions link1="L_3_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="L_3_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_3_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_3_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_3_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_3_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_3_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_3_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -326,7 +326,7 @@
     <disable_collisions link1="L_Boggie_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="L_Boggie_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_Boggie_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_Boggie_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_Boggie_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_Boggie_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_Boggie_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_Boggie_Link" link2="link3" reason="Adjacent"/>
@@ -340,7 +340,7 @@
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="R_Connecting_Rod_Diff_Link" reason="Adjacent"/>
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_Connecting_Rod_Diff_Link" link2="link3" reason="Adjacent"/>
@@ -357,7 +357,7 @@
     <disable_collisions link1="L_Rocker_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="L_Rocker_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="L_Rocker_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="L_Rocker_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="L_Rocker_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="L_Rocker_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="L_Rocker_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="L_Rocker_Link" link2="link3" reason="Adjacent"/>
@@ -373,7 +373,7 @@
     <disable_collisions link1="R_1_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="R_1_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_1_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_1_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_1_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_1_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_1_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_1_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -388,7 +388,7 @@
     <disable_collisions link1="R_2_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="R_2_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_2_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_2_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_2_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_2_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_2_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_2_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -401,7 +401,7 @@
     <disable_collisions link1="R_3_Wheel_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="R_3_Wheel_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_3_Wheel_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_3_Wheel_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_3_Wheel_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_3_Wheel_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_3_Wheel_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_3_Wheel_Link" link2="link3" reason="Adjacent"/>
@@ -414,7 +414,7 @@
     <disable_collisions link1="R_Boggie_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="R_Boggie_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_Boggie_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_Boggie_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_Boggie_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_Boggie_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_Boggie_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_Boggie_Link" link2="link3" reason="Adjacent"/>
@@ -425,7 +425,7 @@
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="R_Rocker_Link" reason="Adjacent"/>
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="link3" reason="Adjacent"/>
@@ -435,7 +435,7 @@
     <disable_collisions link1="R_Connecting_Rod_Diff_Link" link2="motor4" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="arm_base_link" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="R_Rocker_Link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="R_Rocker_Link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="link3" reason="Adjacent"/>
@@ -444,7 +444,7 @@
     <disable_collisions link1="R_Rocker_Link" link2="motor3" reason="Adjacent"/>
     <disable_collisions link1="R_Rocker_Link" link2="motor4" reason="Adjacent"/>
     <disable_collisions link1="arm_base_link" link2="base_link" reason="Adjacent"/>
-    <disable_collisions link1="arm_base_link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_base_link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="arm_base_link" link2="link1" reason="Adjacent"/>
     <disable_collisions link1="arm_base_link" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="arm_base_link" link2="motor1" reason="Adjacent"/>
@@ -467,7 +467,7 @@
     <disable_collisions link1="gripper_gear_left_link" link2="link6" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_right_link" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_right_link" link2="link6" reason="Adjacent"/>
-    <disable_collisions link1="base_link" link2="camera_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="drill_link" reason="Adjacent"/>
     <!-- The drill's two prismatic links (2026-08-20). Each is Adjacent to the
          mast it rides and never reaches the chassis, whose bbox stops at
@@ -485,11 +485,11 @@
     <disable_collisions link1="base_link" link2="motor1" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="motor2" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="motor3" reason="Adjacent"/>
-    <disable_collisions link1="camera_link" link2="link1" reason="Adjacent"/>
-    <disable_collisions link1="camera_link" link2="link2" reason="Adjacent"/>
-    <disable_collisions link1="camera_link" link2="motor1" reason="Adjacent"/>
-    <disable_collisions link1="camera_link" link2="motor2" reason="Adjacent"/>
-    <disable_collisions link1="camera_link" link2="motor3" reason="Adjacent"/>
+    <disable_collisions link1="rover_camera_link" link2="link1" reason="Adjacent"/>
+    <disable_collisions link1="rover_camera_link" link2="link2" reason="Adjacent"/>
+    <disable_collisions link1="rover_camera_link" link2="motor1" reason="Adjacent"/>
+    <disable_collisions link1="rover_camera_link" link2="motor2" reason="Adjacent"/>
+    <disable_collisions link1="rover_camera_link" link2="motor3" reason="Adjacent"/>
     <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="link1" link2="link3" reason="Adjacent"/>
     <disable_collisions link1="link1" link2="motor1" reason="Adjacent"/>

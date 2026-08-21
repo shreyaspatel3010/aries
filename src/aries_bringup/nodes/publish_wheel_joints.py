@@ -19,6 +19,14 @@ PASSIVE_JOINTS = (
     "R_Boggie_Joint",
     "aux_L_Rocker_joint",
     "aux_R_Rocker_joint",
+    # The drill joints exist in the URDF but nothing drives them: no
+    # ros2_control interface, no hardware. Unpublished, MoveIt's planning scene
+    # monitor never completes a robot state and warns "The complete state of the
+    # robot is not yet known" forever, which blocks servo. Zero is the stowed
+    # pose and is inside every limit (the container's upper bound is exactly 0).
+    "drill_motor_joint",
+    "drill_bit_joint",
+    "drill_container_joint",
 )
 
 # CAN node id -> URDF wheel joint. TF needs the exact joint, unlike drive

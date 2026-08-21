@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <!-- The operator machine's wired address. The ROVER needs the mirror
+             of this file: its own 192.168.1.10 here, and .11 as the Peer. -->
+        <NetworkInterface address="192.168.1.11"/>
+      </Interfaces>
+      <!-- The field link drops multicast, so discovery is unicast to the
+           explicit Peers below. A third machine has to be added there by
+           hand; it will not find the others on its own. -->
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.1.10"/>
+        <Peer address="127.0.0.1"/>
+      </Peers>
+      <!-- Without multicast, every participant needs its own discovery port,
+           picked from a bounded range of participant indices. The default cap
+           is 9, i.e. ten participants per machine, while the full stack is
+           roughly thirty nodes. Past the cap, bringup dies partway through
+           with "Failed to find a free participant index for domain 30" and a
+           scatter of unrelated-looking rmw_create_node errors.
+           Raising it costs discovery probing, since a peer sweeps indices 0
+           through max: a slightly longer sweep buys the headroom. 60 covers
+           the whole stack with room to spare. -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

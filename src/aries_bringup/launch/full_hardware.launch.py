@@ -37,6 +37,45 @@ def generate_launch_description():
         # camera. See aries_common.detect for which serial is on which end.
         DeclareLaunchArgument("gripper_camera_serial", default_value=device_str("cameras.gripper_serial")),
         DeclareLaunchArgument("enable_front_camera", default_value="auto", choices=["auto", "true", "false"]),
+        # Operator camera downlink: a reduced, JPEG/PNG-compressed copy of both
+        # cameras for anything watching over the antenna. The driver topics the
+        # on-board pipelines read are untouched and stay at 640x480@15.
+        DeclareLaunchArgument(
+            "enable_camera_downlink", default_value="true", choices=["true", "false"],
+            description="Publish the compressed operator camera streams.",
+        ),
+        DeclareLaunchArgument(
+            "downlink_rate_hz", default_value="15.0",
+            description="Downlink colour frames per second; 15 matches the camera.",
+        ),
+        DeclareLaunchArgument(
+            "downlink_profile", default_value="balanced",
+            choices=["quality", "balanced", "lean"],
+            description="Measured operating points for both cameras at 15 Hz "
+                        "colour / 5 Hz depth: quality 42.3 Mbit/s (640x480 q90), "
+                        "balanced 28.3 (640x480 q75), lean 10.9 (320x240 q90).",
+        ),
+        DeclareLaunchArgument(
+            "downlink_depth_rate_hz", default_value="5.0",
+            description="Downlink depth frames per second. Depth costs ~6x a colour "
+                        "frame, so cut this first when the link is tight.",
+        ),
+        DeclareLaunchArgument(
+            "downlink_decimation", default_value="profile",
+            description="Integer spatial divisor: 1 -> 640x480, 2 -> 320x240.",
+        ),
+        DeclareLaunchArgument(
+            "downlink_jpeg_quality", default_value="profile",
+            description="Colour JPEG quality 1-100, or \"profile\".",
+        ),
+        DeclareLaunchArgument(
+            "downlink_depth_max_m", default_value="6.0",
+            description="Depth beyond this is dropped before compression.",
+        ),
+        DeclareLaunchArgument(
+            "downlink_depth_quantization_mm", default_value="10",
+            description="Depth rounding step. View-only stream; nothing plans on it.",
+        ),
         DeclareLaunchArgument("front_camera_serial", default_value=device_str("cameras.front_serial")),
         DeclareLaunchArgument(
             "use_static_wheel_joint_publisher",
@@ -111,6 +150,16 @@ def generate_launch_description():
                 "gripper_camera_serial": LaunchConfiguration("gripper_camera_serial"),
                 "enable_front_camera": LaunchConfiguration("enable_front_camera"),
                 "front_camera_serial": LaunchConfiguration("front_camera_serial"),
+                "enable_camera_downlink": LaunchConfiguration("enable_camera_downlink"),
+                "downlink_profile": LaunchConfiguration("downlink_profile"),
+                "downlink_rate_hz": LaunchConfiguration("downlink_rate_hz"),
+                "downlink_depth_rate_hz": LaunchConfiguration("downlink_depth_rate_hz"),
+                "downlink_decimation": LaunchConfiguration("downlink_decimation"),
+                "downlink_jpeg_quality": LaunchConfiguration("downlink_jpeg_quality"),
+                "downlink_depth_max_m": LaunchConfiguration("downlink_depth_max_m"),
+                "downlink_depth_quantization_mm": LaunchConfiguration(
+                    "downlink_depth_quantization_mm"
+                ),
                 "use_wheel_joint_publisher": LaunchConfiguration(
                     "use_static_wheel_joint_publisher"
                 ),

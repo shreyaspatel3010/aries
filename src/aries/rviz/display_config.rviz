@@ -184,44 +184,44 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_bottom_screw_frame:
+        rover_camera_bottom_screw_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_color_frame:
+        rover_camera_color_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_color_optical_frame:
+        rover_camera_color_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_depth_frame:
+        rover_camera_depth_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_depth_optical_frame:
+        rover_camera_depth_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_left_ir_frame:
+        rover_camera_left_ir_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_left_ir_optical_frame:
+        rover_camera_left_ir_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_link:
+        rover_camera_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        camera_right_ir_frame:
+        rover_camera_right_ir_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        camera_right_ir_optical_frame:
+        rover_camera_right_ir_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -450,25 +450,25 @@ Visualization Manager:
           Value: false
         base_link:
           Value: true
-        camera_bottom_screw_frame:
+        rover_camera_bottom_screw_frame:
           Value: false
-        camera_color_frame:
+        rover_camera_color_frame:
           Value: false
-        camera_color_optical_frame:
+        rover_camera_color_optical_frame:
           Value: false
-        camera_depth_frame:
+        rover_camera_depth_frame:
           Value: false
-        camera_depth_optical_frame:
+        rover_camera_depth_optical_frame:
           Value: false
-        camera_left_ir_frame:
+        rover_camera_left_ir_frame:
           Value: false
-        camera_left_ir_optical_frame:
+        rover_camera_left_ir_optical_frame:
           Value: false
-        camera_link:
+        rover_camera_link:
           Value: false
-        camera_right_ir_frame:
+        rover_camera_right_ir_frame:
           Value: false
-        camera_right_ir_optical_frame:
+        rover_camera_right_ir_optical_frame:
           Value: false
         fourbar_constraint_visual_left:
           Value: false
@@ -624,19 +624,19 @@ Visualization Manager:
                                             {}
                                       gripper_tcp:
                                         {}
-            camera_bottom_screw_frame:
-              camera_link:
-                camera_depth_frame:
-                  camera_color_frame:
-                    camera_color_optical_frame:
+            rover_camera_bottom_screw_frame:
+              rover_camera_link:
+                rover_camera_depth_frame:
+                  rover_camera_color_frame:
+                    rover_camera_color_optical_frame:
                       {}
-                  camera_depth_optical_frame:
+                  rover_camera_depth_optical_frame:
                     {}
-                  camera_left_ir_frame:
-                    camera_left_ir_optical_frame:
+                  rover_camera_left_ir_frame:
+                    rover_camera_left_ir_optical_frame:
                       {}
-                  camera_right_ir_frame:
-                    camera_right_ir_optical_frame:
+                  rover_camera_right_ir_frame:
+                    rover_camera_right_ir_optical_frame:
                       {}
             imu_frame:
               {}

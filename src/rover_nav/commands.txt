@@ -18,12 +18,12 @@ ros2 run rover_nav Rover_control_Joy.py
 
 ros2 run rtabmap_odom rgbd_odometry \
   --ros-args \
-  -p frame_id:=camera_link \
+  -p frame_id:=rover_camera_link \
   -p odom_frame_id:=camera_odom \
   -p publish_tf:=false \
-  -r rgb/image:=/camera/camera/color/image_raw \
-  -r depth/image:=/camera/camera/depth/image_rect_raw \
-  -r rgb/camera_info:=/camera/camera/color/camera_info
+  -r rgb/image:=/rover_camera/camera/color/image_raw \
+  -r depth/image:=/rover_camera/camera/depth/image_rect_raw \
+  -r rgb/camera_info:=/rover_camera/camera/color/camera_info
   
   
   

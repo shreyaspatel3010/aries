@@ -118,8 +118,17 @@ def _realsense_driver(camera_name, serial):
         "enable_infra2": "false",
         "enable_gyro": "false",
         "enable_accel": "false",
-        "rgb_camera.color_profile": "640,480,15",
-        "depth_module.depth_profile": "640,480,15",
+        # 30 fps, not 15. A frame cannot be delivered before the sensor has
+        # finished producing it, so the capture rate sets the floor on latency
+        # for everything downstream: at 15 fps a frame reaches the first ROS
+        # topic ~67 ms old (measured 69.6 ms), which was 91% of the whole
+        # glass-to-operator budget. At 30 fps that floor halves.
+        #
+        # This costs no link bandwidth. The downlink's rate gate still runs at
+        # downlink_rate_hz and simply picks every other frame; what changes is
+        # that the frame it picks is half a period fresher.
+        "rgb_camera.color_profile": "640,480,30",
+        "depth_module.depth_profile": "640,480,30",
         "align_depth.enable": "true",
         "publish_tf": "false",
         "initial_reset": "true",
@@ -219,7 +228,7 @@ def launch_setup(context, *args, **kwargs):
 
     if enable_front_camera:
         # Front/rover camera supplies its own independent colored DepthCloud.
-        actions.append(_realsense_driver("camera", front_camera_serial))
+        actions.append(_realsense_driver("rover_camera", front_camera_serial))
 
     if not enable_depth_sensor:
         actions.append(
@@ -253,6 +262,68 @@ def launch_setup(context, *args, **kwargs):
                     }],
                 )
             )
+
+    # Operator downlink. RViz keeps four camera displays live, and subscribed
+    # raw that is 369 Mbit/s of pixels on Reliable QoS -- far past what the
+    # antenna carries, so the link congestion-collapses and everything on it
+    # goes laggy, not just the images. These nodes publish a second, reduced and
+    # compressed copy for the operator (~3 Mbit/s for both cameras) and leave
+    # the driver topics the grasp pipeline reads completely alone.
+    #
+    # Only cameras that actually came up get one: a downlink for an absent
+    # camera would sit there warning about a stream that is never going to
+    # arrive.
+    downlink_cameras = []
+    if enable_depth_sensor:
+        downlink_cameras.append("gripper_camera")
+    if enable_front_camera:
+        downlink_cameras.append("rover_camera")
+
+    enable_downlink = LaunchConfiguration("enable_camera_downlink").perform(context).lower()
+    if enable_downlink == "true" and downlink_cameras:
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("aries_bringup"),
+                        "launch",
+                        "camera_downlink.launch.py",
+                    ])
+                ),
+                launch_arguments={
+                    "cameras": ",".join(downlink_cameras),
+                    "downlink_profile": LaunchConfiguration("downlink_profile"),
+                    "downlink_rate_hz": LaunchConfiguration("downlink_rate_hz"),
+                    "downlink_depth_rate_hz": LaunchConfiguration("downlink_depth_rate_hz"),
+                    "downlink_decimation": LaunchConfiguration("downlink_decimation"),
+                    "downlink_jpeg_quality": LaunchConfiguration("downlink_jpeg_quality"),
+                    "downlink_depth_max_m": LaunchConfiguration("downlink_depth_max_m"),
+                    "downlink_depth_quantization_mm": LaunchConfiguration(
+                        "downlink_depth_quantization_mm"
+                    ),
+                }.items(),
+            )
+        )
+
+        # moveit.rviz reads /<camera>/view/*, which only exists where the
+        # decompressors run. When RViz comes up here (use_gui:=true) start them
+        # here too, otherwise the displays sit empty. On an operator laptop this
+        # is the one thing that has to be launched: see camera_view.launch.py.
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("aries_bringup"),
+                        "launch",
+                        "camera_view.launch.py",
+                    ])
+                ),
+                condition=IfCondition(LaunchConfiguration("use_gui")),
+                launch_arguments={
+                    "cameras": ",".join(downlink_cameras),
+                }.items(),
+            )
+        )
 
     actions.append(
         IncludeLaunchDescription(
@@ -352,7 +423,7 @@ def generate_launch_description():
             "enable_front_camera",
             default_value="auto",
             choices=["auto", "true", "false"],
-            description="Start a driver for the rover front camera (publishes /camera/*)",
+            description="Start a driver for the rover front camera (publishes /rover_camera/*)",
         ),
         DeclareLaunchArgument(
             "front_camera_serial",
@@ -371,6 +442,22 @@ def generate_launch_description():
                 "ODrive encoder publisher owns the wheel joint states."
             ),
         ),
+        DeclareLaunchArgument(
+            "enable_camera_downlink",
+            default_value="true",
+            choices=["true", "false"],
+            description="Publish the reduced+compressed operator camera streams. "
+                        "Turn off only when nothing views the rover remotely -- the "
+                        "encoders are lazy and idle until something subscribes.",
+        ),
+        DeclareLaunchArgument("downlink_profile", default_value="balanced",
+                              choices=["quality", "balanced", "lean"]),
+        DeclareLaunchArgument("downlink_rate_hz", default_value="15.0"),
+        DeclareLaunchArgument("downlink_depth_rate_hz", default_value="5.0"),
+        DeclareLaunchArgument("downlink_decimation", default_value="profile"),
+        DeclareLaunchArgument("downlink_jpeg_quality", default_value="profile"),
+        DeclareLaunchArgument("downlink_depth_max_m", default_value="6.0"),
+        DeclareLaunchArgument("downlink_depth_quantization_mm", default_value="10"),
         DeclareLaunchArgument(
             "enable_yolo_debug",
             default_value="false",

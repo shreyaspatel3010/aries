@@ -249,3 +249,99 @@ Note:
 ros2 control list_controllers
 ros2 topic list | grep -E "gripper|controller_manager"
 ```
+
+## Camera downlink (operator link over the antenna)
+
+Both D435is keep publishing 640x480 @ 15 Hz on the rover for the grasp and
+maintenance pipelines. Those topics are **not** for the operator: `moveit.rviz`
+keeps four camera displays live, and subscribing to them raw is
+
+| topic | raw |
+|---|---|
+| `/rover_camera/color/image_raw` | 110.6 Mbit/s |
+| `/rover_camera/aligned_depth_to_color/image_raw` | 73.7 Mbit/s |
+| `/gripper_camera/color/image_raw` | 110.6 Mbit/s |
+| `/gripper_camera/aligned_depth_to_color/image_raw` | 73.7 Mbit/s |
+| **total** | **368.6 Mbit/s** |
+
+on Reliable QoS. That is far past what the antenna carries, and because each raw
+frame is many times a UDP datagram, one lost fragment discards the whole frame
+and the writer retransmits into a link that is already full. The result is
+link-wide lag, not just slow images.
+
+So the operator gets a separate, compressed stream.
+
+**Rover** — started automatically by `full_hardware.launch.py` /
+`aries_hardware.launch.py` (`enable_camera_downlink:=false` to suppress):
+
+```
+<camera>/color/image_raw ─┐
+                          ├─ camera_downlink.py ─┬─ /downlink/<cam>/color ─ JPEG
+<camera>/aligned_depth… ──┘   rate/scale/range   └─ /downlink/<cam>/depth ─ PNG16
+```
+
+**Operator laptop** — this is the one thing you have to start yourself:
+
+```bash
+ros2 launch aries_bringup camera_view.launch.py use_rviz:=true
+```
+
+It decompresses to machine-local `/<camera>/view/color` and `/<camera>/view/depth`,
+which is what the shipped `moveit.rviz` displays read. Decompressing once here
+matters: RViz's ROS 2 Image display has no transport selection at all, so
+pointing it at a rover topic puts raw frames back on the link regardless of what
+the DepthCloud next to it is set to.
+
+### Profiles
+
+`downlink_profile` picks a measured operating point; any individual argument you
+pass still overrides it.
+
+| profile | resolution | JPEG | both cameras, 15 Hz colour / 5 Hz depth |
+|---|---|---|---|
+| `quality` | 640x480 | q90 | 42.3 Mbit/s |
+| `balanced` *(default)* | 640x480 | q75 | **28.3 Mbit/s** |
+| `lean` | 320x240 | q90 | 10.9 Mbit/s |
+
+```bash
+ros2 launch aries_bringup full_hardware.launch.py downlink_profile:=lean
+```
+
+Sized on a real Mars-yard image plus a D435i depth field with its stereo noise
+modelled — high-frequency gravel is the worst case for JPEG, so real scenes come
+in at or below these figures.
+
+### Why the defaults are what they are
+
+- **Full resolution, moderate JPEG** beats half resolution at high JPEG for the
+  same bytes. Resolution is the quality term the operator actually perceives;
+  halving it throws away detail no quality setting can restore.
+- **Colour 15 Hz, depth 5 Hz.** A depth frame is ~91 kB against ~98 kB of
+  colour, so running the cloud slower is what pays for full resolution while the
+  image you drive by stays smooth. `downlink_depth_rate_hz:=15` for an equally
+  smooth cloud, at ~35% more bandwidth.
+- **Depth quantised to 10 mm** is not a quality loss: the D435i's own noise is
+  4 mm at 1 m and 67 mm at 4 m, so a 10 mm step is below the sensor's own
+  precision past ~1.5 m. It halves the depth bytes (186 kB → 91 kB).
+  Noise-proportional quantisation was tried and is worse on both counts —
+  149 kB *and* 127 mm max error against 91 kB and 10 mm.
+- **PNG, not zstd, for depth.** Measured 186 kB vs 228 kB lossless.
+- Colour and depth must share one resolution — RViz rejects a DepthCloud whose
+  images differ ("Depth image resolution does not match color image resolution").
+
+### Checking it on the real link
+
+```bash
+ros2 run aries_bringup downlink_report.py            # run this on the operator side
+```
+
+Reports Hz, kB/frame and Mbit/s per stream, plus frame age when the rover and
+operator clocks are synced. Subscribing is what pulls the stream across, so what
+it reports is what survived the link.
+
+Other knobs: `downlink_rate_hz`, `downlink_decimation`, `downlink_jpeg_quality`,
+`downlink_depth_max_m`, `downlink_depth_quantization_mm`, `downlink_png_level`.
+
+The downlink stream is view-only — its depth is range-clipped and rounded, and
+nothing plans against it. Encoding is lazy, so with no operator connected the
+codecs cost nothing, and an RViz display you untick stops costing bandwidth.

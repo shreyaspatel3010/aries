@@ -124,14 +124,14 @@ class PanelOperator(Node):
         # body camera sees the whole console from further back. Agreeing recent
         # estimates are fused after both are transformed into base_link.
         p('image_topics', ['/gripper_camera/color/image_raw',
-                           '/camera/color/image_raw'])
+                           '/rover_camera/color/image_raw'])
         p('camera_info_topics', ['/gripper_camera/color/camera_info',
-                                 '/camera/color/camera_info'])
+                                 '/rover_camera/color/camera_info'])
         p('camera_frames', ['gripper_camera_color_optical_frame',
-                            'camera_color_optical_frame'])
+                            'rover_camera_color_optical_frame'])
         p('depth_topics', [
             '/gripper_camera/aligned_depth_to_color/image_raw',
-            '/camera/aligned_depth_to_color/image_raw'])
+            '/rover_camera/aligned_depth_to_color/image_raw'])
         p('use_depth_refinement', True)
         p('depth_sync_tolerance_sec', 0.12)
         p('depth_expected_band_m', 0.15)
@@ -570,7 +570,7 @@ class PanelOperator(Node):
                 (len(depth_pose_markers) >= self.get('min_depth_markers') or
                  bool(depth_multimarker_cameras)))
 
-            # RGB-only localization keeps the conservative two-camera/two-tag
+            # RGB-only localization keeps the conservative two-rover_camera/two-tag
             # contract. A registered depth surface supplies the missing 3-D
             # constraint, so one stable marker from either camera is complete.
             camera_quorum = len(agreeing) >= self.get('required_camera_count')
