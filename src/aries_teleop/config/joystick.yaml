@@ -51,6 +51,11 @@ rover_joystick_controller:
     accel_limit: 3.0
     publish_rate_hz: 20.0
 
+    # Stop if /joy goes quiet for this long. The pad is on the base station and
+    # /joy crosses the antenna, so an ordinary radio dropout hits this -- not
+    # just an unplugged controller. Matches every other node on the pad.
+    joy_timeout_sec: 0.35
+
     vertical_axis: 1
     horizontal_axis: 0
     invert_vertical: true
@@ -109,6 +114,11 @@ rover_cmd_vel_joystick:
     accel_limit: 0.80
     angular_accel_limit: 2.00
     publish_rate_hz: 30.0
+
+    # See rover_joystick_controller above. This node relays the last joystick
+    # state on a timer, which keeps cmd_vel_odrive_bridge's own
+    # command_timeout_s fed and defeated; the staleness has to be caught here.
+    joy_timeout_sec: 0.35
 
 mock_rover_drive:
   ros__parameters:

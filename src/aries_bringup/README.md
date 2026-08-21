@@ -17,6 +17,50 @@ source install/setup.bash
 
 Recommended launch order based on workflow.
 
+### Field operation: operator at the base station (this is the competition setup)
+
+Two commands, one per machine. Both run the same workspace.
+
+```bash
+# ROVER
+ros2 launch aries_bringup rover_field.launch.py
+
+# BASE STATION  — the joystick plugs in HERE
+ros2 launch aries_base_station base_station.launch.py
+```
+
+`rover_field.launch.py` is `full_hardware.launch.py` plus the communication
+layer, with three defaults flipped for remote operation:
+
+  * **the DDS environment is set by the launch**, not inherited from the
+    terminal. `full_hardware.launch.py` sets none, so it lands on whatever the
+    calling shell had — and a shell opened before the exports existed keeps
+    domain 0 with the default RMW for as long as it lives, which looks exactly
+    like a dead link: ping fine, `ros2 topic list` empty, nothing logged;
+  * `use_joy_node:=false` — the pad is at the base station. Every teleop
+    consumer still runs on the rover and reads `/joy` across the link. Exactly
+    one machine may read the pad, or two publishers interleave on `/joy`;
+  * `use_gui:=false` — RViz belongs at the base station, not on a rover that
+    needs its CPU for two RealSense pipelines and may have no display at all.
+
+Everything `full_hardware.launch.py` accepts still works:
+
+```bash
+ros2 launch aries_bringup rover_field.launch.py finger_type:=probe downlink_profile:=lean
+```
+
+Standing next to the robot with the pad in the rover's USB port instead:
+`rover_field.launch.py use_joy_node:=true use_gui:=true`.
+
+First-time setup — static addresses, radio configuration, verification — is
+[`FIELD_SETUP.md`](../../FIELD_SETUP.md) at the repo root. Run
+`./scripts/setup_field_link.sh {rover|base}` once per machine; on a field shared
+with other teams a DHCP address is not just untidy, it stops `comms.py` being
+able to tell which machine it is running on.
+
+See `aries_base_station/README.md` for the link budget, the latency budget, the
+radio settings, and troubleshooting.
+
 ### Full Rover + Gazebo + MoveIt (most common)
 
 1. Terminal 1:
@@ -252,17 +296,22 @@ ros2 topic list | grep -E "gripper|controller_manager"
 
 ## Camera downlink (operator link over the antenna)
 
-Both D435is keep publishing 640x480 @ 15 Hz on the rover for the grasp and
+Both D435is keep publishing 640x480 **@ 30 Hz** on the rover for the grasp and
 maintenance pipelines. Those topics are **not** for the operator: `moveit.rviz`
 keeps four camera displays live, and subscribing to them raw is
 
-| topic | raw |
+| topic | raw @ 30 Hz |
 |---|---|
-| `/rover_camera/color/image_raw` | 110.6 Mbit/s |
-| `/rover_camera/aligned_depth_to_color/image_raw` | 73.7 Mbit/s |
-| `/gripper_camera/color/image_raw` | 110.6 Mbit/s |
-| `/gripper_camera/aligned_depth_to_color/image_raw` | 73.7 Mbit/s |
-| **total** | **368.6 Mbit/s** |
+| `/rover_camera/color/image_raw` | 221.2 Mbit/s |
+| `/rover_camera/aligned_depth_to_color/image_raw` | 147.5 Mbit/s |
+| `/gripper_camera/color/image_raw` | 221.2 Mbit/s |
+| `/gripper_camera/aligned_depth_to_color/image_raw` | 147.5 Mbit/s |
+| **total** | **737.3 Mbit/s** |
+
+The capture rate went 15 -> 30 to halve the latency floor (a frame cannot be
+delivered before the sensor has finished producing it), which doubled what a
+raw subscription costs without changing the downlink at all: the rate gate
+still runs at `downlink_rate_hz` and simply picks a fresher frame.
 
 on Reliable QoS. That is far past what the antenna carries, and because each raw
 frame is many times a UDP datagram, one lost fragment discards the whole frame
@@ -280,7 +329,8 @@ So the operator gets a separate, compressed stream.
 <camera>/aligned_depth… ──┘   rate/scale/range   └─ /downlink/<cam>/depth ─ PNG16
 ```
 
-**Operator laptop** — this is the one thing you have to start yourself:
+**Operator laptop** — `aries_base_station` starts this for you as part of
+`base_station.launch.py`. On its own:
 
 ```bash
 ros2 launch aries_bringup camera_view.launch.py use_rviz:=true

@@ -33,6 +33,13 @@ DEFAULTS = {
         "front_serial": "207522077539",
     },
     "joystick": {"device": "/dev/input/js0"},
+    "network": {
+        "domain_id": 30,
+        "subnet_prefix": 24,
+        "hosts": {"rover": "192.168.1.10", "base": "192.168.1.11"},
+        "interface": {"rover": "enp130s0", "base": "enp130s0"},
+        "radios": {"rover": "192.168.1.20", "base": "192.168.1.21"},
+    },
 }
 
 _ENV_OVERRIDE = "ARIES_DEVICES_FILE"

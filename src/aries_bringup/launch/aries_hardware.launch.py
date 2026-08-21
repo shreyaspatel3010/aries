@@ -342,6 +342,7 @@ def launch_setup(context, *args, **kwargs):
                 "hardware_protocol": LaunchConfiguration("hardware_protocol"),
                 "gripper_hardware_protocol": LaunchConfiguration("gripper_hardware_protocol"),
                 "use_joystick": LaunchConfiguration("use_joystick"),
+                "use_joy_node": LaunchConfiguration("use_joy_node"),
                 "joy_driver": LaunchConfiguration("joy_driver"),
                 "joy_layout": LaunchConfiguration("joy_layout"),
                 "joy_dev": LaunchConfiguration("joy_dev"),
@@ -395,6 +396,10 @@ def generate_launch_description():
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("use_joystick", default_value="true"),
+        # Whether the pad is READ here, as opposed to whether teleop runs here.
+        # false when the joystick is on the base station: the consumers below
+        # stay up and take /joy over the link. See aries_base_station.
+        DeclareLaunchArgument("use_joy_node", default_value="true"),
         DeclareLaunchArgument("joy_driver", default_value="game_controller_node", choices=["game_controller_node", "joy_node"]),
         DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"]),
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),

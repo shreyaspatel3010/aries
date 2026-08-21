@@ -32,6 +32,28 @@ class RoverCmdVelJoystick(Node):
         self.declare_parameter("angular_accel_limit", 3.00)
         self.declare_parameter("publish_rate_hz", 30.0)
 
+        # Stop when /joy goes quiet. This is a relay: it publishes the LAST
+        # joystick state on a timer, so without this check a dead /joy is
+        # indistinguishable from a held stick and the rover keeps driving at
+        # whatever it was last told.
+        #
+        # That also defeats the guard downstream. cmd_vel_odrive_bridge has a
+        # command_timeout_s of its own, but it times out on /cmd_vel going
+        # SILENT -- and this node keeps it fed with fresh messages carrying a
+        # stale command, so the bridge never sees a gap. The staleness has to
+        # be caught here, at the point where it is visible.
+        #
+        # It matters far more now that the pad lives on the base station: with
+        # the joystick on the rover, /joy stops only if the driver dies or the
+        # pad is unplugged. Over the antenna, an ordinary radio dropout does it,
+        # and the rover is 150 m away.
+        #
+        # 0.35 s matches rebel_servo_teleop_gamepad, drill_joystick and
+        # arm_preset_pose_joystick, so every teleop path on the pad gives up at
+        # the same moment. joy_node autorepeats at 80 Hz, so 0.35 s is 28 missed
+        # messages -- comfortably past jitter, well short of a runaway.
+        self.declare_parameter("joy_timeout_sec", 0.35)
+
         # LB + Y re-arms the drive. The request goes to the ODrive bridge's
         # enable service rather than to the axes directly, so the bridge stays
         # the single owner of the motor commands and the waypoint arbiter is
@@ -71,6 +93,9 @@ class RoverCmdVelJoystick(Node):
         self.accel_limit = float(self.get_parameter("accel_limit").value)
         self.angular_accel_limit = float(self.get_parameter("angular_accel_limit").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
+        self.joy_timeout_sec = max(
+            0.0, float(self.get_parameter("joy_timeout_sec").value)
+        )
 
         self.enable_service = str(self.get_parameter("enable_service").value).strip()
         self.enabled_topic = str(self.get_parameter("enabled_topic").value).strip()
@@ -89,6 +114,11 @@ class RoverCmdVelJoystick(Node):
         self.current_angular = 0.0
 
         self.was_enabled = False
+
+        # Zero, not "now": a node that comes up before the joystick does has
+        # never had a command, and must not treat that as a fresh one.
+        self._last_joy_at = 0.0
+        self._joy_lost = False
 
         # Initialised before the callbacks that read them are registered.
         self._prev_reinit_combo = False
@@ -149,6 +179,11 @@ class RoverCmdVelJoystick(Node):
         return current + math.copysign(step, diff)
 
     def _joy_cb(self, msg):
+        self._last_joy_at = time.monotonic()
+        if self._joy_lost:
+            self._joy_lost = False
+            self.get_logger().info("joystick back: drive re-enabled (hold LB)")
+
         enabled = self._button(msg, self.enable_button) == 1
 
         if enabled and not self.was_enabled:
@@ -244,10 +279,30 @@ class RoverCmdVelJoystick(Node):
 
     def _timer_cb(self):
         dt = 1.0 / max(self.publish_rate_hz, 1.0)
+        now = time.monotonic()
+
+        # Radio dropout, dead joy driver, unplugged pad: all the same thing
+        # from here, and all of them mean the last command is no longer an
+        # instruction. Publish an explicit zero rather than falling silent --
+        # the bridge ramps it down at wheel_accel_rps2 the same way it handles
+        # a released LB, and an explicit stop does not depend on any
+        # downstream timeout being configured the way we expect.
+        if self.joy_timeout_sec > 0.0 and (now - self._last_joy_at) > self.joy_timeout_sec:
+            if not self._joy_lost and self._last_joy_at > 0.0:
+                self._joy_lost = True
+                self.get_logger().warn(
+                    f"no /joy for {self.joy_timeout_sec:.2f} s — stopping the rover "
+                    f"(link down, or the joy driver died)"
+                )
+            self.target_linear = 0.0
+            self.target_angular = 0.0
+            self.current_linear = 0.0
+            self.current_angular = 0.0
+            self.pub.publish(Twist())
+            return
 
         # The bridge arms asynchronously, so LB alone would let a deflected
         # stick command motion the moment the axes close the loop.
-        now = time.monotonic()
         if self._awaiting_enable and now >= self._reinit_deadline:
             self._awaiting_enable = False
             self.get_logger().warn(

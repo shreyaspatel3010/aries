@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>aries_base_station</name>
+  <version>0.1.0</version>
+  <description>
+    Operator side of the field link: the joystick, the camera decompressors and
+    RViz, on the DDS domain the rover is on. Partner of
+    aries_bringup/launch/rover_field.launch.py.
+  </description>
+
+  <maintainer email="shreyaspatel517@gmail.com">shreyas</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- The DDS transport config both ends share. -->
+  <exec_depend>aries_common</exec_depend>
+  <!-- camera_view.launch.py, which decompresses the downlink locally. -->
+  <exec_depend>aries_bringup</exec_depend>
+  <!-- joy_layout_normalizer.py, and the RViz config with the camera displays. -->
+  <exec_depend>aries_moveit</exec_depend>
+  <!-- Meshes for the RobotModel display. The base station runs the same
+       workspace as the rover, which is the only reason it can render the arm
+       at all: RViz resolves package:// against the local filesystem. -->
+  <exec_depend>aries</exec_depend>
+
+  <exec_depend>joy</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <!-- The decompressors are stock image_transport republish nodes; the codecs
+       are separate packages and the streams silently never decode without them. -->
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>compressed_image_transport</exec_depend>
+  <exec_depend>compressed_depth_image_transport</exec_depend>
+  <!-- Unicast discovery to explicit peers: the field link drops multicast. -->
+  <exec_depend>rmw_cyclonedds_cpp</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -18,6 +18,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
         DeclareLaunchArgument("use_joystick", default_value="true"),
+        # Whether the pad is READ on this machine, separately from whether the
+        # teleop nodes run here. Set false on the rover when the operator holds
+        # the pad at the base station: every consumer stays up and takes /joy
+        # over the antenna. rover_field.launch.py does exactly that.
+        DeclareLaunchArgument("use_joy_node", default_value="true"),
         DeclareLaunchArgument("joy_driver", default_value="game_controller_node", choices=["game_controller_node", "joy_node"]),
         DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"]),
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
@@ -134,6 +139,7 @@ def generate_launch_description():
             launch_arguments={
                 "use_gui": LaunchConfiguration("use_gui"),
                 "use_joystick": LaunchConfiguration("use_joystick"),
+                "use_joy_node": LaunchConfiguration("use_joy_node"),
                 "joy_driver": LaunchConfiguration("joy_driver"),
                 "joy_layout": LaunchConfiguration("joy_layout"),
                 "joy_dev": LaunchConfiguration("joy_dev"),

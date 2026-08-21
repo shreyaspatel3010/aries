@@ -51,3 +51,47 @@ cameras:
 
 joystick:
   device: "/dev/input/js0"
+
+network:
+  # The field link: the Ubiquiti Rocket 5AC point-to-point pair.
+  #
+  # SEPARATE FROM THE ARM. The arm section above is 192.168.3.0/24, a different
+  # /24, so the two never collide -- but on the rover they may well share one
+  # physical Ethernet port through a switch, and the rover PC then needs an
+  # address on BOTH subnets. scripts/setup_field_link.sh preserves whatever
+  # else is already on the port for exactly that reason; it will not take the
+  # arm's address away.
+  #
+  # THESE MUST BE SET STATICALLY ON BOTH MACHINES
+  #     scripts/setup_field_link.sh does it. On DHCP the address is whatever is
+  #     handed out, and comms.py then cannot tell which machine it is running
+  #     on -- the rover can end up announcing itself as the base station. See
+  #     FIELD_SETUP.md.
+  #
+  # A NOTE ON THIS SUBNET, KEPT DELIBERATELY
+  #     192.168.1.0/24 is the airOS factory subnet (Ubiquiti radios ship at
+  #     192.168.1.20) and the commonest consumer router subnet there is, so on
+  #     a shared field another team may be on it too. A duplicate address is
+  #     not a clean failure: ARP is last-writer-wins, so traffic silently
+  #     follows whoever replied most recently and the link looks flaky.
+  #     The mitigation is operational, not structural --
+  #     `setup_field_link.sh --check` arpings for a second claimant before you
+  #     drive. Run it after anyone else powers up nearby.
+  domain_id: 30
+  subnet_prefix: 24
+  hosts:
+    rover: "192.168.1.10"
+    base: "192.168.1.11"
+  # Wired port the antenna is on, per machine. Used by setup_field_link.sh and
+  # the checker; DDS binds by ADDRESS, which is unambiguous once these are
+  # static, so a renamed NIC does not break the link.
+  interface:
+    rover: "enp130s0"
+    base: "enp130s0"
+  # airOS management addresses. Not used by ROS -- here so the setup script can
+  # tell you the radio is alive, and so both ends of the link live in one file.
+  # .20 is the airOS factory address; the far end has to be moved off it or the
+  # two radios collide with each other.
+  radios:
+    rover: "192.168.1.20"
+    base: "192.168.1.21"

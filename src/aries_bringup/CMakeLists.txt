@@ -11,11 +11,9 @@ install(
     nodes/downlink_report.py
     nodes/full_hardware_checker.py
     nodes/mock_rover_drive.py
-    nodes/custom_joystick_controller.py
     nodes/hardware_checker.py
     nodes/odrive_can_poller.py
     nodes/publish_wheel_joints.py
-    nodes/rover_cmd_vel_joystick.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

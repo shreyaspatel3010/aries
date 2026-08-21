@@ -528,10 +528,27 @@ def launch_setup(context, *args, **kwargs):
     )
 
     use_joystick = LaunchConfiguration("use_joystick")
+    use_joy_node = LaunchConfiguration("use_joy_node")
     joy_driver = LaunchConfiguration("joy_driver")
     joy_layout = LaunchConfiguration("joy_layout")
     joy_dev = LaunchConfiguration("joy_dev")
     joystick_control_mode = LaunchConfiguration("joystick_control_mode")
+
+    # Where the pad is READ, separately from whether teleop is enabled.
+    #
+    # These are two different questions and used to be one flag. With the
+    # operator 150 m away the pad is plugged into the base station, so the
+    # driver has to run there while every consumer below keeps running here --
+    # use_joystick:=true use_joy_node:=false. Turning use_joystick off to move
+    # the driver would have taken the arm teleop, the presets and the rover
+    # drive with it.
+    #
+    # Exactly one machine may set this. Two joy_nodes put two publishers on
+    # /joy, and the consumers would see the two pads' states interleaved at
+    # double rate: buttons appear to chatter and nothing is reproducible.
+    joy_driver_condition = IfCondition(PythonExpression([
+        "'", use_joystick, "' == 'true' and '", use_joy_node, "' == 'true'"
+    ]))
     servo_joystick_condition = IfCondition(PythonExpression([
         "'", use_joystick, "' == 'true' and '", joystick_control_mode, "' == 'servo'"
     ]))
@@ -580,7 +597,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     joy_node = Node(
-        condition=IfCondition(use_joystick),
+        condition=joy_driver_condition,
         package="joy",
         executable=joy_driver,
         name="joy_node",
@@ -595,7 +612,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     joy_layout_normalizer_node = Node(
-        condition=IfCondition(use_joystick),
+        condition=joy_driver_condition,
         package="aries_moveit",
         executable="joy_layout_normalizer.py",
         name="joy_layout_normalizer",
@@ -704,6 +721,16 @@ def generate_launch_description():
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
             DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend"),
             DeclareLaunchArgument("use_joystick", default_value="false", description="Start joystick arm teleop"),
+            DeclareLaunchArgument(
+                "use_joy_node",
+                default_value="true",
+                description=(
+                    "Read the pad on THIS machine. false leaves the teleop "
+                    "consumers running here and expects /joy from elsewhere -- "
+                    "the base station, over the link. Exactly one machine may "
+                    "set it true, or two publishers interleave on /joy."
+                ),
+            ),
             DeclareLaunchArgument("joy_driver", default_value="game_controller_node", choices=["game_controller_node", "joy_node"], description="Joystick driver executable from the joy package"),
             DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"], description="Normalize joystick layout before teleop nodes consume /joy"),
             DeclareLaunchArgument("joy_dev", default_value=device_str("joystick.device"), description="Joystick device used by joy_node and the layout normalizer"),

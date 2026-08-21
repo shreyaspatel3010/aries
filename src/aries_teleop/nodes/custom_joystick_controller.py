@@ -27,6 +27,21 @@ class RoverJoystickController(Node):
         self.declare_parameter("arm_retry_period", 3.0)
         self.declare_parameter("axis_state_request_timeout", 3.0)
 
+        # Stop when /joy goes quiet. The publish loop below runs on a timer and
+        # sends the LAST joystick state, so without this a dead /joy reads
+        # exactly like a held stick and the wheels keep turning.
+        #
+        # This node writes to the ODrive axes directly -- there is no
+        # cmd_vel_odrive_bridge in the path and therefore no second timeout
+        # behind it. Whatever safety exists here is all of it.
+        #
+        # 0.35 s matches every other node on the pad. Unlike the cmd_vel path,
+        # the stop RAMPS at accel_limit rather than jumping to zero: six axes
+        # commanded to standstill in one control period is a mechanical shock
+        # that can trip the drives, and a tripped drive needs LB+Y to recover,
+        # which is a worse place to be than coasting to a halt.
+        self.declare_parameter("joy_timeout_sec", 0.35)
+
         self.declare_parameter("vertical_axis", 1)
         self.declare_parameter("horizontal_axis", 0)
         self.declare_parameter("invert_vertical", True)
@@ -65,6 +80,7 @@ class RoverJoystickController(Node):
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.arm_retry_period = float(self.get_parameter("arm_retry_period").value)
         self.axis_state_request_timeout = float(self.get_parameter("axis_state_request_timeout").value)
+        self.joy_timeout_sec = max(0.0, float(self.get_parameter("joy_timeout_sec").value))
 
         self.vertical_axis = int(self.get_parameter("vertical_axis").value)
         self.horizontal_axis = int(self.get_parameter("horizontal_axis").value)
@@ -91,6 +107,11 @@ class RoverJoystickController(Node):
         self.target_left_vel = 0.0
         self.current_right_vel = 0.0
         self.current_left_vel = 0.0
+
+        # Zero, not "now": before the first Joy arrives there is no command to
+        # be stale, and treating startup as fresh would open the gate.
+        self._last_joy_at = 0.0
+        self._joy_lost = False
 
         self.prev_sound_button = 0
 
@@ -149,6 +170,11 @@ class RoverJoystickController(Node):
         return current + math.copysign(step, diff)
 
     def _joy_callback(self, msg):
+        self._last_joy_at = time.monotonic()
+        if self._joy_lost:
+            self._joy_lost = False
+            self.get_logger().info("joystick back: drive re-enabled (hold LB)")
+
         vertical = self._axis(msg, self.vertical_axis)
         horizontal = self._axis(msg, self.horizontal_axis)
 
@@ -298,9 +324,29 @@ class RoverJoystickController(Node):
         self._retry_in_progress = False
 
     def _publish_loop(self):
+        now = time.monotonic()
+
+        # A silent /joy is not a held stick. Treated as a release, so the ramp
+        # below brings the wheels down at accel_limit instead of stopping them
+        # dead -- see joy_timeout_sec.
+        joy_stale = (
+            self.joy_timeout_sec > 0.0
+            and (now - self._last_joy_at) > self.joy_timeout_sec
+        )
+        if joy_stale:
+            if not self._joy_lost and self._last_joy_at > 0.0:
+                self._joy_lost = True
+                self.get_logger().warn(
+                    f"no /joy for {self.joy_timeout_sec:.2f} s — ramping the rover "
+                    f"to a stop (link down, or the joy driver died)"
+                )
+            self.target_right_vel = 0.0
+            self.target_left_vel = 0.0
+            self.trigger = 0
+
         # LB is held throughout an LB+Y re-init, so without this the rover would
         # accelerate the moment the axes armed if the stick were off centre.
-        holding_after_reinit = time.monotonic() < self._reinit_hold_until
+        holding_after_reinit = now < self._reinit_hold_until
 
         if self.trigger == 1 and not holding_after_reinit:
             target_right = self.target_right_vel
