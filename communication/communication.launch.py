@@ -38,11 +38,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
 
+# SUPERSEDED -- see communication/README.txt. Kept for reference only.
+#
 # Resolved from this file rather than hardcoded, so moving the folder or
 # cloning the repo to another path does not silently leave CYCLONEDDS_URI
-# pointing at a file that is not there. Cyclone does not fail on a missing
-# URI -- it warns and falls back to defaults, which is multicast on a
-# self-chosen interface, and the link problem comes straight back.
+# pointing at a file that is not there. NOTE: the claim that used to be here --
+# that Cyclone merely warns on a missing URI and falls back to defaults -- is
+# WRONG. Measured 2026-08-21: it refuses to create the domain and every node
+# dies at startup. aries_common/comms.py has the correct account.
 _HERE = os.path.dirname(os.path.realpath(__file__))
 CYCLONEDDS_XML = os.path.join(_HERE, 'cyclonedds.xml')
 

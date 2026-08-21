@@ -1,5 +1,42 @@
 ================================================================================
- SUPERSEDED -- this folder has moved into the workspace
+ communication/
+================================================================================
+
+  LIVE:        stop_comms.sh    stop the whole stack, and repair this shell
+  SUPERSEDED:  everything else -- it moved into the workspace, see below.
+
+
+--------------------------------------------------------------------------------
+ stop_comms.sh
+--------------------------------------------------------------------------------
+
+  ./communication/stop_comms.sh              stop everything
+  ./communication/stop_comms.sh --status     list what is running, change nothing
+  ./communication/stop_comms.sh --force      skip the graceful stage
+  source ./communication/stop_comms.sh       stop everything AND fix this shell
+
+Stops every node, launch process, Gazebo and the ros2 CLI daemon. SIGINT first
+so `ros2 launch` shuts its children down in order -- controllers deactivate and
+the ODrive bridge gets to publish a final zero; SIGKILL only for what refuses.
+
+SOURCE IT if `ros2 topic list` errors with NOTHING RUNNING:
+
+    can't open configuration file file:///.../cyclonedds.xml
+    rmw_create_node: failed to create domain, error Error
+
+That is your terminal, not the robot. A process keeps the DDS environment it
+was STARTED with, so a shell opened before ~/.bashrc was fixed carries the old
+value forever, and Cyclone treats a config it cannot open as fatal -- it
+refuses to create the domain, so every command dies. Killing nodes cannot fix a
+shell; sourcing this re-applies the workspace environment to it.
+
+It only ever considers processes under this workspace, under /opt/ros, or
+Gazebo, it never matches a shell, and it prints the list before signalling
+anything.
+
+
+================================================================================
+ SUPERSEDED -- the rest of this folder moved into the workspace
 ================================================================================
 
 Everything here now lives in packages both machines build, because both

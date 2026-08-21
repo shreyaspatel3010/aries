@@ -5,9 +5,21 @@ file on both. The one setting that must differ between them --
 ``<NetworkInterface address>`` -- is *detected* here rather than written down,
 because a hand-mirrored copy is the failure this module exists to prevent:
 
-    Cyclone does not treat an address the machine does not have as fatal. It
-    warns, falls back to choosing an interface itself, and you get an empty
-    ``ros2 topic list`` with a link that pings fine and logs nothing.
+    Cyclone treats an address the machine does not hold, and a config file it
+    cannot open, as FATAL. It refuses to create the domain, so every node in
+    the launch dies at startup with
+
+        can't open configuration file file:///.../cyclonedds.xml
+        rmw_create_node: failed to create domain, error Error
+
+    Measured on Cyclone under Jazzy, 2026-08-21. Older notes in this repo
+    claimed it merely warns and falls back to defaults -- it does not, and a
+    copied-and-not-edited config takes the whole stack down rather than
+    degrading quietly.
+
+That cuts both ways, and is why ``require_link`` exists below. A machine with
+no antenna -- a developer laptop running simulation -- must NOT be given a
+pinned interface, or the same fatality applies to it for no reason.
 
 Everything else -- domain, peers, multicast -- is identical on both ends and is
 read from the ``network:`` section of ``aries_common/config/devices.yaml``.

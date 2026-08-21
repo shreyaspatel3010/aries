@@ -157,26 +157,51 @@ If your antenna is on a different port, fix `network.interface` in
 
 ### 2.3 Shell environment
 
-Add to `~/.bashrc` on **both** machines, after the ROS source line:
+Add to `~/.bashrc` on **every** machine — rover, base station, and any laptop
+that only ever runs simulation:
 
 ```bash
-source ~/aries/install/setup.bash
-source "$(ros2 pkg prefix aries_common)/share/aries_common/aries_dds_env.sh"
+if [ -f "$HOME/aries/install/setup.bash" ]; then
+    source "$HOME/aries/install/setup.bash"
+    _aries_dds="$(ros2 pkg prefix aries_common 2>/dev/null)/share/aries_common/aries_dds_env.sh"
+    [ -f "$_aries_dds" ] && source "$_aries_dds"
+    unset _aries_dds
+fi
 ```
 
-**Delete any older line that looks like this** — it names a fixed address and
-is correct on exactly one machine:
+The same block works everywhere because the interface address is detected. On
+a machine that is on the field link it pins that address; on one that is not,
+it writes a **local-only** config and says so:
+
+```
+ARIES comms: domain 30, rmw_cyclonedds_cpp, LOCAL ONLY
+             (not on the field link — fine for simulation; run
+              scripts/setup_field_link.sh before going to the field)
+```
+
+**Delete any older hardcoded exports**, in particular:
 
 ```bash
 export CYCLONEDDS_URI=file:///home/shreyas/aries/communication/cyclonedds.xml   # DELETE
 ```
 
-This matters more than it looks. A process keeps the DDS environment it was
-*started* with, forever. A terminal opened before these exports existed stays
-on domain 0 with the wrong middleware, and everything launched from it inherits
-that — which looks exactly like a dead link: ping fine, `ros2 topic list`
-empty, nothing logged anywhere. The launch files set their own environment, so
-what they start is always right; your interactive shell is not.
+That file named a fixed address and lived outside the workspace. Both halves of
+that are fatal, and not gently: Cyclone treats a config file it cannot open,
+**or an interface address the machine does not hold**, as a reason to refuse to
+create the domain. Every node in the launch then dies at startup with
+
+```
+can't open configuration file file:///.../cyclonedds.xml
+rmw_create_node: failed to create domain, error Error
+```
+
+which is an alarming way to discover that a path changed.
+
+Why the shell matters at all: a process keeps the DDS environment it was
+*started* with, forever. A terminal opened before these exports existed stays on
+the old settings, and everything launched from it inherits them. The launch
+files set their own environment, so what they start is always right; your
+interactive shell is not.
 
 ---
 
@@ -265,6 +290,23 @@ ros2 run aries_bringup downlink_report.py
   pings but does not accept a connection still silently falls back to mock;
 * whether **anything else on the field is claiming your address** (`arping -D`).
   That last one is the check that exists because you are not alone.
+
+Then prove the control path actually carries commands, over real DDS:
+
+```bash
+./scripts/check_control_path.py            # locally, on either machine
+./scripts/check_control_path.py --remote   # on the base, with the rover up
+```
+
+Local mode spawns its own copy of the rover drive node and commands motion at
+it — safe anywhere, nothing is connected to the ODrives — and checks both that
+a held stick drives **and** that `/joy` going silent stops it inside
+`joy_timeout_sec` (measured ~340–370 ms).
+
+`--remote` runs on the base station against the live rover and deliberately
+does **not** command motion: neutral stick, so the wheels never turn. It proves
+`/joy` crosses the link, the rover's node is consuming it, and its `/cmd_vel`
+comes back.
 
 ---
 
@@ -380,7 +422,7 @@ instant.
 | link works, then drops when another team powers on | duplicate address. `./scripts/setup_field_link.sh --check`, and see §1. |
 | arm reports healthy but does not move | `arm_hardware_protocol:=auto` fell back to mock because `192.168.3.11:3920` was closed. `./scripts/setup_field_link.sh --check` tests that port. Force it with `arm_hardware_protocol:=rebel` to make the failure loud. |
 | arm stopped working after a network change | the rover PC lost its address on `192.168.3.0/24`. `ip -4 -br addr` — it needs one on the arm subnet *and* one on the field link. |
-| `does not match an available interface` | a stale `CYCLONEDDS_URI` naming a fixed address. Delete it from `~/.bashrc` (§2.3). |
+| `does not match an available interface`, or `can't open configuration file` — **every node dies at startup** | a stale `CYCLONEDDS_URI` in your shell. Cyclone treats an unopenable file or an address this machine does not hold as fatal. `unset CYCLONEDDS_URI` to unblock immediately, then fix `~/.bashrc` (§2.3). |
 | `WARNING: ... this is a GUESS` at launch | this machine does not hold a configured address. Run `setup_field_link.sh {rover\|base}`. |
 | `Failed to find a free participant index` | more participants than `MAX_AUTO_PARTICIPANT_INDEX` in `aries_common/comms.py`. The stack is ~30 nodes; Cyclone's own default cap is 9. |
 | buttons chatter, teleop unreproducible | two joy drivers. Exactly one machine may set `use_joy_node:=true`. |
@@ -390,6 +432,8 @@ instant.
 | worked, then died after a cable replug | new ifindex, old sockets dead. Restart nodes on both ends. |
 | one direction only | firewall. Cyclone needs UDP both ways: `sudo ufw allow from 192.168.1.0/24` |
 | nodes listed that no longer exist | `ros2 daemon stop` — it caches a graph per (domain, rmw) and serves it stale. |
+| `ros2` anything fails with **nothing running** | your terminal, not the robot: it holds a stale `CYCLONEDDS_URI` from before `~/.bashrc` was fixed. `source communication/stop_comms.sh` repairs the shell (or just open a new one). |
+| need to stop everything | `./communication/stop_comms.sh` — SIGINT first so controllers deactivate and the drive bridge publishes a final zero. `--status` lists without killing. |
 
 ---
 
@@ -411,6 +455,7 @@ instant.
 - [ ] `ros2 launch aries_bringup rover_field.launch.py` on the rover
 - [ ] `ros2 launch aries_base_station base_station.launch.py` on the base
 - [ ] `ros2 run aries_bringup downlink_report.py` — confirm the rate and the age column
+- [ ] `./scripts/check_control_path.py --remote` from the base — `/joy` reaches the rover and `/cmd_vel` comes back
 - [ ] **drive-away test**: hold LB, drive 2 m, release. Then power the base radio off mid-drive and confirm the rover stops within a second.
 
 That last one is worth doing once, every event. It is the difference between
@@ -425,6 +470,8 @@ knowing the watchdog works and assuming it does.
 | every address, the domain, the ports | `src/aries_common/config/devices.yaml` → `network:` |
 | how the DDS config is generated | `src/aries_common/aries_common/comms.py` |
 | static address setup | `scripts/setup_field_link.sh` |
+| control path check | `scripts/check_control_path.py` |
+| stop everything | `communication/stop_comms.sh` |
 | base station package | `src/aries_base_station/README.md` |
 | camera downlink internals | `src/aries_bringup/README.md` → *Camera downlink* |
 | rover launch | `src/aries_bringup/launch/rover_field.launch.py` |
