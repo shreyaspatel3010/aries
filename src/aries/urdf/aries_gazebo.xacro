@@ -180,10 +180,10 @@
             <joint_name>R_3_Wheel_Joint</joint_name>
             <joint_name>aux_L_Rocker_joint</joint_name>
             <joint_name>aux_R_Rocker_joint</joint_name>
-            <!-- The drill's two prismatic axes. Not on ros2_control: they are
-                 driven by the JointPositionController plugins below, the same
-                 way the rockers are, so their state has to come from here or
-                 robot_state_publisher never moves the meshes. -->
+            <!-- The drill's three axes. Not on ros2_control: they are driven
+                 by the JointController plugins below, so their state has to
+                 come from here or robot_state_publisher never moves the
+                 meshes. It is also what the teleop's limit switches read. -->
             <joint_name>drill_motor_joint</joint_name>
             <joint_name>drill_container_joint</joint_name>
             <joint_name>drill_bit_joint</joint_name>
@@ -211,40 +211,59 @@
       <i_min>-6</i_min><i_max>6</i_max>
     </plugin>
 
-    <!-- Drill feed and sample container. These exist as much to HOLD as to
-         drive: a prismatic joint with nothing attached to it sinks to its
-         lower limit under gravity the moment physics starts, and a 4.1 kg
-         carriage riding a lead screw does not do that in reality - the screw
-         is not backdrivable. With a target of 0 they sit where the CAD says
-         they sit until something commands otherwise.
-         Gains are sized off the rockers': the carriage is a ~4.1 kg linear
-         axis rather than a torque-loaded revolute, so p_gain is lower and
-         d_gain is kept high enough to stop it ringing on the stops. -->
-    <plugin filename="gz-sim-joint-position-controller-system"
-        name="gz::sim::systems::JointPositionController">
+    <!-- Drill feed and sample container. Both are RATE-commanded, in m/s, and
+         both exist as much to HOLD as to drive.
+
+         Neither axis is a position servo on the real drill. The feed carriage
+         is a DC motor turning a lead screw and the bin is a prismatic linear
+         actuator: you run the motor, you stop the motor, and the mechanism
+         stays exactly where you stopped it, because neither a lead screw nor
+         an actuator of that kind is backdrivable. JointController with
+         use_force_commands OFF is that mechanism - it hands the joint a
+         velocity command, which dartsim services as a servo, so a commanded
+         0 pins the axis rather than letting a 4.1 kg carriage sink.
+
+         These WERE JointPositionControllers, and the reason they are not any
+         more is worth keeping: a position PID holds by force, so it sagged
+         mg/p_gain = 4.1 x 9.81 / 800 = 50 mm below its target the moment
+         physics started, and the teleop, which re-seeded its target from the
+         measured pose on every LT press, then walked the carriage 50 mm
+         further down its stroke per press. Raising the gain only makes the
+         sag smaller; the axis still has a target it can be told wrong. A rate
+         command has no target at all.
+
+         Travel is bounded by the limit switches modelled in
+         aries_teleop/drill_joystick.py, which stop the motor just inside the
+         URDF stops. Behind them dartsim enforces the joint limit itself even
+         under a velocity command - a rig of this joint, 4.1 kg on the same
+         limits, run at -0.05 m/s stopped dead at -0.375000 and held there
+         with 0.0000 mm of drift once commanded zero, and idled at -9 um after
+         180 s of sim time with no command at all. So a raw publish here
+         cannot drive the carriage through the mast; it can still run the bin
+         into the auger, which is a geometry limit and not a stop. -->
+    <plugin filename="gz-sim-joint-controller-system"
+        name="gz::sim::systems::JointController">
       <joint_name>drill_motor_joint</joint_name>
-      <topic>/model/aries/joint/drill_motor_joint/cmd_pos</topic>
-      <p_gain>800</p_gain><i_gain>2</i_gain><d_gain>120</d_gain>
-      <i_min>-40</i_min><i_max>40</i_max>
-      <cmd_min>-200</cmd_min><cmd_max>200</cmd_max>
+      <topic>/model/aries/joint/drill_motor_joint/cmd_vel</topic>
     </plugin>
 
-    <plugin filename="gz-sim-joint-position-controller-system"
-        name="gz::sim::systems::JointPositionController">
+    <plugin filename="gz-sim-joint-controller-system"
+        name="gz::sim::systems::JointController">
       <joint_name>drill_container_joint</joint_name>
-      <topic>/model/aries/joint/drill_container_joint/cmd_pos</topic>
-      <p_gain>200</p_gain><i_gain>1</i_gain><d_gain>30</d_gain>
-      <i_min>-20</i_min><i_max>20</i_max>
-      <cmd_min>-100</cmd_min><cmd_max>100</cmd_max>
+      <topic>/model/aries/joint/drill_container_joint/cmd_vel</topic>
     </plugin>
 
-    <!-- The auger spins, so this one is a VELOCITY controller, not a position
-         one: publish rad/s to the topic and a positive value turns it one way,
-         a negative value the other, indefinitely. Holding a spindle at an
-         angle, which is what JointPositionController would do, is not a thing
-         a drill does. It needs no holding controller either - the axis is
-         vertical and the bit's COM sits on it to within 46 um, so gravity
-         applies no torque about it. -->
+    <!-- The auger: rad/s, a positive value one way and a negative value the
+         other, indefinitely. Holding a spindle at an angle, which is what a
+         position controller would do, is not a thing a drill does, and it
+         needs no holding controller either - the axis is vertical and the
+         bit's COM sits on it to within 46 um, so gravity applies no torque
+         about it.
+
+         Unlike the two feed axes this one keeps use_force_commands ON. It is
+         the axis that meets the ground, and a force-side velocity PID lets it
+         load up and stall against soil the way the motor does; the feed axes
+         are servo-pinned instead because a lead screw does not yield. -->
     <plugin filename="gz-sim-joint-controller-system"
         name="gz::sim::systems::JointController">
       <joint_name>drill_bit_joint</joint_name>

@@ -115,6 +115,20 @@
       the sample-collection sequence - drill down, retract, run the container
       underneath - and it is the check that the two limits below are right.
 
+      Those two numbers are MECHANICAL stops. The real axis is a DC motor on a
+      lead screw with a limit switch at each end - one at the bottom of the
+      travel, one at the top - and the switches are what actually cut the
+      motor, a couple of millimetres short of these. They are modelled in
+      aries_teleop/drill_joystick.py (limit_margin), because a switch acts on
+      the measured position and in one direction only, which a URDF limit
+      cannot express. Keep the two in step: these bounds are what that node's
+      motor_lower/motor_upper are copied from.
+
+      Because it is a lead screw the axis does not backdrive: with the motor
+      off the carriage stays where it stopped, and it must not sag. gz gets
+      that from a velocity JointController pinning it at zero rather than a
+      position PID holding it by force - see aries_gazebo.xacro.
+
       effort/velocity are placeholders sized for a lead-screw feed, not
       measured from the drive.
     -->
@@ -168,7 +182,9 @@
 
     <!--
       Spindle rotation: continuous, so it turns either way without end, which is
-      what a drill that has to back out of a hole needs.
+      what a drill that has to back out of a hole needs. It is a DC motor like
+      the feed, but with no travel it has no limit switches - the stick sets
+      the rate and centring it stops the spindle.
 
       The origin is the one place in this file that is not 0 0 0, and it is not
       optional. A revolute axis runs through the CHILD link's origin, so with
@@ -234,6 +250,10 @@
       q = 0 is parked, q = -0.1304 is under the bit. Sliding under while the
       carriage is low drives the bin into the auger; that pair is deliberately
       NOT disabled in the SRDF.
+
+      Unlike the feed, which is a motor and a screw, this one is a prismatic
+      linear actuator with its own end switches. Same consequences either way:
+      commanded as a rate, held where it stops, and it does not backdrive.
     -->
     <joint name="drill_container_joint" type="prismatic">
         <parent link="drill_link"/>

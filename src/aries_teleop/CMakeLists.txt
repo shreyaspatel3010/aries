@@ -35,6 +35,14 @@ if(BUILD_TESTING)
     test/test_joy_watchdog.py
     TIMEOUT 120
   )
+  # The drill must not move unless a button is asking it to: LT alone commands
+  # zero on every axis, and each limit switch cuts its motor in one direction
+  # while leaving the way back open.
+  ament_add_pytest_test(
+    drill_limit_switches
+    test/test_drill_limit_switches.py
+    TIMEOUT 120
+  )
 endif()
 
 ament_package()

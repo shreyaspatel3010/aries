@@ -148,8 +148,12 @@ drill_joystick:
 
     # Bridged to gz by aries/config/*_gazebo_bridge.yaml. Nothing consumes them
     # on the real rover yet - there is no drill driver.
-    motor_cmd_topic: "/aries/drill_motor_joint/cmd_pos"
-    container_cmd_topic: "/aries/drill_container_joint/cmd_pos"
+    #
+    # All three carry RATES - m/s on the two feed axes, rad/s on the auger -
+    # because all three axes are DC motors: run while held, stop when
+    # released, hold where they stopped. Nothing here is a position.
+    motor_cmd_topic: "/aries/drill_motor_joint/cmd_vel"
+    container_cmd_topic: "/aries/drill_container_joint/cmd_vel"
     bit_cmd_topic: "/aries/drill_bit_joint/cmd_vel"
 
     motor_joint: "drill_motor_joint"
@@ -178,6 +182,9 @@ drill_joystick:
 
     # MUST match drill.xacro's joint limits. Repeated here so the node can run
     # without a robot description; if the URDF stroke changes, change both.
+    # These are the MECHANICAL stops - the limit switches sit limit_margin
+    # inside them, and each one only blocks the direction that runs further
+    # in, so a carriage sitting on the bottom switch still comes back up.
     motor_lower: -0.375
     motor_upper: 0.185
     motor_speed: 0.05
@@ -185,6 +192,9 @@ drill_joystick:
     container_lower: -0.1304
     container_upper: 0.0
     container_speed: 0.05
+
+    # Where each limit switch trips, measured back from the stop.
+    limit_margin: 0.002
 
     # drill_bit_joint's URDF velocity limit is 60 rad/s. Half of it (~285 rpm)
     # is the manual ceiling.
@@ -197,6 +207,10 @@ drill_joystick:
     invert_motor: false
     invert_container: false
     invert_bit: false
+
+    # Zeros keep going out for this long after LT is released, so a single
+    # dropped message cannot leave a motor running.
+    stop_hold_sec: 0.5
 
     publish_rate_hz: 30.0
     joy_timeout_sec: 0.35

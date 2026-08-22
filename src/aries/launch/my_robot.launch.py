@@ -322,10 +322,11 @@ def generate_launch_description():
         ],
     )
 
-    # The drill's three axes reach gz through the JointPositionController /
-    # JointController plugins in aries_gazebo.xacro, bridged by
-    # config/gazebo_bridge.yaml - not through ros2_control. This node is the
-    # only thing that commands them, and only while LT is held.
+    # The drill's three axes reach gz through the JointController plugins in
+    # aries_gazebo.xacro, bridged by config/gazebo_bridge.yaml - not through
+    # ros2_control. All three take a rate, because all three are DC motors.
+    # This node is the only thing that commands them, and only while LT is
+    # held; it also owns their limit switches.
     drill_joystick_node = Node(
         condition=IfCondition(LaunchConfiguration('use_drill_teleop')),
         package='aries_teleop',
