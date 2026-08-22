@@ -116,6 +116,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
+        DeclareLaunchArgument("use_stacklight", default_value="true"),
         DeclareLaunchArgument("start_checker", default_value="true"),
         # Preserve the top-level choice before rover_drive_auto.launch.py sets
         # its own nested start_checker argument to false. Included launch
@@ -199,6 +200,22 @@ def generate_launch_description():
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
             }.items(),
+        ),
+
+        # Mast stack light: red on e-stop or halt, yellow operating, green
+        # ready. The publisher for the topic the gripper Teensy's firmware has
+        # always subscribed to -- without it the light stays dark whatever the
+        # rover does. Reads the drive bringup's status, so it belongs on the
+        # rover side even though the Teensy is on the arm's.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_bringup"),
+                    "launch",
+                    "stacklight.launch.py",
+                ])
+            ),
+            condition=IfCondition(LaunchConfiguration("use_stacklight")),
         ),
 
         # Separate checker.

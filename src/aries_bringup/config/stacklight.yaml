@@ -1,0 +1,106 @@
+# Stack light configuration.
+#
+#   RED     emergency stop pressed (either switch), or halted
+#   YELLOW  operating
+#   GREEN   ready, doing nothing
+#   off     the stack is not running
+#
+# The light is the three-colour tower on the mast, wired to the gripper
+# Teensy. The firmware (firmware/teensy_gripper/teensy_gripper.ino) subscribes
+# to a std_msgs/UInt8 and switches one GPIO per colour; aries_bringup's
+# stacklight node is the only thing that publishes it.
+#
+# HOW A STATE IS DECIDED. `priority` is evaluated top to bottom and the first
+# state that holds wins, so an e-stop pressed while the wheels are turning
+# shows red, not yellow. A state that nothing can decide is `unknown`.
+#
+# WHAT IS STILL TO BE WIRED. `emergency` and `halt` have no source yet, so
+# neither can currently be entered - the two states most worth showing are the
+# two the rover cannot yet report. Both e-stops physically disconnect ODrive
+# power, so there is no contact for software to read: reaching them needs a
+# sense line into a GPIO and something publishing a std_msgs/Bool, and then
+# that topic listed under estop_topics / halt_topics below.
+#
+# Deliberately NOT inferred from "the ODrives stopped answering". Cutting their
+# power and unplugging the CAN adapter look identical from here (see the replug
+# handling in cmd_vel_odrive_bridge.py), and a light that shows an emergency
+# because a cable came loose is a light people learn to ignore.
+
+stacklight:
+  ros__parameters:
+    # Must match the firmware exactly. Declared there with no leading slash
+    # under an empty namespace, which resolves to /stacklight_subscription.
+    topic: "/stacklight_subscription"
+
+    # First match wins. Add states here as sources for them appear.
+    priority: ["emergency", "halt", "operating", "ready"]
+
+    # "state:colour" pairs - a flat list, not a map, because a nested YAML map
+    # arrives as one ROS parameter per key and cannot be read back as a single
+    # value. Colours are the firmware's four: red, yellow, green, off.
+    # `unknown` is required: it is what shows when no state above holds.
+    colors:
+      - "emergency:red"
+      - "halt:red"
+      - "operating:yellow"
+      - "ready:green"
+      # Red, not green: a node that cannot see the rover must not claim it is
+      # safe. This is what shows before the drive bridge comes up.
+      - "unknown:red"
+
+    # What the light does when this node exits cleanly. `off` reads as "the
+    # stack is not running", which is honest; a latched green would be a lie
+    # told by a dead node.
+    shutdown_color: "off"
+
+    # --- emergency ------------------------------------------------------
+    # std_msgs/Bool topics, one per switch: the arm's and the wheels'. Both
+    # empty today. Fill them in when the sense lines exist, e.g.
+    #   estop_topics: ["/aries/estop/arm", "/aries/estop/wheels"]
+    # Any one of them reading "pressed" puts the light red.
+    estop_topics: [""]
+    # true  = the topic publishes TRUE when the button is PRESSED.
+    # false = it publishes TRUE when the loop is HEALTHY, which is how a
+    #         normally-closed e-stop chain is usually wired. Get this wrong and
+    #         the light is inverted, so check it against the real switch.
+    estop_active_high: true
+
+    # --- halt -----------------------------------------------------------
+    # Same shape. Nothing declares a halt yet.
+    halt_topics: [""]
+    halt_active_high: true
+
+    # --- operating ------------------------------------------------------
+    # The drive bridge's 2 Hz JSON status: armed, command_valid, and the ramped
+    # wheel commands this reads.
+    drive_status_topic: "/aries_drive/status"
+    # Older than this and the rover is not reporting, which is `unknown`, not
+    # `ready`. Generous against the 2 Hz publish rate and a slow field link.
+    drive_status_timeout_s: 5.0
+    # Ramped wheel command, rev/s. Below this the wheels are standing still as
+    # far as anyone watching the rover is concerned.
+    wheel_motion_rps: 0.01
+
+    # Any std_msgs/Float64 rate topic; non-zero on any of them is "operating".
+    # The drill's three axes are here because they are DC motors commanded as
+    # rates by aries_teleop/drill_joystick.py, and a spinning auger is the most
+    # obviously operating thing on the robot. Add the arm here if a single rate
+    # topic for it ever exists.
+    motion_topics:
+      - "/aries/drill_motor_joint/cmd_vel"
+      - "/aries/drill_container_joint/cmd_vel"
+      - "/aries/drill_bit_joint/cmd_vel"
+    motion_epsilon: 1.0e-6
+    # A rate topic that has gone quiet is not a moving axis: the drill teleop
+    # stops publishing entirely once it has sent its zeros on release.
+    motion_timeout_s: 1.0
+
+    # --- timing ---------------------------------------------------------
+    update_rate_hz: 10.0
+    # The colour is re-sent this often even when nothing changed. Not
+    # redundant: the firmware's subscription is RELIABLE but not
+    # TRANSIENT_LOCAL and is destroyed and recreated on every micro-ROS
+    # reconnect, so a late-joining Teensy receives no history. This bounds how
+    # long the light can sit dark after a reconnect, or after a Teensy reset,
+    # which starts with all three GPIOs LOW.
+    publish_period_s: 1.0

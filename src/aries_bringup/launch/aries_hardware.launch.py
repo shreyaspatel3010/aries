@@ -247,6 +247,11 @@ def launch_setup(context, *args, **kwargs):
         # runs the same YOLO model on the same camera feed (and publishes its own
         # /vision_grasp/detection_image), so running this node too doubles the
         # GPU/CPU inference cost and model memory on the rover.
+        #
+        # DEAD while aries_vision_grasp is isolated (COLCON_IGNORE, 2026-08-22):
+        # the package is not built, so enable_yolo_debug:=true fails to find the
+        # executable. Left in place because removing the COLCON_IGNORE is all it
+        # takes to bring both back.
         enable_yolo_debug = (
             LaunchConfiguration("enable_yolo_debug").perform(context).lower() == "true"
         )

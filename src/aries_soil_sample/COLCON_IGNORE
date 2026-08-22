@@ -1,0 +1,17 @@
+Isolated 2026-08-22: not in use.
+
+colcon skips any package directory containing this file, so aries_soil_sample is not
+built, not installed, and not on the environment's path. Nothing is deleted --
+delete this file and rebuild to bring it back.
+
+Before isolating, the one thing outside these three packages that needed
+aries_vision_grasp was aries_bringup's camera_downlink.py, which imported
+NumpyImageBridge (cv_bridge segfaults under NumPy 2.x, so every image node
+uses it). That module moved to aries_common/image_bridge.py and all five
+importers now take it from there, so the downlink no longer depends on
+anything isolated here.
+
+Still pointing at aries_vision_grasp, and therefore dead while this file
+exists: aries_hardware.launch.py's enable_yolo_debug:=true node, and
+scripts/vision/*. enable_yolo_debug defaults to false, so the normal launch
+path is unaffected.

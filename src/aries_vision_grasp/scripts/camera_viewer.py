@@ -9,7 +9,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, CameraInfo
-from aries_vision_grasp.image_bridge import NumpyImageBridge
+from aries_common.image_bridge import NumpyImageBridge
 import cv2
 import numpy as np
 

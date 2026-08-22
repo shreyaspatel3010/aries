@@ -78,7 +78,7 @@ from aries_vision_grasp import (
     stages,
     wrist_planning,
 )
-from aries_vision_grasp.image_bridge import NumpyImageBridge
+from aries_common.image_bridge import NumpyImageBridge
 from aries_vision_grasp.geometry import (
     CameraOffsetEstimate,
     estimate_stationary_target_camera_offset,

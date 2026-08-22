@@ -18,7 +18,6 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>aries</exec_depend>
   <exec_depend>aries_moveit</exec_depend>
-  <exec_depend>aries_vision_grasp</exec_depend>
   <exec_depend>aries_common</exec_depend>
   <exec_depend>aries_imu</exec_depend>
   <exec_depend>aries_drive</exec_depend>

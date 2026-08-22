@@ -64,7 +64,7 @@ from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 from trajectory_msgs.msg import JointTrajectory
 
-from aries_vision_grasp.image_bridge import NumpyImageBridge
+from aries_common.image_bridge import NumpyImageBridge
 from aries_maintenance.action_utils import (
     load_enabled_controls, log_operation_result, make_joint_trajectory,
     run_action,

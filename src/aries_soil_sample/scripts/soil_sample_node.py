@@ -69,7 +69,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 # field-calibrated four-bar tables for the bucket fingertip.
 from aries_vision_grasp import fourbar
 from aries_vision_grasp.grasp_verification import backproject_depth
-from aries_vision_grasp.image_bridge import NumpyImageBridge
+from aries_common.image_bridge import NumpyImageBridge
 
 from aries_soil_sample import deposit as deposit_lib
 from aries_soil_sample import scoop as scoop_lib

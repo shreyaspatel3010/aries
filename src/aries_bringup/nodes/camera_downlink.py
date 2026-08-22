@@ -52,7 +52,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 
-from aries_vision_grasp.image_bridge import NumpyImageBridge
+from aries_common.image_bridge import NumpyImageBridge
 
 
 # Publish Reliable, not SensorData. These topics are consumed on the rover by
