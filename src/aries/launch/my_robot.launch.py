@@ -122,6 +122,27 @@ def generate_launch_description():
         description='Relay joystick /cmd_vel/teleop commands to Gazebo /cmd_vel'
     )
 
+    use_stacklight_arg = DeclareLaunchArgument(
+        'use_stacklight', default_value='true',
+        description=(
+            'Run the stack light: the state node that decides the colour, and '
+            'the viewer that lights the three tiers on the model to match. '
+            'Sources are simulation ones - see aries/config/stacklight_sim.yaml.'
+        ),
+    )
+
+    use_camera_downlink_arg = DeclareLaunchArgument(
+        'use_camera_downlink', default_value='true',
+        description=(
+            'Run the operator camera downlink and its decompressors, the same '
+            'chain the field stack runs. On by default because RViz reads the '
+            'decompressed /<camera>/view/* topics and nothing else publishes '
+            'them, so with this off the image panels are simply blank. Turn it '
+            'off to give the JPEG/PNG codecs back to physics if the sim is '
+            'running short of real time.'
+        ),
+    )
+
     use_sim_ekf_arg = DeclareLaunchArgument(
         'use_sim_ekf',
         default_value='true',
@@ -207,6 +228,8 @@ def generate_launch_description():
     use_joystick = LaunchConfiguration('use_joystick')
     use_rover_joystick = LaunchConfiguration('use_rover_joystick')
     use_cmd_vel_relay = LaunchConfiguration('use_cmd_vel_relay')
+    use_stacklight = LaunchConfiguration('use_stacklight')
+    use_camera_downlink = LaunchConfiguration('use_camera_downlink')
     use_sim_ekf = LaunchConfiguration('use_sim_ekf')
     joy_driver = LaunchConfiguration('joy_driver')
     joy_layout = LaunchConfiguration('joy_layout')
@@ -380,6 +403,85 @@ def generate_launch_description():
     # run publish_wheel_joints.py here: its zero-value, potentially wall-clock
     # stamped messages corrupt TF for the moving wrist camera.
 
+    # Stack light. Two nodes, and the split is the point: stacklight.py decides
+    # the colour from the rover's state and publishes the same UInt8 the Teensy
+    # firmware subscribes to on hardware, and stacklight_gz_visual.py only
+    # WATCHES that topic and turns the model's three cylinders up or down to
+    # match. The simulated light is therefore driven by exactly the message the
+    # real one is, and the two cannot disagree about what the rover is doing.
+    #
+    # Sources differ from the rover's, because the drive bridge does not run
+    # here - /cmd_vel and /joint_states stand in for /aries_drive/status. That
+    # is all stacklight_sim.yaml is.
+    stacklight_config = PathJoinSubstitution(
+        [FindPackageShare('aries'), 'config', 'stacklight_sim.yaml'])
+
+    stacklight_node = Node(
+        condition=IfCondition(use_stacklight),
+        package='aries_bringup',
+        executable='stacklight.py',
+        name='stacklight',
+        output='screen',
+        parameters=[stacklight_config, {'use_sim_time': use_sim_time}],
+    )
+
+    stacklight_gz_visual_node = Node(
+        condition=IfCondition(use_stacklight),
+        package='aries_bringup',
+        executable='stacklight_gz_visual.py',
+        name='stacklight_gz_visual',
+        output='screen',
+        parameters=[stacklight_config, {'use_sim_time': use_sim_time}],
+    )
+
+    # Operator camera downlink, exactly as the field stack runs it:
+    #
+    #   /<cam>/color/image_raw                    (bridged from gz)
+    #     -> camera_downlink.py                   reduce
+    #     -> /downlink/<cam>/color/compressed     JPEG
+    #     -> republish                            decompress
+    #     -> /<cam>/view/color                    what RViz displays
+    #
+    # aries_moveit's moveit.rviz - the config this sim's RViz loads - has its
+    # two Image displays wired to /<cam>/view/color, which only the last step
+    # publishes. Without this chain those panels have no publisher at all,
+    # which is why the simulation showed nothing on the camera side while the
+    # bridged topics underneath were perfectly healthy.
+    #
+    # Running the real path rather than pointing RViz at the raw topics also
+    # means the thing that carries every image in the field is exercised in
+    # simulation instead of only on competition day.
+    #
+    # Included by share path, not declared as a package dependency: aries_bringup
+    # already exec_depends on aries, and declaring the reverse would make a
+    # dependency cycle colcon refuses to order. Same reason the aries_moveit and
+    # aries_localization includes below are undeclared.
+    camera_downlink_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('aries_bringup'),
+                'launch',
+                'camera_downlink.launch.py',
+            ])
+        ),
+        condition=IfCondition(use_camera_downlink),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
+    )
+
+    camera_view_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('aries_bringup'),
+                'launch',
+                'camera_view.launch.py',
+            ])
+        ),
+        condition=IfCondition(use_camera_downlink),
+        # use_rviz stays false: move_group.launch.py owns the one RViz here,
+        # and a second one would load a second copy of every display.
+        launch_arguments={'use_rviz': 'false'}.items(),
+    )
+
     # MoveIt move_group for arm control
     move_group_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -436,6 +538,8 @@ def generate_launch_description():
         use_rover_joystick_arg,
         use_drill_teleop_arg,
         use_cmd_vel_relay_arg,
+        use_stacklight_arg,
+        use_camera_downlink_arg,
         use_sim_ekf_arg,
         joy_driver_arg,
         joy_layout_arg,
@@ -460,6 +564,10 @@ def generate_launch_description():
         drill_joystick_node,
         cmd_vel_relay_node,
         localization_launch,
+        stacklight_node,
+        stacklight_gz_visual_node,
+        camera_downlink_launch,
+        camera_view_launch,
         move_group_launch,
         delay_controllers_after_spawn,  # Controllers spawn after robot spawns
     ])

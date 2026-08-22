@@ -188,9 +188,11 @@ class CameraDownlink(Node):
             self.get_logger().warn(f'unsupported encoding, skipping frame: {exc}',
                                    throttle_duration_sec=10.0)
             return
-        if depth.dtype != np.uint16:
+        depth = self._depth_to_mm(depth)
+        if depth is None:
             self.get_logger().warn(
-                f'expected 16UC1 depth in millimetres, got {depth_msg.encoding}; skipping',
+                f'depth must be 16UC1 millimetres or 32FC1 metres, got '
+                f'{depth_msg.encoding}; skipping',
                 throttle_duration_sec=10.0)
             return
 
@@ -219,6 +221,31 @@ class CameraDownlink(Node):
             info.header.frame_id = depth_msg.header.frame_id
             self.pub_info.publish(info)
         self._sent += 1
+
+    def _depth_to_mm(self, depth):
+        """Depth as uint16 millimetres, the unit everything below here works in.
+
+        The D435i already publishes 16UC1 millimetres. GAZEBO DOES NOT: its
+        depth camera publishes 32FC1 METRES, and the bridge hands that straight
+        through. Rejecting it dropped the whole synchronised pair, colour
+        included, so in simulation every frame was skipped and the operator
+        view stayed blank - which is exactly how it looked in RViz.
+
+        Non-finite pixels are folded onto 0 BEFORE the cast, not after: gz
+        writes +Inf where the ray hit nothing, and casting that to uint16 is
+        undefined - in practice it lands on 65535, a 65 m wall of phantom
+        surface. 0 is the "no reading" value _reduce and RViz's DepthCloud both
+        already skip.
+        """
+        if depth.dtype == np.uint16:
+            return depth
+        if depth.dtype.kind != 'f':
+            return None
+        # A new array: `depth` may be a view onto the incoming message buffer.
+        mm = np.multiply(depth, 1000.0, dtype=np.float32)
+        np.nan_to_num(mm, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.clip(mm, 0.0, 65535.0, out=mm)
+        return mm.astype(np.uint16)
 
     def _gate_open(self, now):
         """Rate limiter that lands on the requested rate, not below it.

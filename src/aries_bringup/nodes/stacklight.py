@@ -55,6 +55,8 @@ import json
 
 import rclpy
 from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64, String, UInt8
 
 
@@ -105,6 +107,21 @@ class Stacklight(Node):
             "/aries/drill_container_joint/cmd_vel",
             "/aries/drill_bit_joint/cmd_vel",
         ])
+        # geometry_msgs/Twist command topics. Non-zero on any of them is also
+        # "operating". /cmd_vel covers the simulation, where the wheels are
+        # driven by gz's DiffDrive and there is no drive bridge publishing rps.
+        self.declare_parameter("twist_topics", [""])
+        self.declare_parameter("twist_epsilon", 1e-3)
+
+        # Evidence that the rover is reporting at all, beyond the drive status.
+        # sensor_msgs/JointState topics: any message on one is a heartbeat.
+        # `ready` is only ever claimed on evidence, and in simulation the drive
+        # status does not exist - /joint_states from the gz plugin is what says
+        # the robot is alive there. Empty on hardware, where the drive bridge
+        # IS the evidence and a joint-state stream from a rover whose ODrives
+        # are unpowered would be a green light on a dead drive.
+        self.declare_parameter("alive_topics", [""])
+
         self.declare_parameter("motion_epsilon", 1e-6)
         # A rate topic that has gone quiet is not a moving axis: the drill
         # teleop stops publishing entirely once it has sent its zeros.
@@ -123,6 +140,7 @@ class Stacklight(Node):
         self.drive_status_timeout_s = float(g("drive_status_timeout_s").value)
         self.wheel_motion_rps = float(g("wheel_motion_rps").value)
         self.motion_epsilon = float(g("motion_epsilon").value)
+        self.twist_epsilon = float(g("twist_epsilon").value)
         self.motion_timeout_s = float(g("motion_timeout_s").value)
         self.publish_period_s = float(g("publish_period_s").value)
 
@@ -131,6 +149,8 @@ class Stacklight(Node):
         self.estop = {}
         self.halt = {}
         self.motion = {}
+        self.twist = {}
+        self.alive = {}
         self.drive_status = None
         self.drive_status_at = None
 
@@ -154,6 +174,20 @@ class Stacklight(Node):
                 Float64, topic,
                 (lambda t: lambda m: self.motion.__setitem__(
                     t, (float(m.data), self._now())))(topic), 10)
+
+        for topic in [t for t in g("twist_topics").value if t]:
+            self.twist[topic] = (0.0, None)
+            self.create_subscription(
+                Twist, topic,
+                (lambda t: lambda m: self.twist.__setitem__(
+                    t, (max(abs(m.linear.x), abs(m.linear.y), abs(m.linear.z),
+                            abs(m.angular.x), abs(m.angular.y), abs(m.angular.z)),
+                        self._now())))(topic), 10)
+        for topic in [t for t in g("alive_topics").value if t]:
+            self.alive[topic] = None
+            self.create_subscription(
+                JointState, topic,
+                (lambda t: lambda m: self.alive.__setitem__(t, self._now()))(topic), 10)
 
         self.create_subscription(
             String, str(g("drive_status_topic").value), self._drive_status_cb, 10)
@@ -241,12 +275,25 @@ class Stacklight(Node):
                 continue
             if abs(rate) > self.motion_epsilon:
                 return True
+        for speed, stamp in self.twist.values():
+            if stamp is None or (now - stamp) > self.motion_timeout_s:
+                continue
+            if speed > self.twist_epsilon:
+                return True
         return False
 
     def _drive_status_fresh(self):
         return (self.drive_status is not None
                 and self.drive_status_at is not None
                 and (self._now() - self.drive_status_at) <= self.drive_status_timeout_s)
+
+    def _reporting(self):
+        """Evidence the rover is alive: the drive bridge, or any alive_topic."""
+        if self._drive_status_fresh():
+            return True
+        now = self._now()
+        return any(stamp is not None and (now - stamp) <= self.drive_status_timeout_s
+                   for stamp in self.alive.values())
 
     def _holds(self, state):
         if state == "emergency":
@@ -256,9 +303,9 @@ class Stacklight(Node):
         if state == "operating":
             return self._wheels_turning() or self._axis_running()
         if state == "ready":
-            # Only claim ready on evidence. Without a fresh drive status this
+            # Only claim ready on evidence. Without something reporting, this
             # node cannot tell a parked rover from a dead one.
-            return self._drive_status_fresh()
+            return self._reporting()
         self.get_logger().warn(
             f"stacklight: no rule for state '{state}', skipping",
             once=True)

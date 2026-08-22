@@ -151,6 +151,16 @@
 
 
 
+# Stack light tiers. aries_bringup/nodes/stacklight_gz_visual.py turns each
+# tier's material up or down here so the simulated light shows the same state
+# the Teensy's LEDs do on the rover. Handled gz-side by the UserCommands
+# system, which every world in aries/worlds already loads.
+- ros_topic_name: "/world/empty/material_color"
+  gz_topic_name:  "/world/empty/material_color"
+  ros_type_name:  "ros_gz_interfaces/msg/MaterialColor"
+  gz_type_name:   "gz.msgs.MaterialColor"
+  direction:      ROS_TO_GZ
+
 - ros_topic_name: "/world/empty/light_config"
   gz_topic_name: "/world/empty/light_config"
   ros_type_name: "ros_gz_interfaces/msg/Light"

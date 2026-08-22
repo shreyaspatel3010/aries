@@ -15,6 +15,7 @@ install(
     nodes/odrive_can_poller.py
     nodes/publish_wheel_joints.py
     nodes/stacklight.py
+    nodes/stacklight_gz_visual.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -46,6 +47,13 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     stacklight
     test/test_stacklight.py
+    TIMEOUT 60
+  )
+  # Gazebo depth is 32FC1 metres, not the D435i's 16UC1 millimetres. Rejecting
+  # it dropped the whole synchronised pair and blanked the operator view in sim.
+  ament_add_pytest_test(
+    camera_downlink_depth
+    test/test_camera_downlink_depth.py
     TIMEOUT 60
   )
 endif()

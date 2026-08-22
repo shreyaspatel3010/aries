@@ -1,0 +1,145 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!--
+      Three-colour stack light on the rear-right of the deck: green over amber
+      over red, on a black base with the cable gland underneath and a black cap
+      on top. Driven by the gripper Teensy through
+      aries_bringup/nodes/stacklight.py - red on an e-stop or a halt, amber
+      operating, green ready.
+
+      WHERE IT SITS. base_link, +X forward, +Y left, so the rear-right corner is
+      -X, -Y. The deck plate is at z = 0.210 (the largest upward-facing surface
+      in base.stl, 0.285 m^2, spanning x -0.358..+0.257, y -0.261..+0.260), and
+      the light stands on it.
+
+      The corner is tighter than it looks and the position is not free. Two
+      measurements off base.stl bound it:
+
+        the plate's rear-right corner is CHAMFERED. Its -Y edge runs
+        y = -0.261 at x = -0.230, -0.218 at x = -0.250, and by x = -0.260 the
+        plate has pulled in to y = -0.136 - so anything mounted further back
+        than x = -0.25 hangs off the cut corner.
+
+        equipment already stands on the deck from x = -0.220 forward: a box to
+        z = 0.24 at y = -0.156..-0.044, and from x = -0.210 a taller structure
+        (z = 0.28, then 0.44) that reaches out to y = -0.239.
+
+      That leaves roughly 35 mm of clear plate, x = -0.250..-0.215 at
+      y ~ -0.20, and the 40 mm body below is centred in it. Behind x = -0.26 the
+      deck is clear but has narrowed to the tongue the drill mast bolts to
+      (drill_body spans y = -0.090..+0.095), which is not the corner.
+
+      Every dimension is a property: the sizes are read off the product photo,
+      NOT measured off the part, so they are the first thing to correct when the
+      light is in hand. Diameter is the one that matters - it is what the fit
+      above is spent on.
+    -->
+
+    <xacro:property name="stacklight_radius" value="0.020"/>
+    <xacro:property name="stacklight_tier_h" value="0.040"/>
+    <xacro:property name="stacklight_base_h" value="0.050"/>
+    <xacro:property name="stacklight_cap_h"  value="0.010"/>
+    <!-- Mount point on the deck plate, base_link coordinates. -->
+    <xacro:property name="stacklight_x" value="-0.232"/>
+    <xacro:property name="stacklight_y" value="-0.205"/>
+    <!-- 0.212, not the 0.210 deck plane: a 2 mm rail crosses the footprint at
+         y = -0.209, and starting the body at the plate would bury the rail
+         inside it. Standing on the rail leaves +3.2 mm to the nearest thing on
+         the deck instead of -7.1 mm through it. -->
+    <xacro:property name="stacklight_z" value="0.212"/>
+    <!-- Catalogue figure for a 40 mm three-tier LED tower, not a scale
+         reading. Taken OUT of base_link's aggregate below rather than added on
+         top, so the rover still totals 90 kg - the same bookkeeping the drill
+         links use. -->
+    <xacro:property name="stacklight_mass" value="0.15"/>
+
+    <xacro:property name="stacklight_height"
+                    value="${stacklight_base_h + 3 * stacklight_tier_h + stacklight_cap_h}"/>
+
+    <material name="stacklight_body">   <color rgba="0.10 0.10 0.10 1.0"/></material>
+    <material name="stacklight_red">    <color rgba="0.90 0.10 0.10 1.0"/></material>
+    <material name="stacklight_amber">  <color rgba="0.95 0.65 0.05 1.0"/></material>
+    <material name="stacklight_green">  <color rgba="0.10 0.80 0.25 1.0"/></material>
+
+    <!--
+      One link, five visuals. The tiers never move relative to each other, so
+      splitting them into links would add four joints that can only ever sit at
+      zero and four more frames for TF to publish.
+
+      The COLLISION is deliberately present and is the whole body as one
+      cylinder. The light is a real 180 mm object standing on the deck inside
+      the arm's reach, and MoveIt has no other way to know it is there. It is
+      NOT disabled against anything in the SRDF: if a planned arm motion sweeps
+      through this volume, that motion snaps the light off the rover.
+    -->
+    <link name="stacklight_link">
+        <inertial>
+            <origin xyz="0 0 ${stacklight_height / 2}" rpy="0 0 0"/>
+            <mass value="${stacklight_mass}"/>
+            <!-- Solid cylinder about its own centre: ixx = iyy =
+                 (1/12)m(3r^2 + h^2), izz = (1/2)mr^2. -->
+            <inertia
+                ixx="${stacklight_mass * (3 * stacklight_radius * stacklight_radius + stacklight_height * stacklight_height) / 12}"
+                ixy="0" ixz="0"
+                iyy="${stacklight_mass * (3 * stacklight_radius * stacklight_radius + stacklight_height * stacklight_height) / 12}"
+                iyz="0"
+                izz="${stacklight_mass * stacklight_radius * stacklight_radius / 2}"/>
+        </inertial>
+
+        <!-- Base, with the gland and the flying lead underneath. -->
+        <visual name="stacklight_base">
+            <origin xyz="0 0 ${stacklight_base_h / 2}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_base_h}"/></geometry>
+            <material name="stacklight_body"/>
+        </visual>
+
+        <!-- Green lowest, red highest: the order on the light itself. -->
+        <visual name="stacklight_green">
+            <origin xyz="0 0 ${stacklight_base_h + 0.5 * stacklight_tier_h}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_tier_h}"/></geometry>
+            <material name="stacklight_green"/>
+        </visual>
+        <visual name="stacklight_amber">
+            <origin xyz="0 0 ${stacklight_base_h + 1.5 * stacklight_tier_h}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_tier_h}"/></geometry>
+            <material name="stacklight_amber"/>
+        </visual>
+        <visual name="stacklight_red">
+            <origin xyz="0 0 ${stacklight_base_h + 2.5 * stacklight_tier_h}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_tier_h}"/></geometry>
+            <material name="stacklight_red"/>
+        </visual>
+
+        <visual name="stacklight_cap">
+            <origin xyz="0 0 ${stacklight_height - 0.5 * stacklight_cap_h}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_cap_h}"/></geometry>
+            <material name="stacklight_body"/>
+        </visual>
+
+        <collision>
+            <origin xyz="0 0 ${stacklight_height / 2}" rpy="0 0 0"/>
+            <geometry><cylinder radius="${stacklight_radius}" length="${stacklight_height}"/></geometry>
+        </collision>
+    </link>
+
+    <joint name="stacklight_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="stacklight_link"/>
+        <origin xyz="${stacklight_x} ${stacklight_y} ${stacklight_z}" rpy="0 0 0"/>
+    </joint>
+
+    <!--
+      Keep this link out of base_link's lump. The tiers are lit in simulation by
+      addressing their VISUALS by name (aries_bringup/nodes/stacklight_gz_visual.py),
+      and sdformat names a lumped visual
+      <lump_root>_fixed_joint_lump__<name>_visual_<n> where n counts every visual
+      in the lump. Lumped into base_footprint these came out as _6.._10, so
+      adding one visual anywhere else on the chassis - a camera, a bracket -
+      would renumber them and the light would quietly stop lighting. Preserved,
+      n counts only this link's own five, and the names depend on nothing but
+      this file. The cost is one fixed-joint body in DART, which is free.
+    -->
+    <gazebo reference="stacklight_joint">
+        <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+</robot>

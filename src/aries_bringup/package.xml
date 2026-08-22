@@ -24,6 +24,8 @@
   <exec_depend>aries_teleop</exec_depend>
   <exec_depend>aries_localization</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <!-- stacklight_gz_visual.py: MaterialColor to gz's UserCommands. -->
+  <exec_depend>ros_gz_interfaces</exec_depend>
   <!-- Operator camera downlink: republish node + the two codecs it loads. -->
   <exec_depend>image_transport</exec_depend>
   <exec_depend>compressed_image_transport</exec_depend>

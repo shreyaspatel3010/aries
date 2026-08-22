@@ -5,6 +5,7 @@
   <xacro:include filename="aries_gazebo.xacro"/>
   <xacro:include filename="aries_base.xacro"/>
   <xacro:include filename="drill.xacro"/>
+  <xacro:include filename="stacklight.xacro"/>
   <xacro:include filename="differential_link.xacro"/>
   <xacro:include filename="left_link.xacro"/>
   <xacro:include filename="right_link.xacro"/>

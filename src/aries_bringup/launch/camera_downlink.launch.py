@@ -57,6 +57,7 @@ def _downlink_for(camera, cfg):
             name=f'{camera}_downlink',
             output='screen',
             parameters=[{
+                'use_sim_time': cfg['use_sim_time'],
                 'camera': camera,
                 'output_ns': src_ns,
                 'link_ns': link_ns,
@@ -166,6 +167,10 @@ def launch_setup(context, *args, **kwargs):
         'depth_quantization_mm': int(val('downlink_depth_quantization_mm')),
         'jpeg_quality': int(val_or_profile('downlink_jpeg_quality', prof_jpeg)),
         'png_level': int(val('downlink_png_level')),
+        # The rate gate is the only clock read in this chain, and under Gazebo
+        # it has to be the sim clock: frames carry sim stamps, and a wall-clock
+        # gate against them limits to the wrong rate at any RTF but 1.0.
+        'use_sim_time': val('use_sim_time').strip().lower() == 'true',
     }
     actions = []
     for camera in cameras:
@@ -175,6 +180,9 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'use_sim_time', default_value='false',
+            description='Sim clock. Must be true under Gazebo.'),
         DeclareLaunchArgument(
             'cameras', default_value='gripper_camera,rover_camera',
             description='Comma-separated camera names to build a downlink for.'),
