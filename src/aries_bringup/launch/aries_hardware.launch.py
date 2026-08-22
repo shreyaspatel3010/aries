@@ -176,6 +176,21 @@ def _usb_cam_driver(camera_name, device, framerate="15.0"):
     so 30 fps would buy ~33 ms of freshness on a view of a carriage that moves
     at 0.05 m/s, and cost twice the decode.
 
+    THE by-id PATH IS RESOLVED HERE, and it has to be. usb_cam does not accept
+    a /dev/v4l/by-id/ symlink: it dereferences the link itself and joins the
+    result against /dev/ rather than against the link's own directory, so
+    /dev/v4l/by-id/usb-046d_Brio_100_...-video-index0 -> ../../video0 comes out
+    as the nonexistent `/dev/../../video0` and the node exits with
+
+        Device specified is not available or is not a vaild V4L2 device
+
+    which reads exactly like an unplugged camera. os.path.realpath does the
+    dereference correctly, so devices.yaml keeps pinning the STABLE identity
+    (which is the point -- this camera was observed moving from /dev/video4 to
+    /dev/video0 across a replug) and the launch turns it into whatever node
+    that camera is right now. Never put a bare /dev/videoN in devices.yaml to
+    work around this: a stale one opens a different camera instead of failing.
+
     NOT CALIBRATED, but the path is left open. camera_info_url is unset, and an
     empty URL is not "no calibration file" -- camera_info_manager expands it to
     its default, file://${ROS_HOME}/camera_info/${NAME}.yaml, i.e.
@@ -188,6 +203,8 @@ def _usb_cam_driver(camera_name, device, framerate="15.0"):
     Until then, do not measure anything off this image. rear_camera.xacro's
     simulated FOV is a catalogue figure for the same reason.
     """
+    # realpath, not the by-id path itself -- see above. Resolved at launch, so a
+    # camera that re-enumerated between runs is still found.
     return Node(
         package="usb_cam",
         executable="usb_cam_node_exe",
@@ -195,7 +212,7 @@ def _usb_cam_driver(camera_name, device, framerate="15.0"):
         namespace=camera_name,
         output="screen",
         parameters=[{
-            "video_device": device,
+            "video_device": os.path.realpath(device) if device else device,
             "camera_name": camera_name,
             "frame_id": f"{camera_name}_optical_frame",
             "pixel_format": "mjpeg2rgb",

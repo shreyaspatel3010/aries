@@ -36,8 +36,10 @@ it helps so much.
     depth   PNG, 10 mm step  91 kB/frame  at  5 Hz
 
 28.3 Mbit/s for both D435is, against 368.6 Mbit/s subscribed raw. The rear
-camera adds ~3.9 Mbit/s on top at its 5 Hz default (colour only, no depth), for
-32.2 Mbit/s with all three running. Both frames
+camera adds 1.6-3.9 Mbit/s on top at its 5 Hz default (colour only, no depth).
+The low end is measured on the bench (39 kB/frame indoors); the high end scales
+the Mars-yard colour figure above, and is what to plan the link against, since
+the field scene is the detailed one. Both frames
 also stay well under the 64 kB-per-datagram point where a single lost packet
 would cost the whole frame.
 Also note both frames stay under the 64 kB UDP datagram limit, so they are no

@@ -448,10 +448,12 @@ station a decompressor waiting on a stream that never arrives.
 | `lean` | 320×240 q90 | 10.9 Mbit/s |
 
 Those are measured, on real terrain, for the two D435is. The rear camera adds
-roughly **3.9 Mbit/s** on top at `balanced` — colour only, and at 5 Hz rather than
-15, because it watches a drill carriage limited to 0.05 m/s. That figure is
-scaled from the same colour measurement rather than measured in its own right,
-and it moves with the profile like everything else. Measure it if it matters:
+**1.6–3.9 Mbit/s** on top at `balanced` — colour only, and at 5 Hz rather than
+15, because it watches a drill carriage limited to 0.05 m/s. The spread is
+scene detail, not jitter: 1.6 Mbit/s (39 kB/frame) measured indoors on the
+bench, against 3.9 scaled from the Mars-yard terrain the D435i figures come
+from. **Plan against 3.9** — the field scene is the detailed one, and a hole
+full of freshly turned soil is the worst case for JPEG. Measure it in place:
 
     ros2 run aries_bringup downlink_report.py
 

@@ -246,3 +246,61 @@ def test_the_source_topics_follow_the_driver_that_publishes_them():
     assert colour["camera_info_topic"] == "/rear_camera/camera_info"
     # The empty string is what puts the node in colour-only mode.
     assert colour["depth_topic"] == ""
+
+
+# ── the driver ───────────────────────────────────────────────────────────────
+
+def test_the_by_id_path_is_resolved_before_usb_cam_sees_it(tmp_path):
+    """usb_cam cannot dereference a /dev/v4l/by-id/ symlink.
+
+    It reads the link and joins the result against /dev/ instead of against the
+    link's own directory, so a by-id path pointing at ../../video0 arrives as
+    the nonexistent /dev/../../video0 and the node exits with "Device specified
+    is not available or is not a vaild V4L2 device" -- which reads exactly like
+    an unplugged camera. Observed on the real rear camera 2026-08-22.
+
+    devices.yaml still pins the by-id path, because that is the identity that
+    survives a replug (this camera was seen moving from /dev/video4 to
+    /dev/video0). The launch resolves it; nothing downstream should ever see a
+    bare /dev/videoN in the device table.
+    """
+    hw = _load("aries_hardware.launch", LAUNCH)
+
+    target = tmp_path / "video0"
+    target.write_text("")
+    link_dir = tmp_path / "by-id"
+    link_dir.mkdir()
+    link = link_dir / "usb-046d_Brio_100_TESTSERIAL-video-index0"
+    link.symlink_to("../video0")   # relative, exactly as udev writes it
+
+    node = hw._usb_cam_driver("rear_camera", str(link))
+    assert _params([node])["video_device"] == str(target)
+
+
+def test_a_plain_device_path_is_passed_through(tmp_path):
+    """Resolving must not mangle a path that is already a real device node."""
+    hw = _load("aries_hardware.launch", LAUNCH)
+    real = tmp_path / "video7"
+    real.write_text("")
+    node = hw._usb_cam_driver("rear_camera", str(real))
+    assert _params([node])["video_device"] == str(real)
+
+
+def test_the_driver_publishes_under_the_camera_name():
+    """usb_cam publishes the relative topics image_raw and camera_info, so the
+    namespace is what puts them at /rear_camera/*. camera_downlink.launch.py
+    subscribes to exactly those names for a colour-only camera."""
+    hw = _load("aries_hardware.launch", LAUNCH)
+    node = hw._usb_cam_driver("rear_camera", "/dev/video0")
+    assert _text(node._Node__node_namespace) == "rear_camera"
+    assert _params([node])["frame_id"] == "rear_camera_optical_frame"
+
+
+def test_the_device_table_pins_a_by_id_path_not_a_dev_videon():
+    """A bare /dev/videoN in the table does not fail when it moves -- it opens
+    a different camera."""
+    from aries_common.devices import DEFAULTS
+    device = DEFAULTS["cameras"]["rear_device"]
+    assert device.startswith("/dev/v4l/by-id/")
+    # index1 is the metadata node: it opens fine and never delivers a frame.
+    assert device.endswith("-video-index0")
