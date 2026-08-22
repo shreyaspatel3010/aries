@@ -8,6 +8,10 @@ topics:
     /downlink/<camera>/color/compressed      -> /<camera>/view/color  (rgb8)
     /downlink/<camera>/depth/compressedDepth -> /<camera>/view/depth  (16UC1)
 
+A camera named in `color_only` gets the colour one only: it has no depth sensor,
+so there is no second stream to expand. That list has to match the rover side's
+argument of the same name in camera_downlink.launch.py.
+
 Decompressing here rather than letting each display do it is not a detail, it is
 the point. RViz's Image display in ROS 2 has no transport selection at all -- it
 subscribes raw, full stop -- so pointing it at a rover topic puts uncompressed
@@ -33,7 +37,15 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def _view_for(camera):
+def _view_for(camera, color_only=False):
+    """The decompressors for one camera: two, or one without depth.
+
+    color_only skips the depth decompressor. Left running for a camera that has
+    no depth sensor it is not merely idle -- it is a node subscribed to a topic
+    nothing will ever publish, which is indistinguishable at a glance from the
+    depth stream having failed. The rear camera is the colour-only one: a UVC
+    webcam under the tail aimed at the drill.
+    """
     # Everything the antenna carries lives under one top-level prefix.
     src = f'/downlink/{camera}'
     dst = f'/{camera}/view'
@@ -62,6 +74,7 @@ def _view_for(camera):
                         ('out', f'{dst}/color')],
             output='screen',
         ),
+    ] + ([] if color_only else [
         Node(
             package='image_transport',
             executable='republish',
@@ -79,16 +92,19 @@ def _view_for(camera):
                         ('out', f'{dst}/depth')],
             output='screen',
         ),
-    ]
+    ])
 
 
 def launch_setup(context, *args, **kwargs):
     cameras = [c.strip().strip('/')
                for c in LaunchConfiguration('cameras').perform(context).split(',')
                if c.strip()]
+    color_only = {c.strip().strip('/')
+                  for c in LaunchConfiguration('color_only').perform(context).split(',')
+                  if c.strip()}
     actions = []
     for camera in cameras:
-        actions += _view_for(camera)
+        actions += _view_for(camera, color_only=camera in color_only)
     return actions
 
 
@@ -97,6 +113,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cameras', default_value='gripper_camera,rover_camera',
             description='Comma-separated camera names, matching the rover side.'),
+        DeclareLaunchArgument(
+            'color_only', default_value='rear_camera',
+            description='Of those, the ones with no depth stream. Must match '
+                        'the rover side\'s argument of the same name. Naming a '
+                        'camera that is not in `cameras` is harmless.'),
         DeclareLaunchArgument(
             'use_rviz', default_value='false',
             description='Also start RViz with the MoveIt config. Leave false when '

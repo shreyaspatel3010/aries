@@ -150,12 +150,72 @@ def _realsense_driver(camera_name, serial):
     )
 
 
+def _usb_cam_driver(camera_name, device, framerate="15.0"):
+    """usb_cam on a plain UVC webcam. The rear camera, and only the rear camera.
+
+    NOT a RealSense, and nothing about the realsense2_camera path applies: no
+    depth, no align_depth, no serial to match on, and no enumeration to check
+    it against. It is addressed by DEVICE PATH, and that path must be the
+    /dev/v4l/by-id/ one -- see devices.yaml for why a pinned /dev/videoN opens
+    the wrong camera rather than failing.
+
+    The node runs in its own namespace so it publishes <camera_name>/image_raw
+    and <camera_name>/camera_info. Note the missing /color/ segment: that is
+    usb_cam's naming, it is deliberate, and rear_camera.xacro's gz sensor uses
+    the same names so the two ends agree.
+
+    pixel_format is mjpeg2rgb, not yuyv2rgb. Both are offered by the Brio, but
+    YUYV at 640x480x15 is 74 Mbit/s of USB for a camera sharing a controller
+    with two D435is; MJPEG is roughly a tenth of that, at the cost of a JPEG
+    decode per frame (~1-2 ms at this size). Bandwidth is the scarcer resource
+    here.
+
+    15 fps, matching the gz sensor in rear_camera.xacro. The 30 fps argument
+    made for the D435is -- that capture rate sets the latency floor -- carries
+    much less weight for this camera: the downlink gate below it runs at 5 Hz,
+    so 30 fps would buy ~33 ms of freshness on a view of a carriage that moves
+    at 0.05 m/s, and cost twice the decode.
+
+    NOT CALIBRATED, but the path is left open. camera_info_url is unset, and an
+    empty URL is not "no calibration file" -- camera_info_manager expands it to
+    its default, file://${ROS_HOME}/camera_info/${NAME}.yaml, i.e.
+    ~/.ros/camera_info/rear_camera.yaml. Nothing has written that file, so the
+    CameraInfo published today carries the frame size and zeros in K, which is
+    all a view stream needs. Run the stock camera_calibration node against this
+    camera and it writes exactly that path, and the intrinsics appear on the
+    next start with nothing here to change.
+
+    Until then, do not measure anything off this image. rear_camera.xacro's
+    simulated FOV is a catalogue figure for the same reason.
+    """
+    return Node(
+        package="usb_cam",
+        executable="usb_cam_node_exe",
+        name="rear_camera_driver",
+        namespace=camera_name,
+        output="screen",
+        parameters=[{
+            "video_device": device,
+            "camera_name": camera_name,
+            "frame_id": f"{camera_name}_optical_frame",
+            "pixel_format": "mjpeg2rgb",
+            "image_width": 640,
+            "image_height": 480,
+            "framerate": float(framerate),
+            "io_method": "mmap",
+        }],
+    )
+
+
 def launch_setup(context, *args, **kwargs):
     actions = []
     depth_sensor_mode = LaunchConfiguration("enable_depth_sensor").perform(context).lower()
     front_camera_mode = LaunchConfiguration("enable_front_camera").perform(context).lower()
     gripper_camera_serial = LaunchConfiguration("gripper_camera_serial").perform(context).strip()
     front_camera_serial = LaunchConfiguration("front_camera_serial").perform(context).strip()
+
+    rear_camera_mode = LaunchConfiguration("enable_rear_camera").perform(context).lower()
+    rear_camera_device = LaunchConfiguration("rear_camera_device").perform(context).strip()
 
     detected_serials = _find_realsense_devices()
 
@@ -230,6 +290,32 @@ def launch_setup(context, *args, **kwargs):
         # Front/rover camera supplies its own independent colored DepthCloud.
         actions.append(_realsense_driver("rover_camera", front_camera_serial))
 
+    # "auto" follows whether the device node is actually there. os.path.exists
+    # follows the symlink, so a by-id path left behind by an unplugged camera
+    # reads as absent -- which is the answer wanted. Starting usb_cam on a
+    # missing device is not a clean failure: the node comes up, fails to open
+    # it, and either exits or sits there publishing nothing.
+    if rear_camera_mode == "auto":
+        enable_rear_camera = bool(rear_camera_device) and os.path.exists(rear_camera_device)
+    else:
+        enable_rear_camera = rear_camera_mode == "true"
+
+    if enable_rear_camera and not rear_camera_device:
+        actions.append(LogInfo(msg=(
+            "[aries_hardware] Rear camera requested but rear_camera_device is empty. "
+            "Skipping it -- pass rear_camera_device:=/dev/v4l/by-id/<path>.")))
+        enable_rear_camera = False
+
+    if enable_rear_camera:
+        actions.append(_usb_cam_driver("rear_camera", rear_camera_device,
+                                       LaunchConfiguration("rear_camera_framerate")
+                                       .perform(context)))
+    elif rear_camera_mode == "auto":
+        actions.append(LogInfo(msg=(
+            "[aries_hardware] No rear camera at {}. The drill view is not "
+            "available; everything else comes up normally.".format(
+                rear_camera_device or "<no device set>"))))
+
     if not enable_depth_sensor:
         actions.append(
             LogInfo(msg=(
@@ -283,6 +369,12 @@ def launch_setup(context, *args, **kwargs):
         downlink_cameras.append("gripper_camera")
     if enable_front_camera:
         downlink_cameras.append("rover_camera")
+    # Colour only, so it gets a two-node chain and its own frame rate. The name
+    # is passed to both ends as `color_only`; the rover side would otherwise
+    # start a depth republisher on a stream that does not exist, and the
+    # operator side a decompressor waiting on it forever.
+    if enable_rear_camera:
+        downlink_cameras.append("rear_camera")
 
     enable_downlink = LaunchConfiguration("enable_camera_downlink").perform(context).lower()
     if enable_downlink == "true" and downlink_cameras:
@@ -297,6 +389,7 @@ def launch_setup(context, *args, **kwargs):
                 ),
                 launch_arguments={
                     "cameras": ",".join(downlink_cameras),
+                    "color_only": "rear_camera",
                     "downlink_profile": LaunchConfiguration("downlink_profile"),
                     "downlink_rate_hz": LaunchConfiguration("downlink_rate_hz"),
                     "downlink_depth_rate_hz": LaunchConfiguration("downlink_depth_rate_hz"),
@@ -326,6 +419,7 @@ def launch_setup(context, *args, **kwargs):
                 condition=IfCondition(LaunchConfiguration("use_gui")),
                 launch_arguments={
                     "cameras": ",".join(downlink_cameras),
+                    "color_only": "rear_camera",
                 }.items(),
             )
         )
@@ -443,6 +537,33 @@ def generate_launch_description():
                 "rs-enumerate-devices -s. Empty takes whichever detected camera "
                 "the gripper did not claim."
             ),
+        ),
+        DeclareLaunchArgument(
+            "enable_rear_camera",
+            default_value="auto",
+            choices=["auto", "true", "false"],
+            description="Start the rear Logitech Brio (publishes /rear_camera/*). "
+                        "auto starts it when rear_camera_device exists. This is a "
+                        "colour-only view camera aimed at the drill -- there is no "
+                        "depth and nothing but the operator reads it.",
+        ),
+        DeclareLaunchArgument(
+            "rear_camera_device",
+            default_value=device_str("cameras.rear_device"),
+            description=(
+                "V4L2 device for the rear camera. Always the /dev/v4l/by-id/ "
+                "path, never /dev/videoN: the numbering moves and a stale one "
+                "opens a different camera instead of failing. Must be the "
+                "-video-index0 node; index1 is metadata and never delivers a "
+                "frame."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "rear_camera_framerate",
+            default_value="15.0",
+            description="Rear camera capture rate. The downlink gates it to "
+                        "downlink_color_only_rate_hz (5 Hz) regardless; raising "
+                        "this only buys latency, at a JPEG decode per frame.",
         ),
         DeclareLaunchArgument(
             "use_wheel_joint_publisher",

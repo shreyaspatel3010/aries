@@ -37,7 +37,7 @@ SUDOERS_FILE="$PREFIX/etc/sudoers.d/rover_can"
 UDEV_DIR="$PREFIX/etc/udev/rules.d"
 REALSENSE_RULES="$UDEV_DIR/99-aries-realsense.rules"
 TEENSY_RULES="$UDEV_DIR/99-aries-teensy.rules"
-REQUIRED_GROUPS=(dialout plugdev input)
+REQUIRED_GROUPS=(dialout plugdev input video)
 
 MODE=install
 case "${1:-}" in
@@ -212,6 +212,18 @@ fi
 #   dialout  /dev/ttyACM* — the Teensy gripper board
 #   plugdev  USB devices claimed from userspace (RealSense)
 #   input    /dev/input/event* — the joystick, read by game_controller_node
+#   video    /dev/video* — the rear Brio, opened by usb_cam through V4L2
+#
+# 'video' is the one that looks unnecessary on a desktop and is not. /dev/video*
+# is root:video, and a user logged in AT THE MACHINE also gets a per-device ACL
+# from systemd-logind, so the camera opens fine from a local terminal whether or
+# not the user is in the group. That ACL is granted to a seat session. Over SSH
+# there is no seat, so on the rover — which is always driven over SSH — the same
+# user hits "permission denied" opening the same camera that worked on the
+# bench. Group membership is what makes it work in both places.
+#
+# The RealSenses are unaffected either way: their udev rules put them in plugdev
+# and librealsense claims them from userspace rather than through V4L2.
 head2 "3. Group membership for $TARGET_USER"
 for group in "${REQUIRED_GROUPS[@]}"; do
     if ! getent group "$group" >/dev/null; then
@@ -253,6 +265,22 @@ if dpkg -s can-utils >/dev/null 2>&1; then
 else
     warn "can-utils missing — optional, but candump is how you watch the bus"
     NOTES+=("sudo apt install can-utils")
+fi
+
+# The rear camera is a Logitech Brio, a plain UVC webcam, so realsense2_camera
+# cannot drive it. Without usb_cam the rest of the stack still comes up and the
+# rear camera is simply absent — aries_hardware.launch.py's enable_rear_camera
+# defaults to "auto" and skips a driver it cannot start.
+#
+# No udev rule is needed for it: the /dev/v4l/by-id/ symlinks come from the
+# stock rules and devices.yaml pins that path. Access comes from the 'video'
+# group added in section 3 — see the note there for why the ACL that makes this
+# work on the bench does not exist over SSH.
+if dpkg -s ros-jazzy-usb-cam >/dev/null 2>&1; then
+    ok "usb_cam installed (drives the rear Brio watching the drill)"
+else
+    warn "usb_cam missing — the rear drill camera will not start; everything else is unaffected"
+    NOTES+=("sudo apt install ros-jazzy-usb-cam")
 fi
 
 # ── 5. verify ────────────────────────────────────────────────────────────────

@@ -97,11 +97,18 @@
 
                  2026-08-22: stacklight.xacro added a 0.15 kg link on the rear
                  deck, taken out of here the same way, so the other links total
-                 53.4657953866879 and this is 90 - that = 36.5342046133121.
+                 53.4657953866879 and this was 90 - that = 36.5342046133121.
                  The tensor is NOT rescaled for it: 0.15 kg is 0.4% of this
                  mass, comfortably inside the accuracy of an aggregate whose
                  COM is already stated above as an approximation, and rescaling
                  would dress that up as precision it does not have.
+
+                 2026-08-22: rear_camera.xacro added a 0.075 kg link under the
+                 rear belly plate, taken out the same way again, so the other
+                 links total 53.5407953866879 and this is 90 - that =
+                 36.4592046133121. Not rescaled either, and for the same
+                 reason - it is 0.2% of this mass, half of what the stack light
+                 already went unrescaled for.
 
                  The COM below is NOT moved, and it is now an approximation in
                  a way it was not before: it is the aggregate COM of a set that
@@ -111,7 +118,7 @@
                  leaving it stated. Net effect of the change is that 4.3 kg
                  moved from x = -0.019 back to where the drill actually is,
                  which is the right direction. -->
-            <mass value="36.5342046133121" />
+            <mass value="36.4592046133121" />
             <inertia
                 ixx="0.507621773860222"
                 ixy="-0.000188272929114966"

@@ -12,7 +12,7 @@ hardware alone.
 The operator side is unchanged and stays where it was: communication/
 aries_operator, which needs nothing from this workspace.
 
-    cameras:=rover_camera        just one of them
+    cameras:=rover_camera        just one of them (three by default)
     downlink_profile:=lean       half resolution, for a weak link
     tf:=driver                   see below
     use_rviz:=true               local viewer, for checking the rover end
@@ -31,6 +31,11 @@ TF, WHICH IS THE PART THAT BITES
     wrist camera it does, so do not measure anything off that cloud unless the
     arm stack is up and publishing real joint states, in which case
     robot_state_publisher picks those up instead of the zeros.
+
+    None of this affects the rear camera. It has no depth sensor, so it has no
+    cloud to place -- an Image display needs no TF. Its frames are published
+    anyway under tf:=robot, because it is bolted to the chassis and is exact
+    there.
 
     tf:=driver asks each camera to publish its own little tree instead. Those
     trees are internally correct but mutually disconnected, and RViz has only
@@ -99,10 +104,23 @@ def _setup(context, *args, **kwargs):
         'gripper_camera': LaunchConfiguration('gripper_serial').perform(context),
         'rover_camera': LaunchConfiguration('front_serial').perform(context),
     }
+    rear_device = LaunchConfiguration('rear_device').perform(context).strip()
 
     actions = []
     started = []
     for camera in cameras:
+        # The rear camera is a UVC webcam, not a RealSense: none of the serial
+        # logic below applies to it. It is present or it is not, and the device
+        # node is the whole answer.
+        if camera == 'rear_camera':
+            if rear_device and os.path.exists(rear_device):
+                actions.append(hw._usb_cam_driver('rear_camera', rear_device))
+                started.append(camera)
+            else:
+                print(f'[cameras] rear_camera: no device at '
+                      f'{rear_device or "<none set>"}. Skipping.')
+            continue
+
         serial = serial_for.get(camera, '')
         # Only an identified enumeration can prove a camera absent. A driver
         # told to wait for a serial that is not there does not fail: it retries
@@ -125,7 +143,9 @@ def _setup(context, *args, **kwargs):
             'None of the requested cameras is on USB. Enumerated: '
             f'{", ".join(identified) if identified else "nothing"}. '
             'A camera that was working and vanished usually means it '
-            're-enumerated: check `lsusb` and replug it.')
+            're-enumerated: check `lsusb` and replug it. The rear camera is '
+            'not in that enumeration -- it is a UVC webcam, so check '
+            '`ls /dev/v4l/by-id/` for it instead.')
 
     actions.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -133,6 +153,7 @@ def _setup(context, *args, **kwargs):
             '/launch/camera_downlink.launch.py']),
         launch_arguments={
             'cameras': ','.join(started),
+            'color_only': 'rear_camera',
             'downlink_profile': LaunchConfiguration('downlink_profile'),
             'downlink_rate_hz': LaunchConfiguration('downlink_rate_hz'),
             'downlink_depth_rate_hz': LaunchConfiguration('downlink_depth_rate_hz'),
@@ -172,7 +193,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('cameras',
-                              default_value='gripper_camera,rover_camera'),
+                              default_value='gripper_camera,rover_camera,rear_camera'),
         DeclareLaunchArgument('tf', default_value='robot',
                               choices=['robot', 'driver', 'none'],
                               description='Where camera TF comes from.'),
@@ -183,6 +204,10 @@ def generate_launch_description():
                               default_value=device_str('cameras.gripper_serial')),
         DeclareLaunchArgument('front_serial',
                               default_value=device_str('cameras.front_serial')),
+        DeclareLaunchArgument('rear_device',
+                              default_value=device_str('cameras.rear_device'),
+                              description='V4L2 by-id path for the rear Brio. '
+                                          'Not a serial -- it is not a RealSense.'),
         DeclareLaunchArgument('use_rviz', default_value='false',
                               choices=['true', 'false']),
 

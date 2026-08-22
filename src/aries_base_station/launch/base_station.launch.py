@@ -12,7 +12,7 @@ else has to be started by hand:
       DDS on the field link                    DDS on the field link
       arm + gripper + MoveIt                   joy driver     -> /joy
       rover drive + IMU                        decompressors  -> /<cam>/view/*
-      cameras -> /downlink/<cam>/*             RViz
+      cameras -> /downlink/<cam>/*             RViz  (3 cams: wrist, front, rear)
       teleop consumers <- /joy
 
 WHAT RUNS HERE, AND WHY EACH ONE IS HERE AND NOT THERE
@@ -157,7 +157,10 @@ def _setup(context, *args, **kwargs):
                 ])
             ),
             condition=IfCondition(LaunchConfiguration("use_camera_view")),
-            launch_arguments={"cameras": cameras}.items(),
+            launch_arguments={
+                "cameras": cameras,
+                "color_only": LaunchConfiguration("color_only"),
+            }.items(),
         )
     )
 
@@ -222,9 +225,16 @@ def generate_launch_description():
                         "never exist.",
         ),
         DeclareLaunchArgument(
-            "cameras", default_value="gripper_camera,rover_camera",
+            "cameras", default_value="gripper_camera,rover_camera,rear_camera",
             description="Comma-separated cameras to decompress. Drop one to "
-                        "halve the link load when it is tight.",
+                        "cut the link load when it is tight -- the two D435is "
+                        "are ~14 Mbit/s each, the rear camera ~3.9.",
+        ),
+        DeclareLaunchArgument(
+            "color_only", default_value="rear_camera",
+            description="Of those, the ones with no depth stream, so no depth "
+                        "decompressor is started for them. Must match the "
+                        "rover's argument of the same name.",
         ),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument(

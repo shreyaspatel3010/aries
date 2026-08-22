@@ -7,6 +7,13 @@ Per camera this starts three nodes:
     republish (colour)   reduced raw    ->  .../color/compressed        JPEG
     republish (depth)    reduced raw    ->  .../depth/compressedDepth   PNG
 
+A camera named in `color_only` gets the first two and not the third, because it
+has no depth sensor to compress -- the rear Brio, which is a UVC webcam. Its
+source topics are read without the /color/ segment (usb_cam's naming) and it
+runs at downlink_color_only_rate_hz rather than downlink_rate_hz. What comes
+out on the link side is the same shape as any other camera, minus the depth
+topic, so the operator end needs to know nothing about the difference.
+
 The republishers are stock image_transport. Only the one wanted transport is
 enabled on each, via enable_pub_plugins -- with the default list the raw
 publisher is advertised too, and a viewer that picks the wrong topic would put
@@ -28,7 +35,9 @@ it helps so much.
     colour  JPEG q75         98 kB/frame  at 15 Hz
     depth   PNG, 10 mm step  91 kB/frame  at  5 Hz
 
-28.3 Mbit/s for both cameras, against 368.6 Mbit/s subscribed raw. Both frames
+28.3 Mbit/s for both D435is, against 368.6 Mbit/s subscribed raw. The rear
+camera adds ~3.9 Mbit/s on top at its 5 Hz default (colour only, no depth), for
+32.2 Mbit/s with all three running. Both frames
 also stay well under the 64 kB-per-datagram point where a single lost packet
 would cost the whole frame.
 Also note both frames stay under the 64 kB UDP datagram limit, so they are no
@@ -42,8 +51,21 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def _downlink_for(camera, cfg):
-    """The three-node chain for one camera."""
+def _downlink_for(camera, cfg, color_only=False):
+    """The chain for one camera: three nodes, or two without depth.
+
+    color_only is for a camera that HAS no depth sensor -- the rear Brio, a
+    plain UVC webcam. It drops the depth republisher and hands the reducer an
+    empty depth_topic, which is what puts it in its colour-only mode. It also
+    switches the source topic names: usb_cam publishes <camera>/image_raw and
+    <camera>/camera_info, where realsense2_camera publishes
+    <camera>/color/image_raw and <camera>/color/camera_info.
+
+    The LINK side is deliberately identical either way -- /downlink/<camera>/
+    color/compressed and /downlink/<camera>/camera_info -- so the operator end
+    and downlink_report.py need to know nothing about which kind of camera is
+    behind it.
+    """
     # src_ns never leaves the rover: it is reduced but still raw. link_ns is
     # the only thing the antenna carries, and it is deliberately one top-level
     # prefix per camera so the operator can find it without reading through
@@ -59,6 +81,14 @@ def _downlink_for(camera, cfg):
             parameters=[{
                 'use_sim_time': cfg['use_sim_time'],
                 'camera': camera,
+                'color_topic': f'/{camera}/image_raw' if color_only
+                               else f'/{camera}/color/image_raw',
+                'camera_info_topic': f'/{camera}/camera_info' if color_only
+                                     else f'/{camera}/color/camera_info',
+                # The empty string is the colour-only switch, not a missing
+                # value. See camera_downlink.py's module docstring.
+                'depth_topic': '' if color_only
+                               else f'/{camera}/aligned_depth_to_color/image_raw',
                 'output_ns': src_ns,
                 'link_ns': link_ns,
                 'rate_hz': cfg['rate_hz'],
@@ -104,6 +134,7 @@ def _downlink_for(camera, cfg):
             }],
             output='screen',
         ),
+    ] + ([] if color_only else [
         Node(
             package='image_transport',
             executable='republish',
@@ -125,7 +156,7 @@ def _downlink_for(camera, cfg):
             }],
             output='screen',
         ),
-    ]
+    ])
 
 
 # Measured on a real Mars-yard image and a modelled D435i depth field, for both
@@ -145,6 +176,7 @@ def launch_setup(context, *args, **kwargs):
         return LaunchConfiguration(name).perform(context)
 
     cameras = [c.strip().strip('/') for c in val('cameras').split(',') if c.strip()]
+    color_only = {c.strip().strip('/') for c in val('color_only').split(',') if c.strip()}
 
     # A profile only supplies a default. Anything passed explicitly on the
     # command line still wins, so the presets never trap a value.
@@ -172,9 +204,23 @@ def launch_setup(context, *args, **kwargs):
         # gate against them limits to the wrong rate at any RTF but 1.0.
         'use_sim_time': val('use_sim_time').strip().lower() == 'true',
     }
+    # A colour-only camera runs at its own rate. Adding the rear camera at the
+    # full 15 Hz would put another ~11.8 Mbit/s on the link (98 kB/frame x 15 x
+    # 8), a 42% rise over the 28.3 the two D435is already cost -- for a view
+    # whose subject is a drill carriage limited to 0.05 m/s. At 5 Hz that is
+    # ~3.9 Mbit/s, and the auger moves at most 10 mm between frames -- about
+    # 24 px at the 0.41 mm/px this camera resolves at the bit, so the motion
+    # still reads as motion rather than as jumps. Raise it if you want it
+    # smoother and have the budget.
+    color_only_rate = float(val('downlink_color_only_rate_hz'))
+
     actions = []
     for camera in cameras:
-        actions += _downlink_for(camera, cfg)
+        if camera in color_only:
+            actions += _downlink_for(camera, dict(cfg, rate_hz=color_only_rate),
+                                     color_only=True)
+        else:
+            actions += _downlink_for(camera, cfg)
     return actions
 
 
@@ -187,9 +233,23 @@ def generate_launch_description():
             'cameras', default_value='gripper_camera,rover_camera',
             description='Comma-separated camera names to build a downlink for.'),
         DeclareLaunchArgument(
+            'color_only', default_value='rear_camera',
+            description='Of those, the ones with no depth sensor. They get a '
+                        'two-node chain instead of three and their source '
+                        'topics are read as <camera>/image_raw (usb_cam) '
+                        'rather than <camera>/color/image_raw (realsense2). '
+                        'Naming a camera that is not in `cameras` is harmless.'),
+        DeclareLaunchArgument(
             'downlink_rate_hz', default_value='15.0',
             description='Colour frames per second on the downlink. 15 matches the '
                         'driver, so the operator sees every frame the camera takes.'),
+        DeclareLaunchArgument(
+            'downlink_color_only_rate_hz', default_value='5.0',
+            description='Frames per second for the cameras named in `color_only`, '
+                        'independent of downlink_rate_hz. 5 Hz because the rear '
+                        'camera watches a drill carriage limited to 0.05 m/s: it '
+                        'costs ~3.9 Mbit/s instead of ~11.8, and the auger moves '
+                        'at most 10 mm (~24 px) between frames.'),
         DeclareLaunchArgument(
             'downlink_depth_rate_hz', default_value='5.0',
             description='Depth frames per second. Depth is roughly six times the '

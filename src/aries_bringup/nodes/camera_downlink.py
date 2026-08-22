@@ -43,6 +43,25 @@ cloud would stall.
   OUT  <output_ns>/color_src        reduced rgb8
        <output_ns>/depth_src        reduced 16UC1, millimetres
        <output_ns>/camera_info      intrinsics rescaled to the reduced size
+
+COLOUR-ONLY CAMERAS
+    Set depth_topic to the empty string and this runs without depth at all: one
+    plain colour subscription, no synchroniser, and no depth publisher. That is
+    the mode the rear camera uses -- a Logitech Brio 100 under the tail aimed at
+    the drill, which is a UVC webcam and has no depth sensor to pair with.
+
+    It is not a degraded version of the paired mode, it is a different one. The
+    synchroniser is the whole reason the paired mode exists: it guarantees
+    colour and depth leave here on one stamp so RViz's DepthCloud can match
+    them. With no depth there is nothing to match, and feeding a single stream
+    through a two-input ApproximateTimeSynchronizer would simply never fire --
+    the node would sit there publishing nothing while both topics looked
+    healthy. depth_rate_hz, depth_min_m, depth_max_m and
+    depth_quantization_mm are all inert here.
+
+    The topic names differ too, and the launch file passes them in: usb_cam
+    publishes <camera>/image_raw and <camera>/camera_info, with no /color/
+    segment for a colour stream that is the only stream there is.
 """
 
 import numpy as np
@@ -76,8 +95,11 @@ class CameraDownlink(Node):
 
         camera = self._param('camera', 'gripper_camera').strip('/')
         color_topic = self._param('color_topic', f'/{camera}/color/image_raw')
+        # An empty depth topic is the switch, not a missing value: it says this
+        # camera HAS no depth sensor. See the module docstring.
         depth_topic = self._param(
-            'depth_topic', f'/{camera}/aligned_depth_to_color/image_raw')
+            'depth_topic', f'/{camera}/aligned_depth_to_color/image_raw').strip()
+        self.color_only = not depth_topic
         info_topic = self._param('camera_info_topic', f'/{camera}/color/camera_info')
         # Two namespaces on purpose, because they have opposite audiences.
         #
@@ -133,7 +155,13 @@ class CameraDownlink(Node):
         self._seen = 0
 
         self.pub_color = self.create_publisher(Image, f'{out_ns}/color', _local_qos())
-        self.pub_depth = self.create_publisher(Image, f'{out_ns}/depth', _local_qos())
+        # No depth publisher on a colour-only camera. Advertising one would put
+        # an empty topic in front of the republisher next door, which would sit
+        # warning about a stream that is never going to arrive -- the same
+        # failure aries_hardware.launch.py avoids by not starting a downlink for
+        # an absent camera.
+        self.pub_depth = None if self.color_only else \
+            self.create_publisher(Image, f'{out_ns}/depth', _local_qos())
         # CameraInfo is tiny and the viewer needs it once; keep it latched so an
         # RViz started mid-run gets intrinsics without waiting for the next frame.
         self.pub_info = self.create_publisher(
@@ -149,19 +177,30 @@ class CameraDownlink(Node):
                                 durability=DurabilityPolicy.VOLATILE,
                                 depth=queue)
         self.create_subscription(CameraInfo, info_topic, self._on_info, sensor_qos)
-        self.sync = ApproximateTimeSynchronizer(
-            [Subscriber(self, Image, color_topic, qos_profile=sensor_qos),
-             Subscriber(self, Image, depth_topic, qos_profile=sensor_qos)],
-            queue, sync_slop)
-        self.sync.registerCallback(self._on_pair)
+        if self.color_only:
+            # A plain subscription, deliberately not a one-input synchroniser.
+            self.sync = None
+            self.create_subscription(Image, color_topic, self._on_color, sensor_qos)
+        else:
+            self.sync = ApproximateTimeSynchronizer(
+                [Subscriber(self, Image, color_topic, qos_profile=sensor_qos),
+                 Subscriber(self, Image, depth_topic, qos_profile=sensor_qos)],
+                queue, sync_slop)
+            self.sync.registerCallback(self._on_pair)
 
         self.create_timer(10.0, self._report)
-        self.get_logger().info(
-            f'downlink {camera}: {color_topic} + {depth_topic} -> {link_ns}/* '
-            f'at {self.rate_hz:g} Hz colour / {self.rate_hz / self._depth_every:g} Hz '
-            f'depth, 1/{self.decimation} scale, depth '
-            f'{self.depth_min_mm}-{self.depth_max_mm} mm'
-            + (f' rounded to {self.depth_step_mm} mm' if self.depth_step_mm > 1 else ''))
+        if self.color_only:
+            self.get_logger().info(
+                f'downlink {camera}: {color_topic} -> {link_ns}/* at '
+                f'{self.rate_hz:g} Hz colour, 1/{self.decimation} scale '
+                '(colour-only camera, no depth)')
+        else:
+            self.get_logger().info(
+                f'downlink {camera}: {color_topic} + {depth_topic} -> {link_ns}/* '
+                f'at {self.rate_hz:g} Hz colour / {self.rate_hz / self._depth_every:g} Hz '
+                f'depth, 1/{self.decimation} scale, depth '
+                f'{self.depth_min_mm}-{self.depth_max_mm} mm'
+                + (f' rounded to {self.depth_step_mm} mm' if self.depth_step_mm > 1 else ''))
 
     def _param(self, name, default):
         self.declare_parameter(name, default)
@@ -171,6 +210,39 @@ class CameraDownlink(Node):
         if self.info is None or msg.width != self.info.width or msg.height != self.info.height:
             self._scaled_info = None
         self.info = msg
+
+    def _on_color(self, color_msg):
+        """Colour-only cameras. Same gate and same decimation, no depth."""
+        self._seen += 1
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if not self._gate_open(now):
+            return
+        self._frame += 1
+
+        try:
+            color = self.bridge.imgmsg_to_cv2(color_msg, 'rgb8')
+        except ValueError as exc:
+            self.get_logger().warn(f'unsupported encoding, skipping frame: {exc}',
+                                   throttle_duration_sec=10.0)
+            return
+
+        color = self._reduce_color(color)
+
+        stamp = color_msg.header.stamp
+        out_color = self.bridge.cv2_to_imgmsg(color, 'rgb8')
+        out_color.header.stamp = stamp
+        out_color.header.frame_id = color_msg.header.frame_id
+        self.pub_color.publish(out_color)
+
+        # Sized off the colour image here. In the paired mode the depth image is
+        # what gets unprojected, so its dimensions are the ones that matter;
+        # with no depth, colour is the only image there is.
+        info = self._scaled_camera_info(color.shape[1], color.shape[0])
+        if info is not None:
+            info.header.stamp = stamp
+            info.header.frame_id = color_msg.header.frame_id
+            self.pub_info.publish(info)
+        self._sent += 1
 
     def _on_pair(self, color_msg, depth_msg):
         self._seen += 1
@@ -282,6 +354,21 @@ class CameraDownlink(Node):
         self._next_due = base + self._min_period
         return True
 
+    def _reduce_color(self, color):
+        """Decimate one colour image. The colour half of _reduce, on its own.
+
+        Averaging over the block rather than sampling one pixel: colour has no
+        silhouette problem (see _reduce) and the mean is the better downsample.
+        """
+        d = self.decimation
+        h = color.shape[0] - color.shape[0] % d
+        w = color.shape[1] - color.shape[1] % d
+        color = color[:h, :w]
+        if d > 1:
+            color = color.reshape(h // d, d, w // d, d, 3).mean(
+                axis=(1, 3), dtype=np.float32).astype(np.uint8)
+        return color
+
     def _reduce(self, color, depth):
         d = self.decimation
         h = min(color.shape[0], depth.shape[0])
@@ -354,11 +441,17 @@ class CameraDownlink(Node):
 
     def _report(self):
         if self._seen == 0:
+            # align_depth is not the advice to give for a camera that has no
+            # depth to align; the useful check there is whether the driver came
+            # up on the device at all.
             self.get_logger().warn(
+                'no colour frames yet -- check the camera is up'
+                if self.color_only else
                 'no synchronised colour+depth pairs yet -- check the camera is up '
                 'and that align_depth.enable is true', throttle_duration_sec=30.0)
             return
-        self.get_logger().debug(f'downlink forwarded {self._sent}/{self._seen} pairs')
+        kind = 'frames' if self.color_only else 'pairs'
+        self.get_logger().debug(f'downlink forwarded {self._sent}/{self._seen} {kind}')
 
 
 def main():

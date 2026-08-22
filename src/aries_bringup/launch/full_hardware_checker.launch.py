@@ -42,10 +42,14 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("check_odrive_status", default_value="true"),
         DeclareLaunchArgument("expected_odrive_axes", default_value="6"),
-        # Both RealSense cameras aries_hardware.launch.py can start. The modes
-        # mirror its enable_depth_sensor / enable_front_camera arguments, so a
-        # camera explicitly asked for is reported as an error when it is absent
-        # while an "auto" one is only noted.
+        # All three cameras aries_hardware.launch.py can start. The modes mirror
+        # its enable_depth_sensor / enable_front_camera / enable_rear_camera
+        # arguments, so a camera explicitly asked for is reported as an error
+        # when it is absent while an "auto" one is only noted.
+        #
+        # The rear camera's topic has no /color/ segment: it is a Logitech Brio
+        # driven by usb_cam, not a RealSense, and usb_cam publishes
+        # <camera>/image_raw.
         DeclareLaunchArgument(
             "gripper_camera_mode", default_value="auto",
             choices=["auto", "true", "false"],
@@ -61,6 +65,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "front_camera_color_topic",
             default_value="/rover_camera/color/image_raw",
+        ),
+        DeclareLaunchArgument(
+            "rear_camera_mode", default_value="auto",
+            choices=["auto", "true", "false"],
+        ),
+        DeclareLaunchArgument(
+            "rear_camera_color_topic",
+            default_value="/rear_camera/image_raw",
         ),
 
         Node(
@@ -85,8 +97,10 @@ def generate_launch_description():
                 "expected_odrive_axes": LaunchConfiguration("expected_odrive_axes"),
                 "gripper_camera_color_topic": LaunchConfiguration("gripper_camera_color_topic"),
                 "front_camera_color_topic": LaunchConfiguration("front_camera_color_topic"),
+                "rear_camera_color_topic": LaunchConfiguration("rear_camera_color_topic"),
                 "gripper_camera_mode": _text("gripper_camera_mode"),
                 "front_camera_mode": _text("front_camera_mode"),
+                "rear_camera_mode": _text("rear_camera_mode"),
                 "print_only_on_change": True,
             }],
         ),

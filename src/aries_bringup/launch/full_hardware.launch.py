@@ -42,9 +42,17 @@ def generate_launch_description():
         # camera. See aries_common.detect for which serial is on which end.
         DeclareLaunchArgument("gripper_camera_serial", default_value=device_str("cameras.gripper_serial")),
         DeclareLaunchArgument("enable_front_camera", default_value="auto", choices=["auto", "true", "false"]),
-        # Operator camera downlink: a reduced, JPEG/PNG-compressed copy of both
-        # cameras for anything watching over the antenna. The driver topics the
-        # on-board pipelines read are untouched and stay at 640x480@15.
+        # The third camera: a Logitech Brio under the tail aimed at the drill.
+        # A UVC webcam, not a RealSense, so it is addressed by device path and
+        # carries colour only -- no depth, no serial, nothing on the enumeration
+        # the two D435is are pinned from.
+        DeclareLaunchArgument("enable_rear_camera", default_value="auto", choices=["auto", "true", "false"]),
+        DeclareLaunchArgument("rear_camera_device", default_value=device_str("cameras.rear_device")),
+        # Operator camera downlink: a reduced, JPEG/PNG-compressed copy of every
+        # camera for anything watching over the antenna. The driver topics the
+        # on-board pipelines read are untouched and stay at 640x480@15. The rear
+        # camera is colour only and runs at its own, lower rate -- see
+        # downlink_color_only_rate_hz in camera_downlink.launch.py.
         DeclareLaunchArgument(
             "enable_camera_downlink", default_value="true", choices=["true", "false"],
             description="Publish the compressed operator camera streams.",
@@ -157,6 +165,8 @@ def generate_launch_description():
                 "gripper_camera_serial": LaunchConfiguration("gripper_camera_serial"),
                 "enable_front_camera": LaunchConfiguration("enable_front_camera"),
                 "front_camera_serial": LaunchConfiguration("front_camera_serial"),
+                "enable_rear_camera": LaunchConfiguration("enable_rear_camera"),
+                "rear_camera_device": LaunchConfiguration("rear_camera_device"),
                 "enable_camera_downlink": LaunchConfiguration("enable_camera_downlink"),
                 "downlink_profile": LaunchConfiguration("downlink_profile"),
                 "downlink_rate_hz": LaunchConfiguration("downlink_rate_hz"),
@@ -238,11 +248,12 @@ def generate_launch_description():
                 "imu_port": LaunchConfiguration("rover_imu_port"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
-                # The rover has two cameras; the checker has to be told about
-                # both or a front camera that never started reads as healthy.
+                # The rover has three cameras; the checker has to be told about
+                # all of them or one that never started reads as healthy.
                 # Same flags aries_hardware.launch.py resolves the drivers with.
                 "gripper_camera_mode": LaunchConfiguration("enable_depth_sensor"),
                 "front_camera_mode": LaunchConfiguration("enable_front_camera"),
+                "rear_camera_mode": LaunchConfiguration("enable_rear_camera"),
             }.items(),
         ),
     ])

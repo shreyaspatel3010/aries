@@ -49,6 +49,29 @@ cameras:
   gripper_serial: "216322070216"
   front_serial: "207522077539"
 
+  # The rear camera is NOT a RealSense. It is a Logitech Brio 100 (UVC webcam,
+  # colour only) under the tail of the chassis, aimed at the drill, and it is
+  # driven by usb_cam rather than realsense2_camera -- so it is addressed by
+  # device path, not by serial. There is nothing to enumerate and no
+  # rs-enumerate-devices equivalent to check it against.
+  #
+  # ALWAYS THE by-id PATH, for the same reason the gripper Teensy is:
+  # /dev/videoN numbering is assignment order, and this machine already has an
+  # internal webcam that takes video0..video3. Plug the Brio in first and it
+  # becomes video0; plug it in after a RealSense and it moves. A pinned
+  # /dev/videoN that has moved does not fail cleanly, it opens the WRONG
+  # camera, and the operator gets a rear-camera window showing the laptop lid.
+  #
+  # -video-index0 IS REQUIRED. A UVC camera exposes two nodes: index0 is the
+  # capture stream, index1 is the metadata node. Opening index1 succeeds and
+  # then never delivers a frame.
+  #
+  #   ls -l /dev/v4l/by-id/
+  #
+  # The serial in the path (2446ZBZ4XXN8) belongs to this specific camera.
+  # Swap the camera and this line has to change with it.
+  rear_device: "/dev/v4l/by-id/usb-046d_Brio_100_2446ZBZ4XXN8-video-index0"
+
 joystick:
   device: "/dev/input/js0"
 

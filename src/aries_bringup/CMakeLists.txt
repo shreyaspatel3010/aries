@@ -56,6 +56,14 @@ if(BUILD_TESTING)
     test/test_camera_downlink_depth.py
     TIMEOUT 60
   )
+  # The rear camera has no depth sensor. Fed to the paired path, its single
+  # stream would sit in a two-input synchroniser that never fires -- silently,
+  # with both topics looking healthy.
+  ament_add_pytest_test(
+    camera_downlink_color_only
+    test/test_camera_downlink_color_only.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()

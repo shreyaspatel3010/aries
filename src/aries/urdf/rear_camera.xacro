@@ -1,0 +1,183 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!--
+      Logitech Brio 100 under the rear of the chassis, aimed at the drill.
+
+      A VIEW CAMERA, AND ONLY THAT. Every other camera on this robot is a
+      RealSense D435i feeding a perception pipeline; this one is a UVC webcam
+      with no depth sensor and nothing subscribes to it but the operator's
+      screen. That distinction runs through the whole stack: the driver is
+      usb_cam rather than realsense2_camera, and the downlink carries colour
+      only - see camera_downlink.py's colour-only mode. Do not point a planner,
+      an octomap or a grasp node at it. There is no depth to read and the
+      intrinsics below are a catalogue figure, not a calibration.
+
+      WHERE IT SITS. base_link, +X forward, +Y left. The belly plate at the
+      rear of base.stl is a flat down-facing surface at z = 0.000, spanning
+      x -0.251..-0.151 and y -0.215..+0.213, and the camera bolts under it.
+
+      IT CANNOT GO ON THE CENTRELINE. The drill assembly occupies a continuous
+      channel y -0.090..+0.090 from x = -0.195 all the way back to x = -0.635,
+      from z = -0.022 upward - so the middle of that plate is not free surface,
+      it is the drill. That leaves two clear strips, y +0.090..+0.213 and
+      y -0.215..-0.090, each about 123 mm wide. The camera body is ~94 mm
+      across, so it fits in either with a little over 10 mm a side. +Y is used;
+      rear_camera_y is the one-line change to move it to the other side.
+
+      WHAT IT LOOKS AT. The optical axis is aimed at the auger axis where it
+      meets the ground: x = -0.5095 (drill_bit_joint), y = 0, z = -0.2064
+      (the ground plane, base_link_height below base_link). That is 0.367 m
+      away, and the angles below are computed from those two points rather than
+      rounded to something tidy - change either end and both must be recomputed.
+
+          yaw   -2.641731 rad   (-151.36 deg)
+          pitch  0.549152 rad   ( 31.46 deg)
+
+      The sight line was ray-traced against base.stl and drill_body.stl: it
+      passes clear of both, under the drill body, which is the whole reason the
+      camera is mounted low rather than on the rear panel. What it therefore
+      sees is the auger below z = -0.022 - the section standing above the hole
+      and entering it - plus the ground around the bit. The mast, the feed
+      carriage and the sample container are ABOVE the drill body's underside
+      and are not in this view; there is no camera on them.
+
+      A 0.265 x 0.199 m window at that range, from the FOV below. The auger is
+      50 mm across, so it stands about a fifth of the frame wide.
+    -->
+
+    <!-- Mount point: the camera BODY CENTRE, not a bolt face. The bracket
+         between the belly plate and the camera is not modelled - there is no
+         CAD for it - so this is where the camera is, not how it is held. -->
+    <xacro:property name="rear_camera_x" value="-0.235"/>
+    <xacro:property name="rear_camera_y" value="0.150"/>
+    <xacro:property name="rear_camera_z" value="-0.015"/>
+
+    <!-- Aim, computed from the mount point to the bit/ground point above. -->
+    <xacro:property name="rear_camera_yaw"   value="-2.641731"/>
+    <xacro:property name="rear_camera_pitch" value="0.549152"/>
+
+    <!-- Brio 100 body, in CAMERA axes (+X out of the lens, +Y left, +Z up):
+         depth x width x height. Product-page figures, not measured off the
+         part - the first thing to correct when it is in hand. Width is the one
+         that matters, because it is what the fit between the drill body and
+         the edge of the belly plate is spent on. -->
+    <xacro:property name="rear_camera_depth"  value="0.026"/>
+    <xacro:property name="rear_camera_width"  value="0.094"/>
+    <xacro:property name="rear_camera_height" value="0.028"/>
+    <!-- 75 g, catalogue. Taken OUT of base_link's aggregate in aries_base.xacro
+         rather than added on top, so the rover still totals 90 kg - the same
+         bookkeeping the drill and stack light links use. -->
+    <xacro:property name="rear_camera_mass" value="0.075"/>
+
+    <material name="rear_camera_body"><color rgba="0.12 0.12 0.13 1.0"/></material>
+
+    <link name="rear_camera_link">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="${rear_camera_depth} ${rear_camera_width} ${rear_camera_height}"/>
+            </geometry>
+            <material name="rear_camera_body"/>
+        </visual>
+        <!-- Collision is present and is the real body. It hangs 177 mm above
+             the ground under the tail of the rover, which is exactly where a
+             rock catches on a slope. It is well outside the arm's reach and is
+             not disabled against anything in the SRDF. -->
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="${rear_camera_depth} ${rear_camera_width} ${rear_camera_height}"/>
+            </geometry>
+        </collision>
+        <!-- Uniform box of the collision dimensions, m/12*(a^2+b^2) - the same
+             derivation the two D435i links use. -->
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="${rear_camera_mass}"/>
+            <inertia
+                ixx="${rear_camera_mass * (rear_camera_width * rear_camera_width + rear_camera_height * rear_camera_height) / 12}"
+                ixy="0" ixz="0"
+                iyy="${rear_camera_mass * (rear_camera_depth * rear_camera_depth + rear_camera_height * rear_camera_height) / 12}"
+                iyz="0"
+                izz="${rear_camera_mass * (rear_camera_depth * rear_camera_depth + rear_camera_width * rear_camera_width) / 12}"/>
+        </inertial>
+    </link>
+
+    <joint name="rear_camera_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="rear_camera_link"/>
+        <origin xyz="${rear_camera_x} ${rear_camera_y} ${rear_camera_z}"
+                rpy="0 ${rear_camera_pitch} ${rear_camera_yaw}"/>
+    </joint>
+
+    <!-- ROS optical convention: +Z out of the lens, +X right, +Y down. This is
+         the frame the image is expressed in and the one CameraInfo refers to;
+         rear_camera_link is the body frame, +X out of the lens. Same -pi/2, 0,
+         -pi/2 pair the D435i frames use. -->
+    <joint name="rear_camera_optical_joint" type="fixed">
+        <parent link="rear_camera_link"/>
+        <child link="rear_camera_optical_frame"/>
+        <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+    <link name="rear_camera_optical_frame"/>
+
+    <!--
+      Simulation. One colour sensor, no depth: the hardware has none, and a
+      depth_camera here would put a stream in simulation that the real rover
+      can never publish.
+
+      FOV IS A CATALOGUE FIGURE. Logitech quote 58 deg diagonal for the Brio
+      100 at its native 16:9. Captured at 4:3 the sensor is cropped
+      horizontally, keeping the vertical angle, which works out at 39.8 deg
+      horizontal / 30.4 deg vertical - 0.695 rad below. It has NOT been
+      checked against the camera. Calibrate it before anyone measures anything
+      off this image; for a view stream it is close enough to frame the shot.
+
+      15 Hz, matching the other two sim sensors. Every render sensor competes
+      for GPU time and the rover world already runs at RTF ~0.54.
+    -->
+    <gazebo reference="rear_camera_link">
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+        <sensor name="rear_camera_color" type="camera">
+            <camera name="rear_camera">
+                <horizontal_fov>0.695</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>RGB_INT8</format>
+                </image>
+                <clip>
+                    <near>0.05</near>
+                    <far>50</far>
+                </clip>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.0</mean>
+                    <stddev>0.007</stddev>
+                </noise>
+            </camera>
+            <always_on>1</always_on>
+            <update_rate>15</update_rate>
+            <visualize>false</visualize>
+            <!-- image_raw, not color/image_raw: usb_cam names its topics
+                 <camera>/image_raw on hardware and the two must agree, or the
+                 downlink reads a topic that only exists in one of them. -->
+            <topic>rear_camera/image_raw</topic>
+            <gz_frame_id>rear_camera_optical_frame</gz_frame_id>
+        </sensor>
+    </gazebo>
+
+    <!--
+      Keep this link out of base_link's lump, for the reason stacklight.xacro
+      documents at length: sdformat numbers lumped visuals in sequence, and the
+      stack light's tiers are addressed BY THAT NAME at runtime
+      (aries_bringup/nodes/stacklight_gz_visual.py). Lumping one more visual
+      into the chassis renumbers them and the light quietly stops lighting.
+      A gz sensor also needs a link of its own to hang on.
+    -->
+    <gazebo reference="rear_camera_joint">
+        <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+</robot>

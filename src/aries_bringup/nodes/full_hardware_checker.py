@@ -12,8 +12,10 @@ Checks:
   • Rover MicroStrain 3DM-GX5-AHRS, when forced or auto-detected
   • Mock rover fallback heartbeat
   • Joystick /joy
-  • RealSense USB device count, and the colour stream of BOTH cameras the
-    bringup can start: the wrist "gripper_camera" and the front "rover_camera"
+  • RealSense USB device count, and the colour stream of ALL THREE cameras the
+    bringup can start: the wrist "gripper_camera", the front "rover_camera",
+    and the rear "rear_camera" (a Logitech Brio watching the drill, which is
+    not a RealSense and so is not in that device count)
 
 Manual check:
   ros2 service call /check_full_hardware std_srvs/srv/Trigger
@@ -133,11 +135,11 @@ class FullHardwareChecker(Node):
         self.declare_parameter("imu_topic", "/microstrain/imu/data")
         self.declare_parameter("imu_frame", "imu_frame")
         self.declare_parameter("expected_odrive_axes", 6)
-        # The rover carries TWO RealSense cameras and aries_hardware.launch.py
-        # starts a driver for each: camera_name "gripper_camera" on the wrist and
-        # "rover_camera" at the front. Checking only the wrist one reported a
-        # single-camera robot, and a front camera that never came up looked
-        # exactly like a healthy one.
+        # The rover carries THREE cameras and aries_hardware.launch.py starts a
+        # driver for each: camera_name "gripper_camera" on the wrist,
+        # "rover_camera" at the front, and "rear_camera" under the tail.
+        # Checking only the wrist one reported a single-camera robot, and a
+        # front camera that never came up looked exactly like a healthy one.
         #
         # One scalar pair per camera rather than parallel arrays: a launch file
         # cannot pass a substitution-valued string array (the substitutions are
@@ -147,6 +149,15 @@ class FullHardwareChecker(Node):
                                "/gripper_camera/color/image_raw")
         self.declare_parameter("front_camera_color_topic",
                                "/rover_camera/color/image_raw")
+        # The third camera is NOT a RealSense: a Logitech Brio under the tail
+        # aimed at the drill, driven by usb_cam. Two consequences, both of
+        # which the code below has to respect. Its topic has no /color/
+        # segment, because usb_cam does not add one. And it does not appear in
+        # the RealSense USB device count, so it must not be counted against it
+        # -- a rear camera streaming happily would otherwise mask a D435i that
+        # is plugged in and not streaming, which is the exact fault that count
+        # exists to catch.
+        self.declare_parameter("rear_camera_color_topic", "/rear_camera/image_raw")
         # Mirrors aries_hardware.launch.py's enable_depth_sensor /
         # enable_front_camera: "auto" reports the camera but never calls it an
         # error, "true" means it was explicitly asked for so a missing one is
@@ -159,6 +170,7 @@ class FullHardwareChecker(Node):
         tri_state = ParameterDescriptor(dynamic_typing=True)
         self.declare_parameter("gripper_camera_mode", "auto", tri_state)
         self.declare_parameter("front_camera_mode", "auto", tri_state)
+        self.declare_parameter("rear_camera_mode", "auto", tri_state)
 
         check_interval = float(self.get_parameter("check_interval").value)
         self.timeout = float(self.get_parameter("timeout").value)
@@ -328,9 +340,15 @@ class FullHardwareChecker(Node):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _camera_config(self):
-        """The cameras to watch, in bringup order: wrist first, then front."""
+        """The cameras to watch, in bringup order: wrist, front, then rear.
+
+        "realsense" is what separates the two D435is from the rear webcam. It
+        is not cosmetic: the USB device count reported beside these rows counts
+        RealSense devices only, so comparing it against every streaming camera
+        would be comparing two different populations.
+        """
         cameras = []
-        for label in ("gripper", "front"):
+        for label, realsense in (("gripper", True), ("front", True), ("rear", False)):
             mode = str(self.get_parameter(f"{label}_camera_mode").value).strip().lower()
             if mode == "false":
                 continue
@@ -338,6 +356,7 @@ class FullHardwareChecker(Node):
                 "label": label,
                 "topic": str(self.get_parameter(f"{label}_camera_color_topic").value),
                 "mode": mode,
+                "realsense": realsense,
             })
         return cameras
 
@@ -794,6 +813,8 @@ class FullHardwareChecker(Node):
         if self.check_realsense:
             devices = s["realsense_devices"]
             streaming = [c for c in s["cameras"] if c["streaming"]]
+            # Only the D435is are counted against the USB device count below.
+            rs_streaming = [c for c in streaming if c.get("realsense", True)]
             tally = (f", {len(streaming)}/{len(s['cameras'])} streaming"
                      if s["cameras"] else "")
             if devices:
@@ -827,9 +848,9 @@ class FullHardwareChecker(Node):
                     print(f"  {color}{mark}{RST} {label} camera — {color}{why}{RST} "
                           f"on {topic}", flush=True)
 
-            if s["cameras"] and devices > len(streaming):
+            if s["cameras"] and devices > len(rs_streaming):
                 print(
-                    f"  {Y}→  {devices} RealSense plugged in but {len(streaming)} "
+                    f"  {Y}→  {devices} RealSense plugged in but {len(rs_streaming)} "
                     f"streaming. If both cameras are connected, pin them with "
                     f"gripper_camera_serial:= / front_camera_serial:= — an "
                     f"unpinned second camera is skipped so the drivers cannot "

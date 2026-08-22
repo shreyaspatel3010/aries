@@ -31,6 +31,9 @@ DEFAULTS = {
     "cameras": {
         "gripper_serial": "216322070216",
         "front_serial": "207522077539",
+        # A device path, not a serial: the rear camera is a UVC webcam driven by
+        # usb_cam, not a RealSense. See the note in devices.yaml.
+        "rear_device": "/dev/v4l/by-id/usb-046d_Brio_100_2446ZBZ4XXN8-video-index0",
     },
     "joystick": {"device": "/dev/input/js0"},
     "network": {

@@ -40,6 +40,12 @@ they hold.
 | RViz | no | yes |
 | cameras | drivers + compressors | decompressors |
 
+Three cameras: `gripper_camera` (wrist D435i), `rover_camera` (front D435i) and
+`rear_camera` — a Logitech Brio under the tail aimed at the drill. The rear one
+is a plain USB webcam, so it is colour only and needs `ros-jazzy-usb-cam`
+installed; without it the rest of the stack comes up and that camera is simply
+absent.
+
 Every address lives in one file — `src/aries_common/config/devices.yaml`,
 `network:` section. Change it there and both machines follow.
 
@@ -403,8 +409,8 @@ Everything else in that table works from the base station unchanged.
    at double rate — buttons appear to chatter and nothing is reproducible.
 
 2. **Never point anything at a rover camera topic.** RViz's Image display has
-   no transport selection — it subscribes raw, always — and the two cameras raw
-   are about **737 Mbit/s**. That does not make the images slow, it collapses
+   no transport selection — it subscribes raw, always — and the three cameras
+   raw are about **848 Mbit/s**. That does not make the images slow, it collapses
    the link and everything on it goes laggy. Read `/<camera>/view/*`, which is
    local. `ros2 topic hz` and `ros2 topic bw` subscribe like any other node:
    the same rule applies to them.
@@ -430,14 +436,28 @@ rover  ──>  /downlink/<cam>/color/compressed        JPEG    BEST_EFFORT, dep
       <──   /joy                                    ~130 kbit/s
 ```
 
-| profile | resolution | both cameras |
+`rear_camera` has no `depth/compressedDepth` line — it has no depth sensor. That
+is why it is named in the `color_only` argument on both ends: the rover would
+otherwise start a depth compressor with nothing to compress, and the base
+station a decompressor waiting on a stream that never arrives.
+
+| profile | resolution | both D435is |
 |---|---|---|
 | `quality` | 640×480 q90 | 42.3 Mbit/s |
 | `balanced` *(default)* | 640×480 q75 | 28.3 Mbit/s |
 | `lean` | 320×240 q90 | 10.9 Mbit/s |
 
-All three fit comfortably in what a Rocket 5AC pair carries at 150 m. Pick on
-picture quality, not bandwidth.
+Those are measured, on real terrain, for the two D435is. The rear camera adds
+roughly **3.9 Mbit/s** on top at `balanced` — colour only, and at 5 Hz rather than
+15, because it watches a drill carriage limited to 0.05 m/s. That figure is
+scaled from the same colour measurement rather than measured in its own right,
+and it moves with the profile like everything else. Measure it if it matters:
+
+    ros2 run aries_bringup downlink_report.py
+
+All three profiles fit comfortably in what a Rocket 5AC pair carries at 150 m.
+Pick on picture quality, not bandwidth. `downlink_color_only_rate_hz:=15.0`
+raises the rear camera to full rate if you want smoother motion on it.
 
 **Latency**, glass to glass: **~150–250 ms**, dominated by the 30 fps capture
 floor (~33 ms) and the 15 Hz downlink rate gate (0–67 ms), not the radio, which

@@ -28,15 +28,24 @@ class DownlinkReport(Node):
 
     def __init__(self):
         super().__init__('downlink_report')
-        self.declare_parameter('cameras', ['gripper_camera', 'rover_camera'])
+        self.declare_parameter(
+            'cameras', ['gripper_camera', 'rover_camera', 'rear_camera'])
+        # Cameras with no depth stream. Listing a depth topic for one of these
+        # would report a permanent NO DATA row for a stream that was never
+        # meant to exist, which reads as a fault -- and this tool is used
+        # precisely to decide whether something is wrong with the link.
+        self.declare_parameter('color_only', ['rear_camera'])
         self.declare_parameter('seconds', 15.0)
         cameras = self.get_parameter('cameras').value
+        color_only = set(self.get_parameter('color_only').value)
         self.seconds = float(self.get_parameter('seconds').value)
 
         self.stats = {}
         for camera in cameras:
-            for topic in (f'/downlink/{camera}/color/compressed',
-                          f'/downlink/{camera}/depth/compressedDepth'):
+            topics = [f'/downlink/{camera}/color/compressed']
+            if camera not in color_only:
+                topics.append(f'/downlink/{camera}/depth/compressedDepth')
+            for topic in topics:
                 self.stats[topic] = {'n': 0, 'bytes': 0, 'age': 0.0, 'aged': 0}
                 self.create_subscription(
                     CompressedImage, topic, self._make_cb(topic), SENSOR_QOS)
