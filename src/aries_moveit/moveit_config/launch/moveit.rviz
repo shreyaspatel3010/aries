@@ -1137,6 +1137,24 @@ Visualization Manager:
         Show Robot Visual: true
       Value: true
       Velocity_Scaling_Factor: 0.4
+    # The mast stack light. RViz cannot show it any other way: its RobotModel
+    # display builds the robot from /robot_description, so the URDF's tier
+    # colours are fixed at load and Gazebo's MaterialColor commands never reach
+    # it. aries_bringup/stacklight_gz_visual.py republishes the same state as
+    # markers, which work here and on the real rover alike.
+    # Latched (Transient Local), so opening RViz late still draws the light.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Stacklight
+      Namespaces:
+        stacklight: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /stacklight/markers
+      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
       Max Value: 1

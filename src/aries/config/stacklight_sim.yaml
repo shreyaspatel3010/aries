@@ -24,20 +24,29 @@ stacklight:
   ros__parameters:
     topic: "/stacklight_subscription"
 
-    priority: ["emergency", "halt", "operating", "ready"]
+    priority: ["emergency", "drive_fault", "halt", "operating", "ready"]
     colors:
       - "emergency:red"
+      - "drive_fault:red"
       - "halt:red"
       - "operating:yellow"
       - "ready:green"
       - "unknown:red"
     shutdown_color: "off"
 
-    # No source in sim either. Publish a std_msgs/Bool on one of these to test
-    # the red state without hardware:
-    #   ros2 topic pub /aries/estop/wheels std_msgs/msg/Bool "{data: true}"
-    estop_topics: [""]
+    # /arm/estop is real on hardware (the igus control box reports it), but
+    # nothing simulates it. Publish it by hand to see red without hardware --
+    # note --qos-durability, or the latched subscription will not match:
+    #   ros2 topic pub /arm/estop std_msgs/msg/Bool "{data: true}" \
+    #        --qos-durability transient_local
+    estop_topics: ["/arm/estop"]
     estop_active_high: true
+    estop_latched: true
+
+    # No ODrives in simulation: gz's DiffDrive plugin turns the wheels. Left
+    # empty so drive_fault can never fire here rather than pointing at topics
+    # that will never exist.
+    odrive_status_topics: [""]
     halt_topics: [""]
     halt_active_high: true
 
@@ -46,6 +55,13 @@ stacklight:
     drive_status_topic: "/aries_drive/status"
     drive_status_timeout_s: 5.0
     wheel_motion_rps: 0.01
+
+    # YELLOW = TELEOPERATION: any button or any stick off centre. Same as the
+    # rover's, and the reason the drill and /cmd_vel entries below are now
+    # belt-and-braces rather than the primary source.
+    joy_topic: "/joy"
+    joy_axis_deadzone: 0.15
+    joy_hold_s: 2.0
 
     # Driving the rover is operating. gz's DiffDrive reads /cmd_vel, and both
     # the joystick teleop and the relay publish there.
@@ -89,3 +105,18 @@ stacklight_gz_visual:
     unlit_scale: 0.30
     # Emissive is what makes a lit tier look lit rather than merely coloured.
     emissive_scale: 0.85
+
+    # RViz. Its RobotModel display builds the robot from /robot_description, so
+    # the URDF's tier colours are fixed at load and gz's MaterialColor never
+    # reaches it -- markers are the ONLY way the light shows up in RViz.
+    # moveit.rviz already carries a MarkerArray display on this topic.
+    publish_markers: true
+    marker_topic: "/stacklight/markers"
+    # Must track stacklight.xacro: tier centres above the link origin
+    # (base 0.050 + n.5 x 0.040), and the body radius.
+    marker_frame: "stacklight_link"
+    marker_radius: 0.020
+    marker_height: 0.040
+    marker_z: [0.070, 0.110, 0.150]
+    marker_order: ["green", "yellow", "red"]
+    publish_material_color: true

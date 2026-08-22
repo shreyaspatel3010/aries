@@ -103,6 +103,39 @@ is a good choice — the `172.16–31` range is almost untouched by consumer gea
 and re-run the setup script on both machines. Nothing else needs editing, and
 the arm is unaffected either way.
 
+### When comms drop as the arm engages
+
+The arm and the antenna share a switch on the rover, and that makes four very
+different faults look identical from a terminal: the switch browning out under
+the arm's motor current, the radio's PoE supply sagging, motor-drive EMI
+desensing the RF hop, or nothing physical at all and it is DDS. `--check`
+cannot tell them apart, because it takes one sample and the event is over by
+the time you have run it.
+
+Run this on the ROVER instead, then engage the arm while it watches:
+
+```bash
+./scripts/watch_field_link.sh --seconds 60
+```
+
+It pings the far end, your own radio and the arm continuously while sampling
+the NIC's carrier and its kernel flap counter, then names the layer that went
+first:
+
+| What it reports | What it means |
+| --- | --- |
+| ETHERNET bounced | The wire dropped. Switch, cable, or **power** — not radio. The arm goes down with it. |
+| Our radio dropped, wire held | The radio rebooted or browned out. Check its PoE injector supply. |
+| Far end dropped, ours fine | The RF hop. Motor EMI, or the far end lost power. |
+| Only the arm dropped | The arm's own Ethernet or control box, not comms. |
+| Every layer held | The network is innocent — see `./scripts/check_control_path.py --arm`. |
+
+Power is the first suspect, not the last: a stack light and a radio are
+milliamps, but a ReBeL pulling in-rush through a shared 24 V rail can take the
+switch below its brown-out threshold and everything on it goes at once. If the
+verdict is ETHERNET, put the switch and the radio on their own supply before
+touching anything in software.
+
 ### Static, not DHCP
 
 On the field there is no DHCP server, and if there is one it belongs to someone

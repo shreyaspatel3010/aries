@@ -348,8 +348,40 @@ namespace Igus
         }
     }
 
+    // Publish the arm's e-stop out of the CRI status. Only on change (and
+    // once at startup), because ProcessStatus runs on every status message --
+    // that is tens of hertz, and a latched condition does not need repeating.
+    void Rebel::PublishEStop(const CriMessages::Status &status)
+    {
+        if (!estop_pub_)
+        {
+            return;
+        }
+        if (estop_published_ && status.eStop == last_estop_raw_)
+        {
+            return;
+        }
+        last_estop_raw_ = status.eStop;
+        estop_published_ = true;
+
+        std_msgs::msg::Int32 raw;
+        raw.data = status.eStop;
+        estop_raw_pub_->publish(raw);
+
+        std_msgs::msg::Bool pressed;
+        pressed.data = (status.eStop == estop_pressed_value_);
+        estop_pub_->publish(pressed);
+
+        RCLCPP_INFO(rclcpp::get_logger("igus_rebel"),
+                    "Arm e-stop: raw %d -> %s (pressed value %d)",
+                    status.eStop, pressed.data ? "PRESSED" : "released",
+                    estop_pressed_value_);
+    }
+
     void Rebel::ProcessStatus(const CriMessages::Status &status)
     {
+        PublishEStop(status);
+
         CriMessages::Kinstate currentKinstate = status.kinstate;
         std::array<int, 16> currentErrorJoints = status.errorJoints;
 
@@ -620,6 +652,23 @@ namespace Igus
         lastKinstate = CriMessages::Kinstate::NO_ERROR;
         kinstateMessage = "";
         node_ = std::make_shared<rclcpp::Node>("igus_rebel");
+
+        // Latched: the e-stop state is a condition, not an event, so anything
+        // that starts later -- the stack light, an operator's rviz -- must get
+        // the current value rather than wait for the next change.
+        auto estop_qos = rclcpp::QoS(1).reliable().transient_local();
+        estop_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
+            "/arm/estop", estop_qos);
+        estop_raw_pub_ = node_->create_publisher<std_msgs::msg::Int32>(
+            "/arm/estop_raw", estop_qos);
+        // Which raw CRI value means PRESSED. Not verified against hardware --
+        // see the note in Rebel.hpp. Determine it once by watching
+        // /arm/estop_raw while pressing the button, then set this.
+        estop_pressed_value_ = node_->has_parameter("estop_pressed_value")
+            ? node_->get_parameter("estop_pressed_value").as_int()
+            : node_->declare_parameter<int>("estop_pressed_value", 0);
+        estop_published_ = false;
+        last_estop_raw_ = 0;
         digital_output_srv_ = node_->create_service<igus_rebel_msgs::srv::SetDigitalOutput>(
             "set_digital_output", std::bind(&Rebel::dio_callback, this, std::placeholders::_1, std::placeholders::_2));
         hand_guiding_srv_ = node_->create_service<std_srvs::srv::SetBool>(

@@ -48,4 +48,17 @@ def generate_launch_description():
                 {"use_sim_time": LaunchConfiguration("use_sim_time")},
             ],
         ),
+        # The same state drawn as RViz markers. On the rover this is the only
+        # way the operator sees the light at all -- they are 150 m away from
+        # the mast. It publishes no Gazebo commands here (see the config).
+        Node(
+            package="aries_bringup",
+            executable="stacklight_gz_visual.py",
+            name="stacklight_gz_visual",
+            output="screen",
+            parameters=[
+                LaunchConfiguration("stacklight_config"),
+                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+            ],
+        ),
     ])

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Light the simulated stack light's tiers to match the real one.
+"""Show the stack light's state where people are looking: RViz, and Gazebo.
 
 On the rover the three tiers are LEDs on Teensy GPIOs. In Gazebo they are three
 coloured cylinders in stacklight.xacro, and a cylinder does not glow - so
@@ -14,9 +14,22 @@ turns each tier's material up or down through gz's MaterialColor command:
         -> /world/<world>/material_color (ros_gz_interfaces/MaterialColor)
         -> bridged to gz, applied by the UserCommands system
 
-Simulation only. It is a viewer, not a controller - it never decides a colour,
-it only shows the one stacklight.py already chose, so the two can never
-disagree about what the rover is doing.
+It is a viewer, not a controller - it never decides a colour, it only shows the
+one stacklight.py already chose, so the two can never disagree about what the
+rover is doing.
+
+RVIZ NEEDS ITS OWN CHANNEL, and this is the part that is easy to get wrong.
+RViz does not render Gazebo's scene: its RobotModel display builds the robot
+from /robot_description and TF, so a gz MaterialColor command is invisible to
+it and always will be. There is also no runtime per-link colour on RobotModel
+to drive. So the tiers are published a SECOND time as a MarkerArray on
+`marker_topic`, in the stacklight_link frame, and RViz shows those.
+
+That is not a workaround, it is the better half: markers work on the real rover
+too, where there is no Gazebo at all, so the operator at the base station sees
+the same three tiers the people standing next to the robot do. Add a
+MarkerArray display on /stacklight/markers - aries_moveit's moveit.rviz already
+has one.
 
 ADDRESSING THE TIERS. MaterialColor takes an entity NAME, and sdformat renames
 a URDF visual on the way in: <lump>_fixed_joint_lump__<visual name>_visual_<n>.
@@ -36,8 +49,9 @@ and any of those cases self-corrects within a second.
 
 import rclpy
 from rclpy.node import Node
-from ros_gz_interfaces.msg import Entity, MaterialColor
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import ColorRGBA, UInt8
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 # The firmware's enum, and stacklight.py's COLOR_CODES. test_stacklight.py
@@ -58,6 +72,23 @@ class StacklightGzVisual(Node):
         super().__init__("stacklight_gz_visual")
 
         self.declare_parameter("state_topic", "/stacklight_subscription")
+
+        # RViz. On by default and on hardware too: this is the only way the
+        # operator sees the light without standing next to the rover.
+        self.declare_parameter("publish_markers", True)
+        self.declare_parameter("marker_topic", "/stacklight/markers")
+        # Must match stacklight.xacro. Tier centres above the link origin, and
+        # the body radius.
+        self.declare_parameter("marker_frame", "stacklight_link")
+        self.declare_parameter("marker_radius", 0.020)
+        self.declare_parameter("marker_height", 0.040)
+        # base_h + n.5 * tier_h, green lowest. Order matches tier_order below.
+        self.declare_parameter("marker_z", [0.070, 0.110, 0.150])
+        self.declare_parameter("marker_order", ["green", "yellow", "red"])
+
+        # Gazebo. Off automatically when nothing is bridged; harmless if left
+        # on, but a hardware launch has no world topic to publish into.
+        self.declare_parameter("publish_material_color", True)
         # World-scoped, like every other world topic in the bridge configs.
         # aries/config/gazebo_bridge.yaml is 'empty'; marsyard is 'leo_marsyard'.
         self.declare_parameter("material_color_topic", "/world/empty/material_color")
@@ -97,23 +128,94 @@ class StacklightGzVisual(Node):
         if not self.tiers:
             raise ValueError("stacklight_gz_visual: tier_visuals is empty")
 
-        self.pub = self.create_publisher(
-            MaterialColor, str(g("material_color_topic").value), 10)
+        self.publish_material_color = bool(g("publish_material_color").value)
+        self.pub = None
+        if self.publish_material_color:
+            # Imported here so the node still runs on a machine without
+            # ros_gz_interfaces installed, which is every rover that is not
+            # also a simulation host.
+            from ros_gz_interfaces.msg import Entity, MaterialColor
+            self._Entity, self._MaterialColor = Entity, MaterialColor
+            self.pub = self.create_publisher(
+                MaterialColor, str(g("material_color_topic").value), 10)
+
+        self.publish_markers = bool(g("publish_markers").value)
+        self.marker_pub = None
+        if self.publish_markers:
+            self.marker_frame = str(g("marker_frame").value)
+            self.marker_radius = float(g("marker_radius").value)
+            self.marker_height = float(g("marker_height").value)
+            self.marker_z = [float(v) for v in g("marker_z").value]
+            self.marker_order = [str(v) for v in g("marker_order").value]
+            if len(self.marker_z) != len(self.marker_order):
+                raise ValueError(
+                    "stacklight_gz_visual: marker_z and marker_order must be "
+                    "the same length")
+            for tier in self.marker_order:
+                if tier not in TIER_COLORS:
+                    raise ValueError(
+                        f"stacklight_gz_visual: unknown tier {tier!r} in "
+                        f"marker_order")
+            # TRANSIENT_LOCAL: RViz is usually started after the rover, and a
+            # volatile publisher at 1 Hz means a blank display until the next
+            # message. Latched, a late display draws the light immediately.
+            marker_qos = QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.marker_pub = self.create_publisher(
+                MarkerArray, str(g("marker_topic").value), marker_qos)
+
         self.create_subscription(
             UInt8, str(g("state_topic").value), self._state_cb, 10)
 
         self.lit = None
-        self.get_logger().info(
-            f"Stacklight sim visuals -> {self.pub.topic_name}: "
-            + ", ".join(f"{t}={n}" for t, n in self.tiers.items()))
+        shown = []
+        if self.marker_pub is not None:
+            shown.append(f"RViz {self.marker_pub.topic_name}")
+        if self.pub is not None:
+            shown.append(f"gz {self.pub.topic_name}")
+        self.get_logger().info("Stacklight viewer -> " + ", ".join(shown or ["nothing"]))
+        if self.marker_pub is not None:
+            # Draw immediately rather than waiting for the first state: an
+            # unlit light is still information, and a blank RViz looks broken.
+            self._publish_markers(None)
 
     def _state_cb(self, msg):
         lit = self._tier_for(int(msg.data))
         if lit != self.lit:
             self.get_logger().info(f"tier lit: {lit or 'none'}")
             self.lit = lit
-        for tier, visual in self.tiers.items():
-            self.pub.publish(self._command(visual, TIER_COLORS[tier], tier == lit))
+        if self.pub is not None:
+            for tier, visual in self.tiers.items():
+                self.pub.publish(
+                    self._command(visual, TIER_COLORS[tier], tier == lit))
+        if self.marker_pub is not None:
+            self._publish_markers(lit)
+
+    def _publish_markers(self, lit):
+        markers = MarkerArray()
+        for index, (tier, z) in enumerate(zip(self.marker_order, self.marker_z)):
+            r, g, b = TIER_COLORS[tier]
+            scale = 1.0 if tier == lit else self.unlit_scale
+            m = Marker()
+            m.header.frame_id = self.marker_frame
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.ns = "stacklight"
+            m.id = index
+            m.type = Marker.CYLINDER
+            m.action = Marker.ADD
+            m.pose.position.z = z
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = self.marker_radius * 2.0
+            m.scale.z = self.marker_height
+            m.color = ColorRGBA(r=r * scale, g=g * scale, b=b * scale, a=1.0)
+            # Never expire. The state refreshes at 1 Hz, but a lifetime would
+            # make the light blink out if that stream ever hiccupped -- and a
+            # light that vanishes reads as "no rover", not "no update".
+            markers.markers.append(m)
+        self.marker_pub.publish(markers)
 
     def _tier_for(self, code):
         """Which tier a wire value lights. Unknown values light red, the same
@@ -125,12 +227,12 @@ class StacklightGzVisual(Node):
 
     def _command(self, visual, rgb, lit):
         r, g, b = rgb
-        msg = MaterialColor()
+        msg = self._MaterialColor()
         msg.entity.name = visual
-        msg.entity.type = Entity.VISUAL
+        msg.entity.type = self._Entity.VISUAL
         # ALL, not FIRST: FIRST stops at whichever entity the ECM happens to
         # return first, and these names appear once per spawned robot.
-        msg.entity_match = MaterialColor.ALL
+        msg.entity_match = self._MaterialColor.ALL
 
         scale = 1.0 if lit else self.unlit_scale
         body = ColorRGBA(r=r * scale, g=g * scale, b=b * scale, a=1.0)

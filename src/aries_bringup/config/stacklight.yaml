@@ -33,7 +33,7 @@ stacklight:
     topic: "/stacklight_subscription"
 
     # First match wins. Add states here as sources for them appear.
-    priority: ["emergency", "halt", "operating", "ready"]
+    priority: ["emergency", "drive_fault", "halt", "operating", "ready"]
 
     # "state:colour" pairs - a flat list, not a map, because a nested YAML map
     # arrives as one ROS parameter per key and cannot be read back as a single
@@ -41,6 +41,9 @@ stacklight:
     # `unknown` is required: it is what shows when no state above holds.
     colors:
       - "emergency:red"
+      # Also red: the drive losing power or faulting is an emergency to anyone
+      # standing near a 90 kg rover on a slope.
+      - "drive_fault:red"
       - "halt:red"
       - "operating:yellow"
       - "ready:green"
@@ -54,23 +57,75 @@ stacklight:
     shutdown_color: "off"
 
     # --- emergency ------------------------------------------------------
-    # std_msgs/Bool topics, one per switch: the arm's and the wheels'. Both
-    # empty today. Fill them in when the sense lines exist, e.g.
-    #   estop_topics: ["/aries/estop/arm", "/aries/estop/wheels"]
-    # Any one of them reading "pressed" puts the light red.
-    estop_topics: [""]
+    # std_msgs/Bool topics, any one of which reading "pressed" puts the light
+    # red.
+    #
+    # /arm/estop is REAL as of 2026-08-22: the arm's e-stop is wired straight
+    # to the igus control box, which reports it in every CRI status message.
+    # The driver always parsed that field and never published it; it does now
+    # (igus_rebel/src/Rebel.cpp, PublishEStop).
+    #
+    # CALIBRATE IT ONCE. Which raw value means PRESSED is not established --
+    # CRI's own field is undocumented here. Watch the raw topic while somebody
+    # presses the button:
+    #     ros2 topic echo /arm/estop_raw
+    # then set estop_pressed_value on the igus_rebel hardware component to
+    # whatever it reads when pressed. Until that is done /arm/estop is a guess.
+    #
+    # The WHEELS have no entry: their e-stop physically disconnects ODrive
+    # power, so there is no contact to read. It is covered instead by
+    # odrive_status_topics below, which sees that power go away.
+    estop_topics: ["/arm/estop"]
     # true  = the topic publishes TRUE when the button is PRESSED.
     # false = it publishes TRUE when the loop is HEALTHY, which is how a
     #         normally-closed e-stop chain is usually wired. Get this wrong and
     #         the light is inverted, so check it against the real switch.
     estop_active_high: true
+    # /arm/estop is published latched, and this must match or DDS makes no
+    # match at all. See the note in stacklight.py.
+    estop_latched: true
+
+    # --- drive_fault (the other red) ------------------------------------
+    # Per-axis ODrive status. Red when any axis reports an error, is disarmed,
+    # has its bus voltage on the floor, or STOPS REPORTING after having
+    # reported -- which is what pulling the drive's power looks like from ROS.
+    # An axis that never reported at all is not a fault: that is a machine with
+    # no drive attached, and it must not sit red forever.
+    #
+    # These arrive only while odrive_can_poller.py is running: the ODrives send
+    # nothing but a heartbeat unless something asks. If the poller is not up,
+    # every axis reads as "never reported" and this state simply never fires.
+    odrive_status_topics:
+      - "/odrive_axis0/odrive_status"
+      - "/odrive_axis1/odrive_status"
+      - "/odrive_axis2/odrive_status"
+      - "/odrive_axis3/odrive_status"
+      - "/odrive_axis4/odrive_status"
+      - "/odrive_axis5/odrive_status"
+    # A 6S pack is nominally 22.2 V and empty at ~19.8 V. Below this the drive
+    # is not being fed, whatever the reason.
+    odrive_min_bus_voltage: 20.0
+    # Silence longer than this is treated as power gone. The poller runs well
+    # above this rate, so it is not a tight budget.
+    odrive_timeout_s: 3.0
 
     # --- halt -----------------------------------------------------------
     # Same shape. Nothing declares a halt yet.
     halt_topics: [""]
     halt_active_high: true
 
-    # --- operating ------------------------------------------------------
+    # --- operating (yellow = TELEOPERATION) -----------------------------
+    # Any button pressed, or any stick or trigger off centre, means a human is
+    # operating the machine. That is what the yellow tier says, and it is
+    # deliberately the whole pad rather than the enable buttons: a stick moved
+    # with no gate held is still hands on the controls.
+    joy_topic: "/joy"
+    # Axes rest at 0.0 after joy_layout_normalizer, triggers included. Wide
+    # enough to ignore a worn stick's centre drift.
+    joy_axis_deadzone: 0.15
+    # How long yellow stays up after the operator lets go.
+    joy_hold_s: 2.0
+
     # The drive bridge's 2 Hz JSON status: armed, command_valid, and the ramped
     # wheel commands this reads.
     drive_status_topic: "/aries_drive/status"
@@ -104,3 +159,32 @@ stacklight:
     # long the light can sit dark after a reconnect, or after a Teensy reset,
     # which starts with all three GPIOs LOW.
     publish_period_s: 1.0
+
+# The same state, drawn for the operator. On the rover this exists purely for
+# RViz at the base station: without it the light is a thing you can only read
+# by looking at the robot, which is the one thing the operator cannot do.
+#
+# RViz cannot show it any other way. Its RobotModel display builds the robot
+# from /robot_description, so the URDF's tier colours are fixed at load and
+# there is no runtime per-link colour to drive. Markers are the mechanism.
+stacklight_gz_visual:
+  ros__parameters:
+    state_topic: "/stacklight_subscription"
+
+    publish_markers: true
+    marker_topic: "/stacklight/markers"
+    # Must track stacklight.xacro: tier centres above the link origin
+    # (base 0.050 + n.5 x 0.040), and the body radius.
+    marker_frame: "stacklight_link"
+    marker_radius: 0.020
+    marker_height: 0.040
+    marker_z: [0.070, 0.110, 0.150]
+    marker_order: ["green", "yellow", "red"]
+
+    # No Gazebo on the rover. Left true it would advertise a world topic
+    # nothing bridges -- harmless, but it also pulls in ros_gz_interfaces,
+    # which a rover has no reason to have installed.
+    publish_material_color: false
+
+    unlit_scale: 0.30
+    emissive_scale: 0.85

@@ -8,6 +8,8 @@
 #include <math.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/int16.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "igus_rebel_msgs/msg/digital_output.hpp"
 #include "igus_rebel_msgs/srv/set_digital_output.hpp"
@@ -43,6 +45,27 @@ namespace Igus
         
         std::shared_ptr<RebelSocket> rebelSocket;
         CriMessages::Status currentStatus;
+
+        // The arm's emergency stop, which is wired straight to the control box
+        // and is invisible to ROS without this. CRI reports it in every status
+        // message and the parser has always stored it -- it was simply never
+        // published, so nothing downstream (the stack light above all) could
+        // know the arm had been e-stopped.
+        //
+        // Two topics on purpose. The Bool is the interpreted answer everything
+        // consumes; the Int32 is the raw CRI field, because the meaning of the
+        // number is NOT established -- CriMessages.cpp still carries a "TODO:
+        // process further to actual meaning" against it. Watch the raw topic
+        // while pressing the button once, then set estop_pressed_value to
+        // whatever it reads. Guessing silently would give the operator a red
+        // light that means nothing.
+        void PublishEStop(const CriMessages::Status &);
+
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
+        rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr estop_raw_pub_;
+        int estop_pressed_value_;
+        bool estop_published_;
+        int last_estop_raw_;
 
         // Current commanded jog
         float j1, j2, j3, j4, j5, j6;

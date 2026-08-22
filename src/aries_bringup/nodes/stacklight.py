@@ -55,8 +55,9 @@ import json
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Joy
 from std_msgs.msg import Bool, Float64, String, UInt8
 
 
@@ -77,10 +78,12 @@ class Stacklight(Node):
 
         # State -> colour. Every state named in `priority` needs an entry, and
         # so does `unknown`.
-        self.declare_parameter("priority", ["emergency", "halt", "operating", "ready"])
+        self.declare_parameter(
+            "priority",
+            ["emergency", "drive_fault", "halt", "operating", "ready"])
         self.declare_parameter("colors", [
-            "emergency:red", "halt:red", "operating:yellow", "ready:green",
-            "unknown:red",
+            "emergency:red", "drive_fault:red", "halt:red",
+            "operating:yellow", "ready:green", "unknown:red",
         ])
         self.declare_parameter("shutdown_color", "off")
 
@@ -88,6 +91,15 @@ class Stacklight(Node):
         # case for both e-stops and for halt - see the module docstring.
         self.declare_parameter("estop_topics", [""])
         self.declare_parameter("halt_topics", [""])
+        # An e-stop is a CONDITION, not an event, so its publisher should
+        # latch (TRANSIENT_LOCAL) and this must match to receive the value that
+        # was published before this node started. igus_rebel's /arm/estop does
+        # latch. Set false for a publisher that does not: a TRANSIENT_LOCAL
+        # subscriber against a VOLATILE publisher is an incompatible pair and
+        # DDS makes NO match at all -- the topic lists fine and never delivers,
+        # which on an e-stop is the worst failure in this file.
+        self.declare_parameter("estop_latched", True)
+
         # False if the switch reads true when HEALTHY, which is how a
         # normally-closed e-stop loop is usually wired.
         self.declare_parameter("estop_active_high", True)
@@ -122,6 +134,27 @@ class Stacklight(Node):
         # are unpowered would be a green light on a dead drive.
         self.declare_parameter("alive_topics", [""])
 
+        # YELLOW IS TELEOPERATION. Any button pressed or any stick or trigger
+        # off centre means a human is driving something, whatever it is - the
+        # light says "a person is operating this machine", which is what a
+        # bystander needs, rather than trying to enumerate every actuator.
+        # Deliberately the whole pad and not the enable buttons: a stick moved
+        # with no gate held still means hands on the controls.
+        self.declare_parameter("joy_topic", "/joy")
+        # Axes are normalised to rest at 0.0 by joy_layout_normalizer, triggers
+        # included. Wide enough to ignore a worn stick's centre drift.
+        self.declare_parameter("joy_axis_deadzone", 0.15)
+        # How long after the last input the light stays yellow. A pad at 80 Hz
+        # autorepeats, so this is really "how long after the operator lets go".
+        self.declare_parameter("joy_hold_s", 2.0)
+
+        # RED, SOURCE TWO: the drive. Any ODrive reporting an error, a bus
+        # voltage on the floor, or going silent after having been present -
+        # which is what pulling the drive's power looks like from here.
+        self.declare_parameter("odrive_status_topics", [""])
+        self.declare_parameter("odrive_min_bus_voltage", 20.0)
+        self.declare_parameter("odrive_timeout_s", 3.0)
+
         self.declare_parameter("motion_epsilon", 1e-6)
         # A rate topic that has gone quiet is not a moving axis: the drill
         # teleop stops publishing entirely once it has sent its zeros.
@@ -141,6 +174,10 @@ class Stacklight(Node):
         self.wheel_motion_rps = float(g("wheel_motion_rps").value)
         self.motion_epsilon = float(g("motion_epsilon").value)
         self.twist_epsilon = float(g("twist_epsilon").value)
+        self.joy_axis_deadzone = float(g("joy_axis_deadzone").value)
+        self.joy_hold_s = float(g("joy_hold_s").value)
+        self.odrive_min_bus_voltage = float(g("odrive_min_bus_voltage").value)
+        self.odrive_timeout_s = float(g("odrive_timeout_s").value)
         self.motion_timeout_s = float(g("motion_timeout_s").value)
         self.publish_period_s = float(g("publish_period_s").value)
 
@@ -151,6 +188,9 @@ class Stacklight(Node):
         self.motion = {}
         self.twist = {}
         self.alive = {}
+        self.joy_active_at = None
+        # topic -> (fault_reason or None, last seen)
+        self.odrive = {}
         self.drive_status = None
         self.drive_status_at = None
 
@@ -158,16 +198,25 @@ class Stacklight(Node):
 
         estop_topics = [t for t in g("estop_topics").value if t]
         halt_topics = [t for t in g("halt_topics").value if t]
+        estop_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=(DurabilityPolicy.TRANSIENT_LOCAL
+                        if bool(g("estop_latched").value)
+                        else DurabilityPolicy.VOLATILE),
+        )
         for topic in estop_topics:
             self.estop[topic] = False
             self.create_subscription(
                 Bool, topic,
-                (lambda t: lambda m: self.estop.__setitem__(t, bool(m.data)))(topic), 10)
+                (lambda t: lambda m: self.estop.__setitem__(t, bool(m.data)))(topic),
+                estop_qos)
         for topic in halt_topics:
             self.halt[topic] = False
             self.create_subscription(
                 Bool, topic,
-                (lambda t: lambda m: self.halt.__setitem__(t, bool(m.data)))(topic), 10)
+                (lambda t: lambda m: self.halt.__setitem__(t, bool(m.data)))(topic),
+                estop_qos)
         for topic in [t for t in g("motion_topics").value if t]:
             self.motion[topic] = (0.0, None)
             self.create_subscription(
@@ -188,6 +237,22 @@ class Stacklight(Node):
             self.create_subscription(
                 JointState, topic,
                 (lambda t: lambda m: self.alive.__setitem__(t, self._now()))(topic), 10)
+
+        joy_topic = str(g("joy_topic").value)
+        if joy_topic:
+            self.create_subscription(Joy, joy_topic, self._joy_cb, 10)
+
+        odrive_topics = [t for t in g("odrive_status_topics").value if t]
+        if odrive_topics:
+            # Imported here, not at module scope: the drive messages are a
+            # rover-only dependency and this node has to start on a base
+            # station or in simulation, where odrive_can is not installed.
+            from odrive_can.msg import ODriveStatus
+            for topic in odrive_topics:
+                self.odrive[topic] = (None, None)
+                self.create_subscription(
+                    ODriveStatus, topic,
+                    (lambda t: lambda m: self._odrive_cb(t, m))(topic), 10)
 
         self.create_subscription(
             String, str(g("drive_status_topic").value), self._drive_status_cb, 10)
@@ -255,6 +320,25 @@ class Stacklight(Node):
             # would keep reporting a state nothing is confirming any more.
             self.drive_status = None
 
+    def _joy_cb(self, msg):
+        """Any button down, or any axis off centre, is a human operating."""
+        active = any(b for b in msg.buttons) or any(
+            abs(a) > self.joy_axis_deadzone for a in msg.axes)
+        if active:
+            self.joy_active_at = self._now()
+
+    def _odrive_cb(self, topic, msg):
+        reason = None
+        if msg.active_errors:
+            # Hex: ODrive documents its error bits that way, and a decimal
+            # 33554432 is not something anyone can look up in the field.
+            reason = f"error 0x{int(msg.active_errors):X}"
+        elif msg.disarm_reason:
+            reason = f"disarmed 0x{int(msg.disarm_reason):X}"
+        elif float(msg.bus_voltage) < self.odrive_min_bus_voltage:
+            reason = f"bus {float(msg.bus_voltage):.1f} V"
+        self.odrive[topic] = (reason, self._now())
+
     # -- state -------------------------------------------------------------
     def _pressed(self, values, active_high):
         return any(v == active_high for v in values.values())
@@ -287,6 +371,26 @@ class Stacklight(Node):
                 and self.drive_status_at is not None
                 and (self._now() - self.drive_status_at) <= self.drive_status_timeout_s)
 
+    def _drive_fault(self):
+        """Why the drive is faulted, or None.
+
+        Silence counts, but only from an axis that HAS been heard from: pulling
+        the ODrives' power is exactly a topic that stops, and that is the case
+        worth catching. An axis that never reported at all is a rover that was
+        never wired for one - simulation, or a base station - and calling that
+        a fault would leave the light permanently red for no reason.
+        """
+        now = self._now()
+        for topic, (reason, stamp) in self.odrive.items():
+            if stamp is None:
+                continue
+            if reason is not None:
+                return f"{topic.split('/')[1] if '/' in topic else topic}: {reason}"
+            if (now - stamp) > self.odrive_timeout_s:
+                return (f"{topic.split('/')[1] if '/' in topic else topic}: "
+                        f"silent {now - stamp:.1f}s (power?)")
+        return None
+
     def _reporting(self):
         """Evidence the rover is alive: the drive bridge, or any alive_topic."""
         if self._drive_status_fresh():
@@ -300,7 +404,12 @@ class Stacklight(Node):
             return self._pressed(self.estop, self.estop_active_high)
         if state == "halt":
             return self._pressed(self.halt, self.halt_active_high)
+        if state == "drive_fault":
+            return self._drive_fault() is not None
         if state == "operating":
+            if (self.joy_active_at is not None
+                    and (self._now() - self.joy_active_at) <= self.joy_hold_s):
+                return True
             return self._wheels_turning() or self._axis_running()
         if state == "ready":
             # Only claim ready on evidence. Without something reporting, this
@@ -325,8 +434,11 @@ class Stacklight(Node):
 
         changed = color != self.color
         if changed:
+            detail = ""
+            if state == "drive_fault":
+                detail = f" ({self._drive_fault()})"
             self.get_logger().info(
-                f"{self.state or 'start'} -> {state}: {color}")
+                f"{self.state or 'start'} -> {state}{detail}: {color}")
         if changed or (now - self.last_published_at) >= self.publish_period_s:
             self._publish(color)
         self.state = state

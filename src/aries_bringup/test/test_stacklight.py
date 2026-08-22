@@ -387,3 +387,210 @@ class TestSimVisuals:
         configured = dict(e.split(":", 1) for e in params["tier_visuals"])
         _, instance, _ = visual
         assert configured == instance.tiers
+
+
+class TestTeleoperationIsYellow:
+    """Yellow means a human is operating the machine.
+
+    Deliberately the WHOLE pad and not the enable buttons: a stick moved with
+    no gate held is still hands on the controls, and a bystander cares that
+    someone is driving, not which subsystem they reached for.
+    """
+
+    def _joy(self, buttons=(), axes=()):
+        from sensor_msgs.msg import Joy
+        msg = Joy()
+        msg.buttons = list(buttons) or [0] * 8
+        msg.axes = list(axes) or [0.0] * 8
+        return msg
+
+    def test_any_button_turns_it_yellow(self, light):
+        module, instance, clock, sent = light
+        instance._drive_status_cb(_status())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+
+        for index in range(8):
+            buttons = [0] * 8
+            buttons[index] = 1
+            instance._joy_cb(self._joy(buttons=buttons))
+            _tick(instance, clock)
+            assert sent[-1] == module.COLOR_CODES["yellow"], f"button {index}"
+
+    def test_any_stick_off_centre_turns_it_yellow(self, light):
+        module, instance, clock, sent = light
+        instance._drive_status_cb(_status())
+        for index in range(8):
+            axes = [0.0] * 8
+            axes[index] = 0.9
+            instance._joy_cb(self._joy(axes=axes))
+            _tick(instance, clock)
+            assert sent[-1] == module.COLOR_CODES["yellow"], f"axis {index}"
+
+    def test_a_centred_pad_is_not_operating(self, light):
+        """Stick drift must not latch the light yellow for the whole mission."""
+        module, instance, clock, sent = light
+        instance._drive_status_cb(_status())
+        drift = instance.joy_axis_deadzone * 0.5
+        instance._joy_cb(self._joy(axes=[drift] * 8))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+
+    def test_yellow_falls_back_to_green_after_release(self, light):
+        module, instance, clock, sent = light
+        instance._drive_status_cb(_status())
+        instance._joy_cb(self._joy(buttons=[1] + [0] * 7))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["yellow"]
+
+        clock.advance(instance.joy_hold_s + 0.1)
+        instance._drive_status_cb(_status())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+
+
+class TestDriveFaultIsRed:
+    """The second red: the ODrives faulting, or their power going away."""
+
+    def _odrive(self, errors=0, disarm=0, volts=24.0):
+        class Fake:
+            active_errors = errors
+            disarm_reason = disarm
+            bus_voltage = volts
+        return Fake()
+
+    def _wire(self, instance, topics=("/odrive_axis0/odrive_status",)):
+        for t in topics:
+            instance.odrive[t] = (None, None)
+        return topics
+
+    def test_an_axis_error_is_red(self, light):
+        module, instance, clock, sent = light
+        (topic,) = self._wire(instance)
+        instance._drive_status_cb(_status())
+        instance._odrive_cb(topic, self._odrive())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+
+        instance._odrive_cb(topic, self._odrive(errors=0x2000000))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["red"]
+        assert "0x2000000" in instance._drive_fault()
+
+    def test_a_collapsed_bus_voltage_is_red(self, light):
+        module, instance, clock, sent = light
+        (topic,) = self._wire(instance)
+        instance._drive_status_cb(_status())
+        instance._odrive_cb(topic, self._odrive(volts=12.0))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["red"]
+
+    def test_power_disconnect_is_the_topic_going_silent(self, light):
+        """Pulling the drive's power is not an error message, it is silence."""
+        module, instance, clock, sent = light
+        (topic,) = self._wire(instance)
+        instance._drive_status_cb(_status())
+        instance._odrive_cb(topic, self._odrive())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+
+        clock.advance(instance.odrive_timeout_s + 0.5)
+        instance._drive_status_cb(_status())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["red"]
+        assert "silent" in instance._drive_fault()
+
+    def test_an_axis_that_never_reported_is_not_a_fault(self, light):
+        """Otherwise simulation and the base station sit red forever."""
+        module, instance, clock, sent = light
+        self._wire(instance)
+        instance._drive_status_cb(_status())
+        clock.advance(instance.odrive_timeout_s * 5)
+        instance._drive_status_cb(_status())
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["green"]
+        assert instance._drive_fault() is None
+
+    def test_a_drive_fault_outranks_teleoperation(self, light):
+        """Red while someone is driving must not be masked by yellow."""
+        module, instance, clock, sent = light
+        (topic,) = self._wire(instance)
+        instance._drive_status_cb(_status())
+        instance._joy_cb(TestTeleoperationIsYellow()._joy(buttons=[1] + [0] * 7))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["yellow"]
+
+        instance._odrive_cb(topic, self._odrive(errors=1))
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["red"]
+
+    def test_the_arm_estop_still_outranks_the_drive(self, light):
+        module, instance, clock, sent = light
+        (topic,) = self._wire(instance)
+        instance._drive_status_cb(_status())
+        instance._odrive_cb(topic, self._odrive(errors=1))
+        instance.estop["/arm/estop"] = True
+        _tick(instance, clock)
+        assert sent[-1] == module.COLOR_CODES["red"]
+        assert instance.evaluate() == "emergency", "e-stop names itself, not the drive"
+
+
+class TestRvizMarkers:
+    """RViz cannot show the URDF light changing, so markers are the mechanism."""
+
+    @pytest.fixture
+    def viewer(self, monkeypatch):
+        module = _load("stacklight_gz_visual")
+        instance = module.StacklightGzVisual()
+        sent = []
+        monkeypatch.setattr(instance.marker_pub, "publish", sent.append)
+        yield module, instance, sent
+        instance.destroy_node()
+
+    def test_one_marker_per_tier_in_the_light_s_own_frame(self, viewer):
+        from std_msgs.msg import UInt8
+        module, instance, sent = viewer
+        instance._state_cb(UInt8(data=module.COLOR_CODES["red"]))
+        markers = sent[-1].markers
+        assert len(markers) == 3
+        assert {m.header.frame_id for m in markers} == {"stacklight_link"}
+        assert len({m.id for m in markers}) == 3, "ids must be distinct or RViz drops one"
+
+    def test_the_lit_tier_is_the_bright_one(self, viewer):
+        from std_msgs.msg import UInt8
+        module, instance, sent = viewer
+        for colour in ("red", "yellow", "green"):
+            instance._state_cb(UInt8(data=module.COLOR_CODES[colour]))
+            markers = sent[-1].markers
+            index = instance.marker_order.index(colour)
+            lit = markers[index].color
+            others = [m.color for i, m in enumerate(markers) if i != index]
+            brightest = max(lit.r, lit.g, lit.b)
+            for other in others:
+                assert brightest > max(other.r, other.g, other.b), colour
+
+    def test_marker_geometry_matches_the_urdf(self, viewer):
+        """The tiers are drawn where the mesh actually is, or the marker floats
+        beside the model instead of on it."""
+        import re
+        module, instance, sent = viewer
+        xacro = (REPO / "src" / "aries" / "urdf" / "stacklight.xacro").read_text()
+
+        def prop(name):
+            return float(re.search(
+                rf'name="{name}" value="([0-9.]+)"', xacro).group(1))
+
+        radius, tier_h, base_h = (prop("stacklight_radius"),
+                                  prop("stacklight_tier_h"),
+                                  prop("stacklight_base_h"))
+        assert instance.marker_radius == pytest.approx(radius)
+        assert instance.marker_height == pytest.approx(tier_h)
+        expected = [base_h + (n + 0.5) * tier_h for n in range(3)]
+        assert instance.marker_z == pytest.approx(expected)
+
+    def test_it_draws_before_any_state_arrives(self, viewer):
+        """A blank RViz reads as broken; an unlit light is still information."""
+        module, instance, sent = viewer
+        sent.clear()
+        instance._publish_markers(None)
+        assert len(sent[-1].markers) == 3
