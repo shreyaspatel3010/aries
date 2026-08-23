@@ -125,6 +125,9 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
         DeclareLaunchArgument("use_stacklight", default_value="true"),
+        DeclareLaunchArgument("use_load_cells", default_value="true"),
+        DeclareLaunchArgument("load_cell_source", default_value="auto",
+                              choices=["auto", "microros", "mock"]),
         DeclareLaunchArgument("start_checker", default_value="true"),
         # Preserve the top-level choice before rover_drive_auto.launch.py sets
         # its own nested start_checker argument to false. Included launch
@@ -226,6 +229,29 @@ def generate_launch_description():
                 ])
             ),
             condition=IfCondition(LaunchConfiguration("use_stacklight")),
+        ),
+
+        # The three load cells (aries_load_cells): the sand and stone boxes on
+        # the left of the deck, and the drill's sample bin. Same Teensy as the
+        # stack light, so the micro-ROS agent started above already carries
+        # them -- this only starts the node that turns counts into kilograms.
+        #
+        # load_cell_source:=mock makes up counts, for exercising the topics
+        # with no board attached. The firmware is still being written; `auto`
+        # does NOT fall back to mock, because a fabricated weight that looks
+        # exactly like a measured one is not something the rover should emit.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_load_cells"),
+                    "launch",
+                    "load_cells.launch.py",
+                ])
+            ),
+            condition=IfCondition(LaunchConfiguration("use_load_cells")),
+            launch_arguments={
+                "load_cell_source": LaunchConfiguration("load_cell_source"),
+            }.items(),
         ),
 
         # Separate checker.
