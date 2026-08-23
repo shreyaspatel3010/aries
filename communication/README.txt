@@ -54,10 +54,10 @@ rover -- deployed by pulling the repo -- did not have any of it.
                                        Addresses live in the network: section
                                        of aries_common/config/devices.yaml.
 
-  communication.launch.py stack:=true  ros2 launch aries_bringup \
+  communication.launch.py stack:=true  ros2 launch aries_comms \
                                          rover_field.launch.py
 
-  communication.launch.py side:=operator   ros2 launch aries_base_station \
+  communication.launch.py side:=operator   ros2 launch aries_comms \
   aries_operator/operator.launch.py          base_station.launch.py
 
 
@@ -70,8 +70,8 @@ rover -- deployed by pulling the repo -- did not have any of it.
   addresses also moved off 192.168.1.0/24 -- that is the airOS factory subnet
   and every other team using Ubiquiti is on it.
 
-  ROVER                 ros2 launch aries_bringup rover_field.launch.py
-  BASE STATION          ros2 launch aries_base_station base_station.launch.py
+  ROVER                 ros2 launch aries_comms rover_field.launch.py
+  BASE STATION          ros2 launch aries_comms base_station.launch.py
 
 Plug the joystick into the BASE STATION. rover_field defaults to
 use_joy_node:=false and base_station defaults to use_joy_node:=true, so exactly
@@ -105,10 +105,11 @@ one, and the launch files now overwrite it and log that they did:
  aries_operator/
 --------------------------------------------------------------------------------
 
-Superseded by the aries_base_station package. It existed for a machine with no
+Superseded by the aries_comms package (which was aries_base_station until
+rover_field.launch.py joined it there). It existed for a machine with no
 workspace; with the workspace on both ends, base_station.launch.py also renders
 the robot model, which aries_operator could not.
 
 The old troubleshooting notes in the git history of this file still apply --
 domain mismatch, QoS mismatch, stale ros2 daemon, firewall. See
-src/aries_base_station/README.md, which carries them forward.
+src/aries_comms/README.md, which carries them forward.

@@ -14,10 +14,10 @@ Ubiquiti Rocket 5AC link. Setup — static addresses, radio settings, verificati
 
 ```bash
 # ROVER
-ros2 launch aries_bringup rover_field.launch.py
+ros2 launch aries_comms rover_field.launch.py
 
 # BASE STATION  — the joystick plugs in HERE
-ros2 launch aries_base_station base_station.launch.py
+ros2 launch aries_comms base_station.launch.py
 ```
 
 ## Repository Layout
@@ -30,9 +30,9 @@ aries/
 ├── scripts/               Vision environment/model utilities, teleop measurement
 ├── src/                   First-party ROS 2 packages
 │   ├── aries/              Robot description, worlds, Gazebo launch
-│   ├── aries_base_station/ Operator end of the field link (joystick, RViz)
 │   ├── aries_bringup/      Recommended launch wrappers and hardware checker
 │   ├── aries_common/       Shared hardware auto-detection and DDS transport
+│   ├── aries_comms/        The field link, both ends: rover_field and base_station
 │   ├── aries_drive/        Fail-safe cmd_vel-to-ODrive backend
 │   ├── aries_imu/          MicroStrain 3DM-GX5-AHRS driver integration
 │   ├── aries_localization/ Wheel odometry and EKF orchestration

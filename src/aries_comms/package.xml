@@ -1,30 +1,45 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>aries_base_station</name>
+  <name>aries_comms</name>
   <version>0.1.0</version>
   <description>
-    Operator side of the field link: the joystick, the camera decompressors and
-    RViz, on the DDS domain the rover is on. Partner of
-    aries_bringup/launch/rover_field.launch.py.
+    The field link, both ends. rover_field.launch.py on the robot and
+    base_station.launch.py on the operator's machine are the two halves of one
+    configuration -- which machine reads the pad, which one runs RViz, which
+    one decompresses the downlink -- so they live in one package and are
+    tested against each other here.
+
+    They used to be split across aries_bringup and aries_base_station, which
+    meant the two halves of a single contract could drift with nothing
+    comparing them.
   </description>
 
   <maintainer email="shreyaspatel517@gmail.com">shreyas</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
 
-  <!-- The DDS transport config both ends share. -->
+  <!-- The DDS transport config both ends share, and devices.yaml under it.
+       It stays in aries_common because aries_dds_env.sh has to be sourceable
+       from a shell on a machine that never launches either side of this
+       package. -->
   <exec_depend>aries_common</exec_depend>
-  <!-- camera_view.launch.py, which decompresses the downlink locally. -->
+  <!-- rover_field includes full_hardware.launch.py; base_station includes
+       camera_view.launch.py. The dependency runs one way only: nothing in
+       aries_bringup may include anything from here, or colcon has a cycle. -->
   <exec_depend>aries_bringup</exec_depend>
-  <!-- joy_layout_normalizer.py, and the RViz config with the camera displays. -->
+  <!-- joy_layout_normalizer.py, and moveit.rviz with the camera displays. -->
   <exec_depend>aries_moveit</exec_depend>
   <!-- Meshes for the RobotModel display. The base station runs the same
        workspace as the rover, which is the only reason it can render the arm

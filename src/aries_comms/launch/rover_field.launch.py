@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
 """The one command to run on the ROVER for field operation.
 
-    ros2 launch aries_bringup rover_field.launch.py
+    ros2 launch aries_comms rover_field.launch.py
 
-Everything full_hardware.launch.py brings up, plus the communication layer, in
-a configuration that assumes the operator is at the base station and not next
-to the robot. Its partner is aries_base_station on the other end:
+Everything aries_bringup's full_hardware.launch.py brings up, plus the
+communication layer, in a configuration that assumes the operator is at the
+base station and not next to the robot. Its partner is base_station.launch.py,
+beside it in this package:
+
+WHY THIS LIVES HERE AND NOT IN aries_bringup
+
+    It is half of a two-machine contract, and the other half is
+    base_station.launch.py. Which end reads the pad, which end runs RViz, which
+    end decompresses -- each of those is one decision spread across two files,
+    and while they sat in different packages nothing compared them. They are
+    now next to each other with test/test_field_link_contract.py pinning the
+    pairs that must not drift.
+
+    aries_bringup still owns everything that is about the ROBOT rather than
+    about the link: full_hardware.launch.py, the camera pipeline at both ends,
+    the rover-side checker. The dependency runs one way, aries_comms ->
+    aries_bringup, and must stay that way or colcon has a cycle.
 
     rover                                    base station
     -----                                    ------------
@@ -13,8 +28,9 @@ to the robot. Its partner is aries_base_station on the other end:
       DDS on the field link                    DDS on the field link
       arm + gripper + MoveIt                   joy driver -> /joy
       rover drive + IMU                        decompressors -> /<cam>/view/*
-      cameras -> /downlink/<cam>/*             RViz
-      teleop consumers <- /joy
+      cameras -> /downlink/<cam>/*             RViz  (one, see that file)
+      teleop consumers <- /joy                 base_station_checker
+      full_hardware_checker
 
 WHAT THIS CHANGES AGAINST full_hardware.launch.py
 
@@ -40,6 +56,12 @@ WHAT THIS CHANGES AGAINST full_hardware.launch.py
       with no display, and starts a second set of decompressors that nothing
       on the rover looks at.
 
+      full_hardware_checker still runs here, and still should: it reads serial
+      ports, the CAN link and USB enumeration, none of which exist at the other
+      end. Its console output stays on the rover, so the operator gets
+      base_station_checker instead -- link, pad, downlink, and what of the
+      rover is actually arriving.
+
   enable_camera_downlink:=true
       Explicit rather than inherited, because with no GUI here the downlink is
       the ONLY way any image leaves the robot.
@@ -47,8 +69,8 @@ WHAT THIS CHANGES AGAINST full_hardware.launch.py
 Every other argument full_hardware.launch.py takes still works and reaches it
 unchanged -- finger_type, hardware protocols, camera serials, IMU, CAN:
 
-    ros2 launch aries_bringup rover_field.launch.py finger_type:=probe
-    ros2 launch aries_bringup rover_field.launch.py downlink_profile:=lean
+    ros2 launch aries_comms rover_field.launch.py finger_type:=probe
+    ros2 launch aries_comms rover_field.launch.py downlink_profile:=lean
 
 Not because they are re-listed here, but because an included launch file shares
 the launch configuration context: a value set on the command line is already
@@ -121,7 +143,7 @@ def generate_launch_description():
         ),
 
         LogInfo(msg="[rover_field] rover side up: pad and RViz expected at the "
-                    "base station (ros2 launch aries_base_station "
+                    "base station (ros2 launch aries_comms "
                     "base_station.launch.py)"),
 
         IncludeLaunchDescription(

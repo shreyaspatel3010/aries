@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The one command to run on the BASE STATION.
 
-    ros2 launch aries_base_station base_station.launch.py
+    ros2 launch aries_comms base_station.launch.py
 
-Partner of aries_bringup/launch/rover_field.launch.py. Between them nothing
-else has to be started by hand:
+Partner of rover_field.launch.py, beside it in this package. Between them
+nothing else has to be started by hand:
 
     rover                                    base station
     -----                                    ------------
@@ -13,7 +13,8 @@ else has to be started by hand:
       arm + gripper + MoveIt                   joy driver     -> /joy
       rover drive + IMU                        decompressors  -> /<cam>/view/*
       cameras -> /downlink/<cam>/*             RViz  (3 cams: wrist, front, rear)
-      teleop consumers <- /joy
+      teleop consumers <- /joy                 base_station_checker
+      full_hardware_checker
 
 WHAT RUNS HERE, AND WHY EACH ONE IS HERE AND NOT THERE
 
@@ -45,7 +46,7 @@ WHAT RUNS HERE, AND WHY EACH ONE IS HERE AND NOT THERE
       two copies across, being separate DDS participants. One republisher per
       stream, everything else reading its local output.
 
-  RViz
+  RViz -- exactly one, the same one full_hardware.launch.py opens
       Not on the rover. There it costs CPU and GPU that two RealSense
       pipelines need, and fails outright over SSH with no display.
 
@@ -53,6 +54,23 @@ WHAT RUNS HERE, AND WHY EACH ONE IS HERE AND NOT THERE
       workspace as the rover: RViz resolves package:// mesh paths against the
       local filesystem, so a machine without the aries packages would show an
       empty scene and a list of resource errors.
+
+      This used to open TWO windows. camera_view.launch.py, included below,
+      declared a `use_rviz` of its own -- and an included launch description
+      inherits the parent's launch configurations, with DeclareLaunchArgument
+      leaving an already-set one alone. So the `use_rviz` declared HERE, default
+      true, switched on a viewer over THERE as well, and it came up blank
+      because it also inherited this file's `rviz_config` of "" (which only
+      means "use my default" to the code below). That node is gone from
+      camera_view, and the include is scoped so nothing else can leak into it.
+
+  base_station_checker
+      The operator-side counterpart of full_hardware_checker.py, which runs on
+      the rover and cannot answer any question that matters here: it probes
+      serial ports, CAN and USB, all of which are on the robot, and its output
+      goes to the rover's console. What can be wrong at this end is the link,
+      the pad, and whether the downlink is actually arriving -- so that is what
+      this one reports. It never subscribes to /downlink/*; see the node.
 
   NOT robot_state_publisher.
       /tf and /joint_states come from the rover. A second publisher here would
@@ -79,6 +97,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    GroupAction,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
@@ -147,20 +166,72 @@ def _setup(context, *args, **kwargs):
     actions = []
 
     # Decompress once, locally. Everything downstream reads /<camera>/view/*.
+    #
+    # forwarding=False is the fix for the two-RViz bug and is worth keeping even
+    # though camera_view no longer has a viewer to switch on. An include
+    # normally inherits EVERY launch configuration set above it, so any
+    # argument this file declares is silently visible to the included file
+    # under the same name -- `use_rviz` and `rviz_config` were, and started a
+    # second, unconfigured RViz. Scoped like this the child sees exactly the
+    # two values listed and nothing else, so the interface between the files is
+    # what is written here rather than whatever names happen to coincide.
     actions.append(
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution([
-                    FindPackageShare("aries_bringup"),
-                    "launch",
-                    "camera_view.launch.py",
-                ])
-            ),
+        GroupAction(
             condition=IfCondition(LaunchConfiguration("use_camera_view")),
-            launch_arguments={
+            scoped=True,
+            forwarding=False,
+            launch_configurations={
                 "cameras": cameras,
                 "color_only": LaunchConfiguration("color_only"),
-            }.items(),
+            },
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        PathJoinSubstitution([
+                            FindPackageShare("aries_bringup"),
+                            "launch",
+                            "camera_view.launch.py",
+                        ])
+                    )
+                )
+            ],
+        )
+    )
+
+    # Above the early return below: use_rviz:=false is the "decompress only"
+    # case, and that is exactly when a status line is the only thing telling
+    # the operator whether the link is alive.
+    actions.append(
+        GroupAction(
+            condition=IfCondition(LaunchConfiguration("start_checker")),
+            # Scoped for the same reason the include above is: what this file
+            # hands the checker is the list below, not every name that happens
+            # to be declared here.
+            scoped=True,
+            forwarding=False,
+            launch_configurations={
+                "checker_interval": LaunchConfiguration("checker_interval"),
+                # The same two lists the decompressors were started with. A
+                # camera the checker knows about and camera_view does not would
+                # be reported as a permanently dead stream, which reads as a
+                # link fault.
+                "cameras": cameras,
+                "color_only": LaunchConfiguration("color_only"),
+                "joy_dev": LaunchConfiguration("joy_dev"),
+                # Whether a local /joy publisher is expected, or is the fault.
+                "expect_local_joy": LaunchConfiguration("use_joy_node"),
+            },
+            actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        PathJoinSubstitution([
+                            FindPackageShare("aries_comms"),
+                            "launch",
+                            "base_station_checker.launch.py",
+                        ])
+                    )
+                )
+            ],
         )
     )
 
@@ -236,6 +307,13 @@ def generate_launch_description():
                         "decompressor is started for them. Must match the "
                         "rover's argument of the same name.",
         ),
+        DeclareLaunchArgument(
+            "start_checker", default_value="true",
+            description="The operator-side status line: link, pad, downlink, "
+                        "rover. full_hardware_checker stays on the rover and "
+                        "cannot see any of it.",
+        ),
+        DeclareLaunchArgument("checker_interval", default_value="4.0"),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument(
             "rviz_config", default_value="",

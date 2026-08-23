@@ -514,7 +514,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_joystick", default_value="true"),
         # Whether the pad is READ here, as opposed to whether teleop runs here.
         # false when the joystick is on the base station: the consumers below
-        # stay up and take /joy over the link. See aries_base_station.
+        # stay up and take /joy over the link. See aries_comms.
         DeclareLaunchArgument("use_joy_node", default_value="true"),
         DeclareLaunchArgument("joy_driver", default_value="game_controller_node", choices=["game_controller_node", "joy_node"]),
         DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"]),

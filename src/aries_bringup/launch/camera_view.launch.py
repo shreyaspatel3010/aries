@@ -27,14 +27,28 @@ displays read /downlink/<camera>/camera_info directly.
 Nothing here needs the rover's TF or robot description; it is purely image
 plumbing. Point RViz at aries_moveit/launch/moveit.rviz, which is already wired
 to these topic names.
+
+NO VIEWER IS STARTED HERE, and that is deliberate.
+
+This file used to carry a `use_rviz` argument that started an rviz2 of its own.
+Every caller already runs a viewer, so nobody set it -- but an argument is not
+private to the file that declares it. An included launch description inherits
+the parent's launch configurations, and DeclareLaunchArgument does not overwrite
+a configuration that is already set. So a parent that declared its own
+`use_rviz` (base_station.launch.py, default true) silently switched this one on
+too, and got a SECOND RViz -- opened with the parent's `rviz_config`, which for
+the base station was the empty string meaning "use my default", so the extra
+window came up blank and unconfigured.
+
+The rule this leaves behind: a launch file that is included by others does not
+declare a common name for a node it is not the owner of. Whoever wants a viewer
+starts it themselves.
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 
 def _view_for(camera, color_only=False):
@@ -118,23 +132,8 @@ def generate_launch_description():
             description='Of those, the ones with no depth stream. Must match '
                         'the rover side\'s argument of the same name. Naming a '
                         'camera that is not in `cameras` is harmless.'),
-        DeclareLaunchArgument(
-            'use_rviz', default_value='false',
-            description='Also start RViz with the MoveIt config. Leave false when '
-                        'RViz comes from another launch file.'),
-        DeclareLaunchArgument(
-            'rviz_config',
-            default_value=PathJoinSubstitution(
-                [FindPackageShare('aries_moveit'), 'launch', 'moveit.rviz']),
-            description='RViz config to open. The shipped one is already pointed '
-                        'at the /<camera>/view/* topics this file publishes.'),
+        # No use_rviz here on purpose -- see the NO VIEWER note in the module
+        # docstring. This file is image plumbing; the viewer belongs to whoever
+        # included it.
         OpaqueFunction(function=launch_setup),
-        Node(
-            condition=IfCondition(LaunchConfiguration('use_rviz')),
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', LaunchConfiguration('rviz_config')],
-            output='screen',
-        ),
     ])

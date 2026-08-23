@@ -1,21 +1,86 @@
-# aries_base_station
+# aries_comms
 
-The operator end of the field link. One command on each machine:
+The field link, both ends. One command on each machine:
 
 ```bash
 # ROVER
-ros2 launch aries_bringup rover_field.launch.py
+ros2 launch aries_comms rover_field.launch.py
 
 # BASE STATION  — the joystick plugs in HERE
-ros2 launch aries_base_station base_station.launch.py
+ros2 launch aries_comms base_station.launch.py
 ```
 
 Both machines run the same workspace, so there is nothing to copy and nothing
 to mirror by hand.
 
+## Why one package
+
+These two launch files are not two features, they are one decision written
+twice. Which end reads the pad, which end runs RViz, which end decompresses the
+downlink, which cameras are in the list — every one of those is a pair of
+settings that has to agree, and neither half fails loudly when it does not: two
+joy drivers make the buttons chatter, a `color_only` mismatch leaves a
+decompressor waiting forever on a stream nobody sends.
+
+They used to live in `aries_bringup` and `aries_base_station`, so a change to
+one half could be reviewed, merged and deployed without the other ever being
+opened. `test/test_field_link_contract.py` now compares them directly, which is
+only possible because they are in the same package.
+
+What stayed in `aries_bringup` is what is about the **robot** rather than about
+the link: `full_hardware.launch.py`, the camera pipeline at both ends
+(`camera_downlink.launch.py`, `camera_view.launch.py`), and the rover-side
+checker. The dependency runs one way — `aries_comms` → `aries_bringup` — and
+has to: an include pointing back the other way is a colcon dependency cycle.
+
+The DDS transport itself is still `aries_common.comms`, not here. It has to be
+importable on a machine that launches neither side, because
+`aries_dds_env.sh` is what repairs a plain shell.
+
+## Status checks: one per machine, and they are not interchangeable
+
+`full_hardware_checker` stays on the rover. Everything it looks at is on the
+robot — the gripper's serial port, the CAN link, ODrive heartbeats, RealSense
+USB enumeration — and none of that can be sampled across DDS. Its output goes
+to the rover's console, which in the field nobody is reading.
+
+`base_station_checker` is the operator-side one, started by
+`base_station.launch.py` and runnable alone:
+
+```bash
+ros2 launch aries_comms base_station_checker.launch.py
+ros2 service call /check_base_station std_srvs/srv/Trigger   # force a print
+```
+
+It reports the four things that can be wrong at this end and are all silent:
+
+- **the link** — this machine's address and which host it is, the domain, the
+  RMW, and the interface the Cyclone config on disk actually pins, read from
+  *this process's* environment rather than recomputed. That is the point: the
+  classic failure is a launch started from a terminal older than the exports,
+  sitting on domain 0 while everything else looks fine.
+- **the pad** — the device node, and the **number of publishers on `/joy`**.
+  Two is the expensive one, because it looks like a working pad.
+- **the downlink** — per stream, whether the rover is publishing (from the
+  graph) and whether frames are actually arriving. It measures arrivals on the
+  machine-local `/<cam>/view/*`, *never* on `/downlink/*`: subscribing to a
+  compressed stream is what pulls it over the antenna, and a second participant
+  doing so pulls a second copy. Measuring the view output is also the better
+  test — a frame there means the link *and* the decompressor both worked.
+- **the rover** — `/tf`, `/joint_states`, `/robot_description`. Fresh `/tf`
+  with no downlink is a camera problem; no `/tf` at all is a link or domain
+  problem, and the two are worth telling apart before touching a radio.
+
+It also counts RViz instances, and says so if there is more than one.
+
+For actual bandwidth, `ros2 run aries_bringup downlink_report.py` — it
+subscribes to the compressed topics on purpose, briefly, and says so.
+
 **Setting up from scratch — addresses, radios, verification — is
 [`FIELD_SETUP.md`](../../FIELD_SETUP.md) at the repo root.** This file is the
-reference for the operator side once that is done.
+reference for running the link once that is done.
+
+## What each side starts
 
 | | rover (`rover_field.launch.py`) | base station (`base_station.launch.py`) |
 |---|---|---|
@@ -23,8 +88,9 @@ reference for the operator side once that is done.
 | joystick driver | no (`use_joy_node:=false`) | **yes** (`use_joy_node:=true`) |
 | teleop consumers | yes — arm, presets, drive | no |
 | cameras | drivers + compressors | decompressors |
-| RViz | no (`use_gui:=false`) | yes |
+| RViz | no (`use_gui:=false`) | yes — **one** |
 | `/tf`, `/joint_states` | published | consumed |
+| status check | `full_hardware_checker` | `base_station_checker` |
 
 ## What crosses the antenna
 
@@ -127,7 +193,8 @@ ros2 run aries_bringup downlink_report.py
 | empty topic list, ping works | domain / RMW mismatch. Check `/proc/<pid>/environ`, not just your shell — a process keeps what it STARTED with, so a terminal opened before the environment was set stays wrong forever. |
 | topics listed, no data | QoS. The downlink is BEST_EFFORT; a RELIABLE subscriber never matches it at all, so the topic lists fine and never delivers. |
 | `Failed to find a free participant index` | more participants than `MAX_AUTO_PARTICIPANT_INDEX` in `aries_common/comms.py`. The stack is ~30 nodes; Cyclone's own default cap is 9. |
-| buttons chatter, teleop unreproducible | two joy drivers. Exactly one machine may set `use_joy_node:=true`. |
+| buttons chatter, teleop unreproducible | two joy drivers. Exactly one machine may set `use_joy_node:=true`; `base_station_checker` counts the publishers on `/joy`. |
+| two RViz windows, one of them blank | fixed, and worth knowing why. `camera_view.launch.py` declared a `use_rviz` of its own, and an include inherits the parent's launch configurations — so this file's `use_rviz` (default true) switched that one on too, with this file's `rviz_config` of `""`. The node is gone from `camera_view` and the include is now `forwarding=False`. A second window today was started by hand. |
 | link works, then drops when another team powers on | duplicate address. `./scripts/setup_field_link.sh --check` |
 | `WARNING: ... this is a GUESS` at launch | this machine has no static address. `./scripts/setup_field_link.sh {rover\|base}` |
 | duplicate node names | two launches alive. `pgrep -f "ros2 launch"` |
@@ -166,7 +233,7 @@ address (two machines on a switch).
 correct as the arguments given to it:
 
 ```bash
-ros2 launch aries_base_station base_station.launch.py finger_type:=probe
+ros2 launch aries_comms base_station.launch.py finger_type:=probe
 ```
 
 A base station showing bucket fingers while the rover carries the probe tips is

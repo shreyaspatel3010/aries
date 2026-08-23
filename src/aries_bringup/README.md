@@ -23,11 +23,16 @@ Two commands, one per machine. Both run the same workspace.
 
 ```bash
 # ROVER
-ros2 launch aries_bringup rover_field.launch.py
+ros2 launch aries_comms rover_field.launch.py
 
 # BASE STATION  — the joystick plugs in HERE
-ros2 launch aries_base_station base_station.launch.py
+ros2 launch aries_comms base_station.launch.py
 ```
+
+Both live in **`aries_comms`** — they are two halves of one contract (which
+end reads the pad, which end runs RViz, which end decompresses), and while they
+sat in separate packages nothing compared them. `aries_bringup` keeps what is
+about the robot rather than about the link.
 
 `rover_field.launch.py` is `full_hardware.launch.py` plus the communication
 layer, with three defaults flipped for remote operation:
@@ -46,7 +51,7 @@ layer, with three defaults flipped for remote operation:
 Everything `full_hardware.launch.py` accepts still works:
 
 ```bash
-ros2 launch aries_bringup rover_field.launch.py finger_type:=probe downlink_profile:=lean
+ros2 launch aries_comms rover_field.launch.py finger_type:=probe downlink_profile:=lean
 ```
 
 Standing next to the robot with the pad in the rover's USB port instead:
@@ -58,7 +63,7 @@ First-time setup — static addresses, radio configuration, verification — is
 with other teams a DHCP address is not just untidy, it stops `comms.py` being
 able to tell which machine it is running on.
 
-See `aries_base_station/README.md` for the link budget, the latency budget, the
+See `aries_comms/README.md` for the link budget, the latency budget, the
 radio settings, and troubleshooting.
 
 ### Full Rover + Gazebo + MoveIt (most common)
@@ -329,7 +334,7 @@ So the operator gets a separate, compressed stream.
 <camera>/aligned_depth… ──┘   rate/scale/range   └─ /downlink/<cam>/depth ─ PNG16
 ```
 
-**Operator laptop** — `aries_base_station` starts this for you as part of
+**Operator laptop** — `aries_comms` starts this for you as part of
 `base_station.launch.py`. On its own:
 
 ```bash

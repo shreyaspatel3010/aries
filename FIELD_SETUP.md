@@ -34,7 +34,7 @@ they hold.
 
 | | rover | base station |
 |---|---|---|
-| launch | `ros2 launch aries_bringup rover_field.launch.py` | `ros2 launch aries_base_station base_station.launch.py` |
+| launch | `ros2 launch aries_comms rover_field.launch.py` | `ros2 launch aries_comms base_station.launch.py` |
 | static address | `192.168.1.10` | `192.168.1.11` |
 | **joystick** | — | **plugged in here** |
 | RViz | no | yes |
@@ -353,27 +353,27 @@ comes back.
 
 ```bash
 # ROVER
-ros2 launch aries_bringup rover_field.launch.py
+ros2 launch aries_comms rover_field.launch.py
 
 # BASE STATION  — joystick plugged in HERE
-ros2 launch aries_base_station base_station.launch.py
+ros2 launch aries_comms base_station.launch.py
 ```
 
 Common variations:
 
 ```bash
 # probe fingertips fitted — MUST match on both machines
-ros2 launch aries_bringup rover_field.launch.py         finger_type:=probe
-ros2 launch aries_base_station base_station.launch.py   finger_type:=probe
+ros2 launch aries_comms rover_field.launch.py         finger_type:=probe
+ros2 launch aries_comms base_station.launch.py   finger_type:=probe
 
 # weak link: half resolution, 10.9 Mbit/s instead of 28.3
-ros2 launch aries_bringup rover_field.launch.py downlink_profile:=lean
+ros2 launch aries_comms rover_field.launch.py downlink_profile:=lean
 
 # smoother video, if the link has room
-ros2 launch aries_bringup rover_field.launch.py downlink_rate_hz:=30
+ros2 launch aries_comms rover_field.launch.py downlink_rate_hz:=30
 
 # standing next to the robot with the pad in the rover's USB port
-ros2 launch aries_bringup rover_field.launch.py use_joy_node:=true use_gui:=true
+ros2 launch aries_comms rover_field.launch.py use_joy_node:=true use_gui:=true
 ```
 
 ### What the joystick controls, from the base station
@@ -507,8 +507,9 @@ instant.
 
 - [ ] base antenna on the tripod, as high as practical, aimed at the rover
 - [ ] check signal on airOS before driving anywhere
-- [ ] `ros2 launch aries_bringup rover_field.launch.py` on the rover
-- [ ] `ros2 launch aries_base_station base_station.launch.py` on the base
+- [ ] `ros2 launch aries_comms rover_field.launch.py` on the rover
+- [ ] `ros2 launch aries_comms base_station.launch.py` on the base
+- [ ] the base station's own status block says **BASE STATION READY** (it prints on change; `ros2 service call /check_base_station std_srvs/srv/Trigger` forces one)
 - [ ] `ros2 run aries_bringup downlink_report.py` — confirm the rate and the age column
 - [ ] `./scripts/check_control_path.py --remote` from the base — `/joy` reaches the rover and `/cmd_vel` comes back
 - [ ] **drive-away test**: hold LB, drive 2 m, release. Then power the base radio off mid-drive and confirm the rover stops within a second.
@@ -527,6 +528,7 @@ knowing the watchdog works and assuming it does.
 | static address setup | `scripts/setup_field_link.sh` |
 | control path check | `scripts/check_control_path.py` |
 | stop everything | `communication/stop_comms.sh` |
-| base station package | `src/aries_base_station/README.md` |
+| both ends of the link, one package | `src/aries_comms/README.md` |
+| operator-side status check | `ros2 launch aries_comms base_station_checker.launch.py` |
 | camera downlink internals | `src/aries_bringup/README.md` → *Camera downlink* |
-| rover launch | `src/aries_bringup/launch/rover_field.launch.py` |
+| rover launch | `src/aries_comms/launch/rover_field.launch.py` |
