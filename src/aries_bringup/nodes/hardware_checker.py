@@ -25,6 +25,8 @@ from odrive_can.msg import ControllerStatus, ODriveStatus
 from sensor_msgs.msg import Joy
 from std_srvs.srv import Trigger
 
+from aries_common.odrive_errors import format_odrive_error
+
 
 # ── ODrive axis_state values ─────────────────────────────────────────────────
 AXIS_STATE_NAMES = {
@@ -312,7 +314,8 @@ class RoverHardwareChecker(Node):
             odrv_stale = self.check_odrive_status and not axis_has_odrv[i]
 
             if axis_err[i]:
-                err_str = f"{R}ERR ctrl:0x{ctrl_e:08X}  drv:0x{drv_e:08X}{RST}"
+                err_str = (f"{R}ERR ctrl:{format_odrive_error(ctrl_e)}"
+                           f"  drv:{format_odrive_error(drv_e)}{RST}")
                 print(
                     f"  {R}✗{RST} Axis {i}  ({label})  — "
                     f"{Y}{state_name}{RST}  {volt_str}  {vel_str}  {err_str}",

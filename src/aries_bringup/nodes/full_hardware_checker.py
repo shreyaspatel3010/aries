@@ -38,6 +38,7 @@ from std_srvs.srv import Trigger
 
 from aries_common.detect import can_link_state, describe_can_link
 from aries_common.devices import device
+from aries_common.odrive_errors import format_odrive_error
 
 try:
     from odrive_can.msg import ControllerStatus, ODriveStatus
@@ -776,7 +777,8 @@ class FullHardwareChecker(Node):
             odrv_stale = self.check_odrive_status and not axis_has_odrv[i]
 
             if axis_err[i]:
-                err_str = f"{R}ERR ctrl:0x{ctrl_e:08X}  drv:0x{drv_e:08X}{RST}"
+                err_str = (f"{R}ERR ctrl:{format_odrive_error(ctrl_e)}"
+                           f"  drv:{format_odrive_error(drv_e)}{RST}")
                 print(
                     f"  {R}✗{RST} Axis {i}  ({label})  — "
                     f"{Y}{state_name}{RST}  {volt_str}  {vel_str}  {err_str}",

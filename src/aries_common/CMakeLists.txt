@@ -32,6 +32,12 @@ if(BUILD_TESTING)
     test/test_device_table.py
     TIMEOUT 60
   )
+  # Pins the ODriveError bit values the hardware checkers decode against.
+  ament_add_pytest_test(
+    odrive_errors
+    test/test_odrive_errors.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()
