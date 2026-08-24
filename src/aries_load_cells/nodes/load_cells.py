@@ -349,6 +349,12 @@ class LoadCells(Node):
         # the way /aries_drive/status already does it.
         self.status_pub = self.create_publisher(String, f"{self.ns}/status", 10)
 
+        # "No counts yet" is reported once in full and then only as a
+        # reminder; see _publish_cb. Cleared when counts start, so a board that
+        # comes up late says so instead of leaving a complaint as the last word.
+        self._warned_no_counts = False
+        self.no_counts_reminder_s = 120.0
+
         # --- subscriptions ---------------------------------------------------
         self.raw_topic = str(g("raw_topic").value)
         self.raw_topics = [t for t in g("raw_topics").value if t]
@@ -536,15 +542,38 @@ class LoadCells(Node):
         if self.container_cell:
             self._integrate_container()
 
-        for name in self.cell_names:
-            cell = self.cells[name]
-            fresh = self._fresh(cell)
-            if not fresh and cell.stamp is None and self.source != "mock":
+        # Once per TICK, not once per cell. All three cells are fed from the
+        # same raw topic, so "nothing has ever arrived" is one fact about one
+        # topic; reporting it inside the loop below printed it three times.
+        #
+        # And said in full ONCE, then rarely. "The board is not attached" is a
+        # static condition, not an event: on a bench run it is true for the
+        # whole session, and at 10 s it printed ~360 times an hour into a
+        # console someone is trying to read the rest of the stack in.
+        if self.source != "mock":
+            silent = [n for n in self.cell_names if self.cells[n].stamp is None]
+            if silent and not self._warned_no_counts:
+                self._warned_no_counts = True
                 self.get_logger().warn(
                     f"No counts on {self.raw_topic} yet - is the Teensy's "
                     f"micro-ROS agent up, and does the firmware publish it? "
-                    f"Run with source:=mock to exercise this without hardware.",
-                    throttle_duration_sec=10.0)
+                    f"Run with source:=mock to exercise this without hardware. "
+                    f"(Repeats every {self.no_counts_reminder_s:.0f}s while it "
+                    f"lasts; the weights publish NaN meanwhile.)")
+            elif silent:
+                self.get_logger().warn(
+                    f"still no counts on {self.raw_topic} "
+                    f"({len(silent)}/{len(self.cell_names)} cells)",
+                    throttle_duration_sec=self.no_counts_reminder_s)
+            elif self._warned_no_counts:
+                # Say so when it comes back, or the last thing in the log is a
+                # complaint about hardware that has since started working.
+                self._warned_no_counts = False
+                self.get_logger().info(f"counts arriving on {self.raw_topic}")
+
+        for name in self.cell_names:
+            cell = self.cells[name]
+            fresh = self._fresh(cell)
             # EVERY CELL, EVERY TICK, whatever the rover is doing. All three
             # weights are live readings and none of them is gated on the rover
             # holding still: watch a box fill while it is being filled, watch

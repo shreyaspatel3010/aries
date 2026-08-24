@@ -7,6 +7,7 @@ end (nothing is ever discovered, because multicast is off).
 """
 
 import sys
+import re
 from pathlib import Path
 
 import pytest
@@ -260,14 +261,40 @@ def test_a_guessed_address_is_never_silent(monkeypatch, capsys):
 # --------------------------------------------------------------------------
 
 
-def test_local_only_config_pins_no_interface(monkeypatch, tmp_path):
+def test_local_only_config_pins_only_loopback(monkeypatch, tmp_path):
+    """Off the link, the only address safe to pin is the one every machine has.
+
+    The original rule was "pin nothing here", because Cyclone treats an address
+    the machine does not hold as fatal. 127.0.0.1 is not such an address, and
+    pinning nothing turned out to have its own failure: Cyclone then picks a
+    physical NIC once, at participant creation, and never re-selects — so a
+    bench run started with an Ethernet cable in dies into
+
+        tev: ddsi_udp_conn_write to udp/239.255.0.1:14900 failed with retcode -1
+
+    from every participant, forever, the moment the cable comes out.
+    """
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
     path, local = comms.write_cyclone_config(tmp_path / "c.xml", require_link=False)
     assert local is None
     xml = Path(path).read_text()
-    assert "<NetworkInterface" not in xml, (
-        "a machine off the field link must not pin an interface — "
-        "Cyclone treats an address it does not have as fatal"
+
+    pins = re.findall(r'<NetworkInterface\s+address="([^"]+)"', xml)
+    assert pins == ["127.0.0.1"], (
+        f"off the field link the only pinnable interface is loopback, got {pins}"
+    )
+
+
+def test_local_only_config_never_uses_multicast(monkeypatch, tmp_path):
+    """`lo` carries no MULTICAST flag, so a multicast write over it cannot
+    succeed; discovery has to go to an explicit localhost peer instead."""
+    monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
+    path, _ = comms.write_cyclone_config(tmp_path / "c.xml", require_link=False)
+    xml = Path(path).read_text()
+    assert "<AllowMulticast>false</AllowMulticast>" in xml
+    assert '<Peer address="127.0.0.1"/>' in xml, (
+        "multicast off with no peer leaves a single-machine run with no "
+        "discovery at all"
     )
 
 
