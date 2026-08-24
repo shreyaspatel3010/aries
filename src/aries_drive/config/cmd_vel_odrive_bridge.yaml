@@ -6,15 +6,17 @@ cmd_vel_odrive_bridge:
     status_topic: "/aries_drive/status"
 
     num_axes: 6
-    # CAN node id -> physical wheel, identified on 2026-08-12 by arming one
-    # axis at a time after the chassis was reassembled. The node ids no longer
-    # follow the sides in contiguous blocks, so these lists interleave:
-    #   0 Right-Front   1 Left-Mid    2 Left-Rear
-    #   3 Right-Rear    4 Right-Mid   5 Left-Front
-    # Listed front -> rear. rover_nav/Odom.py takes the same two parameters and
-    # must be given the same values, or odometry reads the sides backwards.
-    right_wheels: [0, 4, 3]
-    left_wheels: [5, 1, 2]
+    # CAN node id -> physical wheel, re-identified on 2026-08-24 by arming one
+    # axis at a time. The node ids now follow the sides in contiguous blocks
+    # again, left 0..2 and right 3..5, but the two blocks run in opposite
+    # directions:
+    #   0 Left-Front    1 Left-Mid    2 Left-Rear
+    #   3 Right-Rear    4 Right-Mid   5 Right-Front
+    # Listed front -> rear, so right_wheels counts down. rover_nav/Odom.py takes
+    # the same two parameters and must be given the same values, or odometry
+    # reads the sides backwards.
+    right_wheels: [5, 4, 3]
+    left_wheels: [0, 1, 2]
 
     # Must stay consistent with rover_nav/Odom.py.
     wheel_circumference_m: 0.697

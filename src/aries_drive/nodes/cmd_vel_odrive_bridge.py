@@ -107,8 +107,8 @@ class CmdVelOdriveBridge(Node):
         self.declare_parameter("num_axes", 6)
         # Overridden by cmd_vel_odrive_bridge.yaml in every launch path; these
         # defaults track it so running this node bare is not silently wrong.
-        self.declare_parameter("right_wheels", [0, 4, 3])
-        self.declare_parameter("left_wheels", [5, 1, 2])
+        self.declare_parameter("right_wheels", [5, 4, 3])
+        self.declare_parameter("left_wheels", [0, 1, 2])
         self.declare_parameter("wheel_circumference_m", 0.697)
         self.declare_parameter("track_width_m", 0.566)
         self.declare_parameter("max_linear_mps", 0.45)

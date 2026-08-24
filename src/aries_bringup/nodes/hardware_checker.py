@@ -45,17 +45,17 @@ AXIS_STATE_NAMES = {
 CLOSED_LOOP = 8
 
 # ── Wheel layout ─────────────────────────────────────────────────────────────
-# CAN node id -> physical wheel, identified by arming one axis at a time after
-# the 2026-08-12 chassis reassembly. Keep in step with right_wheels/left_wheels
-# in aries_drive/config/cmd_vel_odrive_bridge.yaml.
-# right_wheels = [0, 4, 3]   left_wheels = [5, 1, 2]
+# CAN node id -> physical wheel, re-identified by arming one axis at a time on
+# 2026-08-24. Keep in step with right_wheels/left_wheels in
+# aries_drive/config/cmd_vel_odrive_bridge.yaml.
+# right_wheels = [5, 4, 3]   left_wheels = [0, 1, 2]   (both listed front -> rear)
 AXIS_LABELS = {
-    0: "Right-Front",
+    0: "Left-Front ",
     1: "Left-Mid   ",
     2: "Left-Rear  ",
     3: "Right-Rear ",
     4: "Right-Mid  ",
-    5: "Left-Front ",
+    5: "Right-Front",
 }
 NUM_AXES = 6
 

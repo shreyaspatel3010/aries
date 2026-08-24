@@ -86,9 +86,9 @@ def main(args=None):
     node = Node("six_wheel_controller")
 
     num_axes = 6
-    # Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
-    right_wheels = [0, 4, 3]
-    left_wheels = [5, 1, 2]
+    # Post-2026-08-24 re-identification mapping; see cmd_vel_odrive_bridge.yaml.
+    right_wheels = [5, 4, 3]
+    left_wheels = [0, 1, 2]
 
     # Setup ODrive clients and publishers
     clients = []

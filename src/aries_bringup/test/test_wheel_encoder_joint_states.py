@@ -21,31 +21,31 @@ SPEC.loader.exec_module(MODULE)
 
 
 def test_axis_to_physical_wheel_mapping():
-    """Physically identified after the 2026-08-12 reassembly, axis by axis.
+    """Physically re-identified on 2026-08-24, axis by axis.
 
     _3 is the FRONT wheel and _1 the REAR, measured from base_link through TF.
     The joint origins in the xacro suggest the opposite order because _1/_2 are
     parented to the boggie and _3 to the rocker.
     """
     assert MODULE.AXIS_JOINTS == (
-        "R_3_Wheel_Joint",  # axis 0 Right-Front
+        "L_3_Wheel_Joint",  # axis 0 Left-Front
         "L_2_Wheel_Joint",  # axis 1 Left-Mid
         "L_1_Wheel_Joint",  # axis 2 Left-Rear
         "R_1_Wheel_Joint",  # axis 3 Right-Rear
         "R_2_Wheel_Joint",  # axis 4 Right-Mid
-        "L_3_Wheel_Joint",  # axis 5 Left-Front
+        "R_3_Wheel_Joint",  # axis 5 Right-Front
     )
 
 
 def test_left_wheel_visualization_sign_matches_opposite_motor_mounting():
-    """Signs follow the side each axis is on, not a 0..2 / 3..5 split."""
+    """Signs follow the side each axis is on."""
     assert MODULE.DEFAULT_AXIS_SIGNS == (
-        1.0,   # axis 0 right
+        -1.0,  # axis 0 left
         -1.0,  # axis 1 left
         -1.0,  # axis 2 left
         1.0,   # axis 3 right
         1.0,   # axis 4 right
-        -1.0,  # axis 5 left
+        1.0,   # axis 5 right
     )
 
 
@@ -56,8 +56,8 @@ def test_joint_mapping_agrees_with_the_drive_side_lists():
     match the sign applied to that same axis. Catches an edit to one tuple that
     forgets the other.
     """
-    right_axes = [0, 4, 3]
-    left_axes = [5, 1, 2]
+    right_axes = [5, 4, 3]
+    left_axes = [0, 1, 2]
     for axis in right_axes:
         assert MODULE.AXIS_JOINTS[axis].startswith("R_")
         assert MODULE.DEFAULT_AXIS_SIGNS[axis] > 0

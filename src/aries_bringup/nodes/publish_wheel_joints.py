@@ -32,11 +32,14 @@ PASSIVE_JOINTS = (
 # CAN node id -> URDF wheel joint. TF needs the exact joint, unlike drive
 # commands and odometry, which only care which side an axis is on.
 #
-# Established physically on 2026-08-12 after the chassis was reassembled, by
-# arming one axis at a time and seeing which wheel resisted turning:
+# Re-established physically on 2026-08-24 by arming one axis at a time and
+# seeing which wheel resisted turning:
 #
-#   axis 0 Right-Front   axis 1 Left-Mid     axis 2 Left-Rear
-#   axis 3 Right-Rear    axis 4 Right-Mid    axis 5 Left-Front
+#   axis 0 Left-Front    axis 1 Left-Mid     axis 2 Left-Rear
+#   axis 3 Right-Rear    axis 4 Right-Mid    axis 5 Right-Front
+#
+# The node ids are contiguous per side (left 0..2, right 3..5) but the right
+# block runs rear -> front, so it is not a plain 0..2 / 3..5 front-to-rear split.
 #
 # _3 = FRONT, _2 = mid, _1 = REAR on both sides. Do not try to read that order
 # off the joint origins in right_link.xacro / left_link.xacro: _1 and _2 hang
@@ -47,23 +50,25 @@ PASSIVE_JOINTS = (
 #   _3 x = +0.230   _2 x = -0.067   _1 x = -0.323     (+x forward, confirmed
 #   by the forward-facing D435i at x = +0.276)
 #
-# This supersedes an earlier hand-derived "right axes 0..2 = rear, mid, front"
-# contract that disagreed with AXIS_LABELS about where axis 0 was.
+# Both this tuple and DEFAULT_AXIS_SIGNS below are indexed by axis, so an edit
+# here that is not mirrored there silently spins one wheel backwards in TF;
+# test_wheel_encoder_joint_states.py cross-checks the two against the side
+# lists in aries_drive/config/cmd_vel_odrive_bridge.yaml.
 AXIS_JOINTS = (
-    "R_3_Wheel_Joint",
+    "L_3_Wheel_Joint",
     "L_2_Wheel_Joint",
     "L_1_Wheel_Joint",
     "R_1_Wheel_Joint",
     "R_2_Wheel_Joint",
-    "L_3_Wheel_Joint",
+    "R_3_Wheel_Joint",
 )
 
 # The physical left motors/encoders are mounted opposite to the right side.
 # Odom.py corrects this when calculating travel; apply the same convention to
 # URDF wheel rotation so forward rover motion animates forward on both sides.
-# Indexed by axis, so this follows the mapping above rather than a 0..2 / 3..5
-# split: right axes 0, 4, 3 keep +1 and left axes 5, 1, 2 take -1.
-DEFAULT_AXIS_SIGNS = (1.0, -1.0, -1.0, 1.0, 1.0, -1.0)
+# Indexed by axis, so this follows the mapping above: right axes 5, 4, 3 keep
+# +1 and left axes 0, 1, 2 take -1.
+DEFAULT_AXIS_SIGNS = (-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)
 
 
 def encoder_to_joint(

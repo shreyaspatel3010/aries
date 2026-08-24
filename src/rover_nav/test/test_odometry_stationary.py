@@ -42,8 +42,9 @@ def test_baseline_waits_for_every_encoder(odom_node):
 
     _sample(odom_node, 5, 105.0)
     odom_node.update_odometry()
-    assert odom_node.prev_left_pos == pytest.approx([103.0, 104.0, 105.0])
-    assert odom_node.prev_right_pos == pytest.approx([100.0, 101.0, 102.0])
+    # left_wheels = [0, 1, 2] and right_wheels = [5, 4, 3], both front -> rear.
+    assert odom_node.prev_left_pos == pytest.approx([100.0, 101.0, 102.0])
+    assert odom_node.prev_right_pos == pytest.approx([105.0, 104.0, 103.0])
     assert odom_node.x == pytest.approx(0.0)
 
 
@@ -52,10 +53,12 @@ def test_stationary_sample_clears_previous_velocity(odom_node):
         _sample(odom_node, axis, 0.0)
     odom_node.update_odometry()
 
+    # Axes 0..2 are the left side, whose motors are mounted opposite to the
+    # right side, so forward travel reads negative there and positive on 3..5.
     for axis in range(3):
-        _sample(odom_node, axis, 0.1)
-    for axis in range(3, 6):
         _sample(odom_node, axis, -0.1)
+    for axis in range(3, 6):
+        _sample(odom_node, axis, 0.1)
     odom_node.last_update_time = (
         odom_node.get_clock().now() - Duration(seconds=1.0)
     )
@@ -63,9 +66,9 @@ def test_stationary_sample_clears_previous_velocity(odom_node):
     assert odom_node.vx > 0.0
 
     for axis in range(3):
-        _sample(odom_node, axis, 0.1)
-    for axis in range(3, 6):
         _sample(odom_node, axis, -0.1)
+    for axis in range(3, 6):
+        _sample(odom_node, axis, 0.1)
     odom_node.update_odometry()
     assert odom_node.vx == pytest.approx(0.0)
     assert odom_node.vth == pytest.approx(0.0)
@@ -97,9 +100,9 @@ def test_physical_odom_rejects_single_axis_slip(odom_node):
         _sample(odom_node, axis, 0.0)
     odom_node.update_odometry()
 
-    # Right axis 2 spins five times farther than its two side peers. The left
+    # Left axis 2 spins five times farther than its two side peers. The left
     # encoders use the opposite sign for the same forward travel.
-    for axis, position in enumerate([0.1, 0.1, 0.5, -0.1, -0.1, -0.1]):
+    for axis, position in enumerate([-0.1, -0.1, -0.5, 0.1, 0.1, 0.1]):
         _sample(odom_node, axis, position)
     odom_node.last_update_time = (
         odom_node.get_clock().now() - Duration(seconds=1.0)
