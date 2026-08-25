@@ -107,10 +107,14 @@ SIM_CMD_VEL_TOPIC          = '/rover_controller/cmd_vel'
 SIM_CMD_VEL_STAMPED        = True
 SIM_ODOM_TOPIC             = '/odometry/filtered'
 
-# Physical caps. The bridge clamps to max_linear_mps=0.45 / max_angular_rps=2.10
+# Physical caps. The bridge clamps to max_linear_mps=0.75 / max_angular_rps=2.10
 # and ramps the wheels at 3.0 rev/s^2 regardless; these keep the rover well
 # inside that envelope so the commanded and executed twist stay the same thing.
-HW_MAX_LINEAR_CAP          = 0.45   # cmd_vel_odrive_bridge max_linear_mps
+#
+# The bridge cap was raised 0.45 -> 0.75 on 2026-08-25 to let joystick teleop
+# run faster. Autonomy deliberately did NOT follow: 0.45 stays the planner's
+# own ceiling, so this is now a genuine cap rather than a mirror of the bridge.
+HW_MAX_LINEAR_CAP          = 0.45   # planner ceiling; bridge allows 0.75
 HW_MAX_ANGULAR_CAP         = 2.10   # cmd_vel_odrive_bridge max_angular_rps
 HW_BASE_VELOCITY           = 0.30   # m/s — conservative default for field runs
 HW_MAX_ANGULAR_Z           = 1.20   # rad/s

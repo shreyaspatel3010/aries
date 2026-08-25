@@ -111,7 +111,7 @@ class CmdVelOdriveBridge(Node):
         self.declare_parameter("left_wheels", [0, 1, 2])
         self.declare_parameter("wheel_circumference_m", 0.697)
         self.declare_parameter("track_width_m", 0.566)
-        self.declare_parameter("max_linear_mps", 0.45)
+        self.declare_parameter("max_linear_mps", 0.75)
         self.declare_parameter("max_angular_rps", 2.10)
         self.declare_parameter("max_wheel_rps", 1.50)
         self.declare_parameter("wheel_accel_rps2", 3.0)

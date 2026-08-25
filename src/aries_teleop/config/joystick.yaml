@@ -109,10 +109,17 @@ rover_cmd_vel_joystick:
     invert_angular: false
 
     deadzone: 0.08
-    max_linear: 0.45
-    max_angular: 1.40
-    accel_limit: 0.80
-    angular_accel_limit: 2.00
+    # Raised from 0.45/1.40 on 2026-08-25. The ceiling is the bridge's
+    # max_wheel_rps of 1.50, which on the 0.697 m wheel is 1.05 m/s; 0.70
+    # straight-line is 1.00 rps, and only a full-stick-plus-full-turn command
+    # (0.70 + 1.70*0.283 = 1.18 m/s = 1.70 rps) reaches the bridge's
+    # proportional de-rate. cmd_vel_odrive_bridge's own max_linear_mps has to
+    # stay above this or it clips the increase straight back off.
+    max_linear: 0.70
+    max_angular: 1.70
+    # Scaled with the speeds so the ramp to top speed still takes ~0.55 s.
+    accel_limit: 1.25
+    angular_accel_limit: 2.45
     publish_rate_hz: 30.0
 
     # See rover_joystick_controller above. This node relays the last joystick
@@ -135,10 +142,12 @@ mock_rover_drive:
     invert_linear: false
     invert_angular: false
     deadzone: 0.08
-    max_linear: 0.55
-    max_angular: 1.60
-    accel_limit: 1.20
-    angular_accel_limit: 3.00
+    # Matched to rover_cmd_vel_joystick above so what the pad feels in sim is
+    # what the hardware does; the mock used to sit 22% higher for no reason.
+    max_linear: 0.70
+    max_angular: 1.70
+    accel_limit: 1.55
+    angular_accel_limit: 3.20
     publish_rate_hz: 30.0
 
 drill_joystick:

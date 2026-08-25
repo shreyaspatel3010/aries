@@ -295,7 +295,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "drive_max_linear_mps",
-            default_value="0.45",
+            default_value="0.75",
             description="Final hardware-bridge linear speed cap in m/s.",
         ),
         DeclareLaunchArgument(

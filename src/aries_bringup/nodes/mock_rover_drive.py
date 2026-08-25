@@ -47,8 +47,8 @@ class MockRoverDrive(Node):
         self.declare_parameter("invert_angular", False)
 
         self.declare_parameter("deadzone", 0.08)
-        self.declare_parameter("max_linear", 0.55)
-        self.declare_parameter("max_angular", 1.60)
+        self.declare_parameter("max_linear", 0.70)
+        self.declare_parameter("max_angular", 1.70)
         self.declare_parameter("accel_limit", 1.20)
         self.declare_parameter("angular_accel_limit", 3.00)
         self.declare_parameter("publish_rate_hz", 30.0)
