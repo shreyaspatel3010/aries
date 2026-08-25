@@ -24,6 +24,14 @@ if(BUILD_TESTING)
     test/test_field_link_contract.py
     TIMEOUT 60
   )
+  # The operator's ODrive table and the rover's are deliberate duplicates, so
+  # that neither end depends on a shared module changing under it. This is what
+  # stops them drifting into naming the same axis two different wheels.
+  ament_add_pytest_test(
+    axis_tables
+    test/test_axis_tables.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()

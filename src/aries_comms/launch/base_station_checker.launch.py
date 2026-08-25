@@ -9,7 +9,11 @@ without restarting anything, or from a third machine that is only spectating.
 
 It is the counterpart of aries_bringup/launch/full_hardware_checker.launch.py,
 which stays on the rover: that one probes serial ports, CAN and USB, none of
-which exist at this end, and prints to the robot's console.
+which exist at this end, and prints to the robot's console. Everything that one
+learns from TOPICS is reported here as well -- arm, gripper, the drive bridge,
+the six ODrive axes, the IMU -- so the operator does not need an SSH session to
+see which subsystem is down. See the node for what that costs on the link
+(under 0.1 Mbit/s, plus ~0.3 for the IMU).
 
 STANDALONE RUNS NEED THE ENVIRONMENT
     Launched on its own this file sets the DDS environment like every other
@@ -76,7 +80,38 @@ def generate_launch_description():
                         "other host and the radios.",
         ),
         DeclareLaunchArgument("check_downlink", default_value="true"),
-        DeclareLaunchArgument("check_rover", default_value="true"),
+        DeclareLaunchArgument(
+            "check_rover", default_value="true",
+            description="/tf, /joint_states and the latched /robot_description "
+                        "-- whether the rover's state stream is arriving at all.",
+        ),
+
+        # The rover's own subsystems, judged from the topics that cross the
+        # link: the half of full_hardware_checker that is not a serial port.
+        # Each drops out on its own, for a marginal link or a run that
+        # deliberately did not start that subsystem.
+        DeclareLaunchArgument(
+            "check_arm", default_value="true",
+            description="Arm controller, arm joints, move_group, Servo and the "
+                        "arm teleop node, all from the graph and /joint_states.",
+        ),
+        DeclareLaunchArgument("check_gripper", default_value="true"),
+        DeclareLaunchArgument(
+            "check_drive", default_value="true",
+            description="The bridge's 2 Hz status (armed, pending_axes, the CAN "
+                        "link as the ROVER sees it), /cmd_vel, and the six "
+                        "ODrive axes at 5 Hz. Under 0.1 Mbit/s in total.",
+        ),
+        DeclareLaunchArgument(
+            "check_imu", default_value="true",
+            description="The only row that costs real bandwidth: 100 Hz of "
+                        "sensor_msgs/Imu, roughly 0.3 Mbit/s. Turn it off on a "
+                        "link that is already dropping frames.",
+        ),
+        DeclareLaunchArgument(
+            "imu_topic", default_value="/microstrain/imu/data",
+            description="Must match aries_imu's remap, or the row reads dead.",
+        ),
         DeclareLaunchArgument(
             "print_only_on_change", default_value="true",
             description="Rates are bucketed before the comparison, so a healthy "
@@ -101,6 +136,11 @@ def generate_launch_description():
                 "check_link": LaunchConfiguration("check_link"),
                 "check_downlink": LaunchConfiguration("check_downlink"),
                 "check_rover": LaunchConfiguration("check_rover"),
+                "check_arm": LaunchConfiguration("check_arm"),
+                "check_gripper": LaunchConfiguration("check_gripper"),
+                "check_drive": LaunchConfiguration("check_drive"),
+                "check_imu": LaunchConfiguration("check_imu"),
+                "imu_topic": _text("imu_topic"),
                 "print_only_on_change": LaunchConfiguration("print_only_on_change"),
             }],
         ),

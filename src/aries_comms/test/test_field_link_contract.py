@@ -190,3 +190,42 @@ def test_checker_launch_matches_the_camera_lists(base):
     checker = CHECKER.read_text()
     assert _default_of(checker, "cameras") == _default_of(base, "cameras")
     assert _default_of(checker, "color_only") == _default_of(base, "color_only")
+
+
+def test_checker_toggles_reach_the_checker_launch(base):
+    """base_station's `checker_*` and the checker's own `check_*` are one flag.
+
+    They are spelled differently because both files declare arguments into the
+    same launch context and `check_rover` already means something here. A
+    default that disagrees across the two is invisible: the operator sets the
+    one they can see and the node reads the other.
+    """
+    checker = CHECKER.read_text()
+    for outer, inner in (
+        ("checker_arm", "check_arm"),
+        ("checker_gripper", "check_gripper"),
+        ("checker_drive", "check_drive"),
+        ("checker_imu", "check_imu"),
+    ):
+        assert f'"{inner}": LaunchConfiguration("{outer}")' in base, (
+            f"base_station.launch.py does not forward {outer} as {inner}"
+        )
+        assert _default_of(base, outer) == _default_of(checker, inner), (
+            f"{outer} and {inner} have different defaults, so the flag the "
+            f"operator sets is not the one the node reads"
+        )
+
+
+def test_the_checker_reads_the_rover_without_a_second_state_publisher(base):
+    """It samples the rover's topics; it must not become a source of them.
+
+    The rover-subsystem rows subscribe to /joint_states, /cmd_vel and the
+    ODrive status topics. Publishing any of those from this end would be a
+    checker that measures itself, which is the same mistake the /downlink rule
+    exists to prevent.
+    """
+    node = (PKG / "nodes" / "base_station_checker.py").read_text()
+    body = node.split('"""', 2)[-1]
+    assert "create_publisher" not in body, (
+        "the base station checker publishes something; it is a listener"
+    )

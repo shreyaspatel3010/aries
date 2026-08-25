@@ -220,6 +220,16 @@ def _setup(context, *args, **kwargs):
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 # Whether a local /joy publisher is expected, or is the fault.
                 "expect_local_joy": LaunchConfiguration("use_joy_node"),
+                # The rover's own subsystems, read from the topics that cross
+                # the link. On by default: the operator cannot see the robot,
+                # and this is the only report they get. `checker_imu:=false`
+                # is the one worth turning off on a marginal link -- it is
+                # 100 Hz of sensor_msgs/Imu and everything else together is
+                # under 0.1 Mbit/s.
+                "check_arm": LaunchConfiguration("checker_arm"),
+                "check_gripper": LaunchConfiguration("checker_gripper"),
+                "check_drive": LaunchConfiguration("checker_drive"),
+                "check_imu": LaunchConfiguration("checker_imu"),
             },
             actions=[
                 IncludeLaunchDescription(
@@ -310,10 +320,35 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "start_checker", default_value="true",
             description="The operator-side status line: link, pad, downlink, "
-                        "rover. full_hardware_checker stays on the rover and "
-                        "cannot see any of it.",
+                        "and the rover's own subsystems as its topics show "
+                        "them. full_hardware_checker stays on the rover, sees "
+                        "the link from neither end, and prints where nobody "
+                        "here is looking.",
         ),
         DeclareLaunchArgument("checker_interval", default_value="4.0"),
+
+        # Which of the rover's subsystems the checker reports on. On by
+        # default: the operator cannot see the robot, so this is the only
+        # report they get. Presence comes from the graph and costs nothing;
+        # the subscriptions behind these are the topics that were sized for a
+        # 250 kbit/s CAN bus, together under 0.1 Mbit/s.
+        DeclareLaunchArgument("checker_arm", default_value="true"),
+        DeclareLaunchArgument("checker_gripper", default_value="true"),
+        DeclareLaunchArgument(
+            "checker_drive", default_value="true",
+            description="The drive bridge's own 2 Hz report -- armed, "
+                        "pending_axes, and the CAN link as the ROVER sees it "
+                        "-- plus /cmd_vel and the six ODrive axes.",
+        ),
+        DeclareLaunchArgument(
+            "checker_imu", default_value="true",
+            description="The one row that costs real bandwidth: 100 Hz of "
+                        "sensor_msgs/Imu, ~0.3 Mbit/s. Still on by default, "
+                        "because the checker already pays about that for "
+                        "/joint_states and a silently dead IMU means the "
+                        "heading drifts with nothing saying so. Turn it off "
+                        "when the link itself is what is marginal.",
+        ),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument(
             "rviz_config", default_value="",

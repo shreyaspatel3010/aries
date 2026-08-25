@@ -27,8 +27,21 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <!-- base_station_checker.py samples the rover's own topics to report which
+       of its subsystems is up: Joy and Image for the pad and the decompressed
+       downlink, Imu for the MicroStrain, JointState for the arm and gripper,
+       Twist for /cmd_vel, String for the drive bridge's status and
+       /robot_description, TFMessage for /tf. -->
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <!-- The six ODrive axes. Deliberately NOT a hard dependency in the node:
+       the import is guarded, because a spectating base station that never
+       built src/vendor/ros_odrive must still be able to report the link, the
+       pad and the downlink rather than dying at startup. -->
+  <exec_depend>odrive_can</exec_depend>
 
   <!-- The DDS transport config both ends share, and devices.yaml under it.
        It stays in aries_common because aries_dds_env.sh has to be sourceable
