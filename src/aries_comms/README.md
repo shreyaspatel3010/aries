@@ -172,7 +172,7 @@ Work bottom up and stop at the first failure.
 
 # 2. this shell's environment  — must match on both machines
 source "$(ros2 pkg prefix aries_common)/share/aries_common/aries_dds_env.sh"
-env | grep -E "RMW_|ROS_DOMAIN|CYCLONEDDS|FASTDDS|FASTRTPS"
+env | grep -E "RMW_|ROS_DOMAIN|FASTDDS|FASTRTPS"
 
 # 3. what a RUNNING process actually has (this is the one that catches it)
 tr '\0' '\n' < /proc/<pid>/environ | grep -E "ROS_DOMAIN_ID|RMW_"
@@ -193,7 +193,6 @@ ros2 run aries_bringup downlink_report.py
 |---|---|
 | empty topic list, ping works | domain / RMW mismatch. Check `/proc/<pid>/environ`, not just your shell — a process keeps what it STARTED with, so a terminal opened before the environment was set stays wrong forever. |
 | topics listed, no data | QoS. The downlink is BEST_EFFORT; a RELIABLE subscriber never matches it at all, so the topic lists fine and never delivers. |
-| `Failed to find a free participant index` | **Cyclone only** (`ARIES_RMW=rmw_cyclonedds_cpp`): more participants than `MAX_AUTO_PARTICIPANT_INDEX` in `aries_common/comms.py`. The stack is ~30 nodes; Cyclone's own default cap is 9. Fast DDS addresses peers by locator, not by a bounded index range, so it has no equivalent. |
 | buttons chatter, teleop unreproducible | two joy drivers. Exactly one machine may set `use_joy_node:=true`; `base_station_checker` counts the publishers on `/joy`. |
 | two RViz windows, one of them blank | fixed, and worth knowing why. `camera_view.launch.py` declared a `use_rviz` of its own, and an include inherits the parent's launch configurations — so this file's `use_rviz` (default true) switched that one on too, with this file's `rviz_config` of `""`. The node is gone from `camera_view` and the include is now `forwarding=False`. A second window today was started by hand. |
 | link works, then drops when another team powers on | duplicate address. `./scripts/setup_field_link.sh --check` |
@@ -201,8 +200,8 @@ ros2 run aries_bringup downlink_report.py
 | duplicate node names | two launches alive. `pgrep -f "ros2 launch"` |
 | worked, then died after a replug | new ifindex, old sockets dead. Restart nodes on both ends. |
 | one direction only | firewall. DDS needs UDP both ways: `sudo ufw allow from 192.168.1.0/24` |
-| `does not match an available interface` | a stale config naming a fixed address — `CYCLONEDDS_URI`, or `FASTDDS_DEFAULT_PROFILES_FILE` / `FASTRTPS_DEFAULT_PROFILES_FILE`. Delete the export from `~/.bashrc`; the launch files overwrite it and say so. |
-| gripper, drill or load cells dead while everything else is fine | the stack is on Cyclone. `micro_ros_agent` cannot be built against Cyclone, so the Teensy's topics are always Fast DDS and a Cyclone stack cannot discover them. `ros2 topic info /gripper/state` shows **Publisher count: 0**. Fast DDS is the default; check nothing has set `ARIES_RMW`. |
+| `does not match an available interface` | a stale `FASTDDS_DEFAULT_PROFILES_FILE` / `FASTRTPS_DEFAULT_PROFILES_FILE` naming a fixed address. Delete the export from `~/.bashrc`; the launch files overwrite it and say so. |
+| a leftover `CYCLONEDDS_URI` in your shell | inert. The stack is Fast DDS only since 2026-08-26 and nothing reads it. Delete the export — the launch says so at startup. |
 | `FASTDDS_DEFAULT_PROFILES_FILE` set but ignored | it takes a **plain path**, not a `file://` URI. Fast DDS silently ignores a prefixed value and every participant quietly falls back to its own defaults. |
 
 ## Configuration

@@ -2,26 +2,24 @@
 
 The rover and the base station run the same workspace, so this file is the same
 file on both. The one setting that must differ between them --
-``<NetworkInterface address>`` -- is *detected* here rather than written down,
+the pinned interface address -- is *detected* here rather than written down,
 because a hand-mirrored copy is the failure this module exists to prevent:
 
-    Cyclone treats an address the machine does not hold, and a config file it
-    cannot open, as FATAL. It refuses to create the domain, so every node in
-    the launch dies at startup with
+    A DDS implementation treats an address the machine does not hold, and a
+    config file it cannot open, as FATAL. It refuses to create the domain, so
+    every node in the launch dies at startup with
 
-        can't open configuration file file:///.../cyclonedds.xml
         rmw_create_node: failed to create domain, error Error
 
-    Measured on Cyclone under Jazzy, 2026-08-21. Older notes in this repo
-    claimed it merely warns and falls back to defaults -- it does not, and a
-    copied-and-not-edited config takes the whole stack down rather than
-    degrading quietly.
+    Measured under Jazzy, 2026-08-21. Older notes in this repo claimed it merely
+    warns and falls back to defaults -- it does not, and a copied-and-not-edited
+    config takes the whole stack down rather than degrading quietly.
 
 That cuts both ways, and is why ``require_link`` exists below. A machine with
 no antenna -- a developer laptop running simulation -- must NOT be pinned to a
 field-link address, or the same fatality applies to it for no reason. It is
 pinned to 127.0.0.1 instead, which every machine holds: see ``local_only_xml``
-for why leaving the choice to Cyclone is worse than either.
+for why leaving the choice to the middleware is worse than either.
 
 Everything else -- domain, peers, multicast -- is identical on both ends and is
 read from the ``network:`` section of ``aries_common/config/devices.yaml``.
@@ -264,7 +262,7 @@ def peers(local=None):
     if local is None:
         local = local_address()
 
-    # Bound to loopback, nothing off this machine is reachable, and Cyclone
+    # Bound to loopback, nothing off this machine is reachable, and the DDS
     # says so once per unreachable port per announcement -- sixty-odd lines per
     # peer per participant, which buries every real message in the log. A
     # single-host bench run peers with itself and nothing else.
@@ -438,13 +436,9 @@ def dds_launch_actions(path=None, require_link=True):
     """
     from launch.actions import LogInfo, SetEnvironmentVariable
 
-    # Whichever variable this middleware uses to point at its config. Indexing
-    # CYCLONEDDS_URI unconditionally is what this used to do, and it raised
-    # KeyError the moment the default moved to Fast DDS -- taking the whole
-    # launch down before a single node started.
-    _CONFIG_VARS = ("CYCLONEDDS_URI", "FASTDDS_DEFAULT_PROFILES_FILE")
+    _CONFIG_VAR = "FASTDDS_DEFAULT_PROFILES_FILE"
 
-    inherited = {name: os.environ.get(name, "").strip() for name in _CONFIG_VARS}
+    inherited = os.environ.get(_CONFIG_VAR, "").strip()
     env = dds_environment(path, require_link=require_link)
     actions = [SetEnvironmentVariable(name, value) for name, value in env.items()]
     actions.append(
@@ -452,27 +446,24 @@ def dds_launch_actions(path=None, require_link=True):
             msg=f"[comms] domain {env['ROS_DOMAIN_ID']}, {env['RMW_IMPLEMENTATION']}"
         )
     )
-    config_var = next((n for n in _CONFIG_VARS if n in env), None)
-    if config_var:
-        actions.append(LogInfo(msg=f"[comms] {config_var}={env[config_var]}"))
-        was = inherited.get(config_var, "")
-        if was and was != env[config_var]:
-            # Said out loud rather than done quietly: someone put that there.
-            actions.append(LogInfo(
-                msg=f"[comms] replaced inherited {config_var}={was} "
-                    f"(ARIES_KEEP_CYCLONEDDS_URI=1 / ARIES_KEEP_FASTDDS_PROFILES=1 "
-                    f"to keep yours). If that came from ~/.bashrc, delete the line "
-                    f"-- it names a fixed address and is wrong on every machine "
-                    f"but one."
-            ))
-    # A pointer left over from the OTHER vendor is worth saying too: it is inert
-    # now, and it is exactly what someone will find later and be misled by.
-    for name in _CONFIG_VARS:
-        if name not in env and inherited.get(name):
-            actions.append(LogInfo(
-                msg=f"[comms] NOTE {name}={inherited[name]} is set but this stack "
-                    f"is on {env['RMW_IMPLEMENTATION']}, which ignores it."
-            ))
+    actions.append(LogInfo(msg=f"[comms] {_CONFIG_VAR}={env[_CONFIG_VAR]}"))
+    if inherited and inherited != env[_CONFIG_VAR]:
+        # Said out loud rather than done quietly: someone put that there.
+        actions.append(LogInfo(
+            msg=f"[comms] replaced inherited {_CONFIG_VAR}={inherited} "
+                f"(set ARIES_KEEP_FASTDDS_PROFILES=1 to keep yours). If that came "
+                f"from ~/.bashrc, delete the line -- it names a fixed address "
+                f"and is wrong on every machine but one."
+        ))
+    # A CYCLONEDDS_URI left over from before 2026-08-26 is inert now, and is
+    # exactly what someone will find later and be misled by. This stack no
+    # longer supports Cyclone at all -- see the note on RMW above.
+    stale_cyclone = os.environ.get("CYCLONEDDS_URI", "").strip()
+    if stale_cyclone:
+        actions.append(LogInfo(
+            msg=f"[comms] NOTE CYCLONEDDS_URI={stale_cyclone} is set and is "
+                f"IGNORED -- this stack is Fast DDS only. Delete the export."
+        ))
     actions.append(
         LogInfo(
             msg="[comms] shells started by hand need: source \"$(ros2 pkg prefix "
@@ -483,9 +474,7 @@ def dds_launch_actions(path=None, require_link=True):
 
 
 if __name__ == "__main__":
-    writer = (write_fastdds_config if RMW == "rmw_fastrtps_cpp"
-              else write_cyclone_config)
-    written, address = writer(require_link=False)
+    written, address = write_dds_config(require_link=False)
     if address is None:
         print(f"local only (not on the field link), domain {domain_id()}")
     else:

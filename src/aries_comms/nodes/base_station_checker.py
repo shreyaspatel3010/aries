@@ -559,31 +559,19 @@ class BaseStationChecker(Node):
         domain = os.environ.get("ROS_DOMAIN_ID", "")
         rmw = os.environ.get("RMW_IMPLEMENTATION", "")
 
-        # WHICH VARIABLE AND WHICH XML DEPENDS ON THE MIDDLEWARE. This used to
-        # read CYCLONEDDS_URI unconditionally, which meant that the moment the
-        # stack moved to Fast DDS the checker reported "no CYCLONEDDS_URI" and
-        # "Cyclone interface unpinned" on a completely healthy link. A checker
-        # that cries wolf is worse than no checker, so it follows comms.RMW.
+        # THE PROFILE PATH IS A PLAIN PATH, NOT A URI. Fast DDS silently
+        # ignores a `file://` prefixed value and falls back to its own defaults,
+        # so a prefix appearing here IS the bug -- it must be reported, never
+        # quietly stripped.
         #
-        #   Cyclone   CYCLONEDDS_URI, file:// prefixed
-        #             <NetworkInterface address="X"/>
-        #   Fast DDS  FASTDDS_/FASTRTPS_DEFAULT_PROFILES_FILE, PLAIN path
-        #             <interfaceWhiteList><address>X</address>
-        #
-        # Both spellings of the Fast DDS variable are checked because
-        # comms.dds_environment() sets both -- the name changed at Fast DDS 2.12
-        # and the old one is still honoured.
-        if rmw == "rmw_cyclonedds_cpp":
-            config_var = "CYCLONEDDS_URI"
-            uri = os.environ.get(config_var, "")
-            path = uri[len("file://"):] if uri.startswith("file://") else ""
-        else:
-            config_var = "FASTDDS_DEFAULT_PROFILES_FILE"
-            uri = (os.environ.get(config_var, "")
-                   or os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", ""))
-            # No file:// here -- Fast DDS silently ignores a prefixed value, so
-            # one appearing is itself the bug and must not be quietly stripped.
-            path = uri
+        # Both spellings are read because comms.dds_environment() sets both: the
+        # variable was renamed at Fast DDS 2.12 and the old name is still
+        # honoured, and which one a given build reads is not worth discovering
+        # in the field.
+        config_var = "FASTDDS_DEFAULT_PROFILES_FILE"
+        uri = (os.environ.get(config_var, "")
+               or os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", ""))
+        path = uri
 
         pinned = None
         readable = None
@@ -591,9 +579,8 @@ class BaseStationChecker(Node):
             try:
                 text = Path(path).read_text()
                 readable = True
-                match = (re.search(r'<NetworkInterface\s+address="([^"]+)"', text)
-                         or re.search(r"<interfaceWhiteList>\s*<address>([^<]+)</address>",
-                                      text))
+                match = re.search(
+                    r"<interfaceWhiteList>\s*<address>([^<]+)</address>", text)
                 pinned = match.group(1).strip() if match else None
             except OSError:
                 readable = False

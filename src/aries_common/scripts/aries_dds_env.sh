@@ -15,10 +15,10 @@
 # fine, empty topic list, no error anywhere.
 #
 # THE VARIABLES ARE NOT LISTED HERE ON PURPOSE. This script exports whatever
-# comms.dds_environment() returns, which differs per middleware -- Fast DDS
-# wants FASTRTPS_/FASTDDS_DEFAULT_PROFILES_FILE, Cyclone wants CYCLONEDDS_URI.
-# Hard-coding either set in shell is how a launch file and a terminal end up on
-# different transports while both look correct.
+# comms.dds_environment() returns, so the shell and the launch files cannot
+# drift apart. CYCLONEDDS_URI is unset rather than exported: this stack is Fast
+# DDS only as of 2026-08-26, and a leftover export from before that is inert but
+# is exactly what somebody will find later and be misled by.
 
 _aries_dds_env() {
     local out
@@ -38,17 +38,16 @@ print("_ARIES_ADDRESS=%s" % (c.local_address() or ""))
         echo "ARIES comms: could not configure DDS; leaving this shell alone." >&2
         echo "$out" >&2
         # Clear rather than leave a stale config behind: an unset variable is a
-        # working default, a wrong one stops every node from starting. Both
-        # vendors' variables, because the shell may be carrying the other one
-        # from before a middleware change.
+        # working default, a wrong one stops every node from starting.
+        # CYCLONEDDS_URI too -- inert now, but misleading to find.
         unset CYCLONEDDS_URI
         unset FASTRTPS_DEFAULT_PROFILES_FILE
         unset FASTDDS_DEFAULT_PROFILES_FILE
         return 1
     fi
 
-    # Drop the other vendor's leftovers BEFORE exporting, so switching
-    # middleware in a live shell cannot leave a stale pointer behind.
+    # Drop any leftovers BEFORE exporting, including the retired Cyclone
+    # pointer, so a shell that predates the Fast DDS switch cannot keep one.
     unset CYCLONEDDS_URI
     unset FASTRTPS_DEFAULT_PROFILES_FILE
     unset FASTDDS_DEFAULT_PROFILES_FILE
@@ -74,12 +73,10 @@ EOF
         echo "             (not on the field link — fine for simulation; run"
         echo "              scripts/setup_field_link.sh before going to the field)"
     fi
-    echo "             ${FASTDDS_DEFAULT_PROFILES_FILE:-$CYCLONEDDS_URI}"
+    echo "             $FASTDDS_DEFAULT_PROFILES_FILE"
 
     # The ros2 CLI daemon caches the node graph per (domain, rmw) and will
-    # happily serve the old, empty one after a change. It is especially
-    # important after a MIDDLEWARE change: the cached graph is from the other
-    # vendor entirely and looks like a stack that half-vanished.
+    # happily serve the old, empty one after a change.
     ros2 daemon stop >/dev/null 2>&1
 }
 

@@ -281,14 +281,14 @@ def test_the_checker_reads_the_rover_without_a_second_state_publisher(base):
     )
 
 
-# --- the checker must follow the middleware ---------------------------------
+# --- the checker must read the profile the stack actually uses ---------------
 #
 # base_station_checker reads the DDS config of its OWN process to report what
-# the stack actually has. It used to read CYCLONEDDS_URI unconditionally, so the
-# moment comms.RMW moved to Fast DDS it reported "no CYCLONEDDS_URI" and an
-# unpinned interface on a completely healthy link. A checker that cries wolf on
-# a working system is worse than no checker -- people stop reading it, and then
-# it is silent for the failure it exists to catch.
+# the stack actually has. It used to read CYCLONEDDS_URI and parse Cyclone's
+# XML; when the stack moved to Fast DDS that reported "not set" and an unpinned
+# interface on a completely healthy link. A checker that cries wolf on a working
+# system is worse than no checker -- people stop reading it, and then it is
+# silent for the failure it exists to catch.
 
 import sys                                                        # noqa: E402
 
@@ -298,37 +298,35 @@ from aries_common import comms                                    # noqa: E402
 CHECKER_NODE = (PKG / "nodes" / "base_station_checker.py").read_text()
 
 
-def _pinned_interface(text):
-    """The checker's own parsing, applied to a config file."""
-    match = (re.search(r'<NetworkInterface\s+address="([^"]+)"', text)
-             or re.search(r"<interfaceWhiteList>\s*<address>([^<]+)</address>", text))
-    return match.group(1).strip() if match else None
+def test_checker_finds_the_pinned_interface(tmp_path):
+    """The checker's own parsing, applied to a real generated profile."""
+    path, _ = comms.write_dds_config(tmp_path / "dds.xml", require_link=False)
+    text = Path(path).read_text()
+    match = re.search(r"<interfaceWhiteList>\s*<address>([^<]+)</address>", text)
+    assert match, "write_dds_config produced a profile the checker cannot parse"
+    assert match.group(1).strip() == (comms.local_address() or "127.0.0.1")
 
 
-@pytest.mark.parametrize("writer_name", ["write_fastdds_config", "write_cyclone_config"])
-def test_checker_finds_the_pinned_interface_in_either_config(writer_name, tmp_path):
-    """Both vendors spell the interface pin differently; both must be found."""
-    writer = getattr(comms, writer_name)
-    path, _ = writer(tmp_path / "dds.xml", require_link=False)
-    pinned = _pinned_interface(Path(path).read_text())
-    assert pinned, f"{writer_name} produced a config the checker cannot parse"
-    assert pinned == (comms.local_address() or "127.0.0.1")
-
-
-def test_checker_reads_the_variable_its_middleware_actually_uses():
-    """Not CYCLONEDDS_URI unconditionally -- that is the bug this pins."""
-    assert 'if rmw == "rmw_cyclonedds_cpp":' in CHECKER_NODE
+def test_checker_reads_both_spellings_of_the_profile_variable():
+    """comms sets both; Fast DDS renamed it at 2.12 and honours the old one."""
     assert '"FASTDDS_DEFAULT_PROFILES_FILE"' in CHECKER_NODE
     assert '"FASTRTPS_DEFAULT_PROFILES_FILE"' in CHECKER_NODE
 
 
-def test_checker_does_not_strip_a_file_prefix_from_the_fastdds_path():
+def test_checker_does_not_strip_a_file_prefix():
     """Fast DDS silently ignores a file:// value, so one appearing IS the bug.
 
     Stripping it would hide exactly the misconfiguration worth reporting.
     """
     body = CHECKER_NODE[CHECKER_NODE.index("def _dds_environment"):]
     body = body[:body.index("def _any_publisher")]
-    fastdds_branch = body[body.index("else:"):]
-    assert 'len("file://")' not in fastdds_branch, (
-        "the Fast DDS branch must take the path as-is")
+    assert 'len("file://")' not in body, "the profile path must be taken as-is"
+
+
+def test_nothing_in_comms_still_speaks_cyclone():
+    """Cyclone was removed, not deprecated. A half-removed vendor is worse than
+    either: it leaves code paths nobody exercises and docs that mislead."""
+    for path in sorted((PKG / "nodes").glob("*.py")) + sorted((PKG / "launch").glob("*.py")):
+        text = path.read_text()
+        assert "CYCLONEDDS_URI" not in text, f"{path.name} still reads CYCLONEDDS_URI"
+        assert "rmw_cyclonedds_cpp" not in text, f"{path.name} still names Cyclone"

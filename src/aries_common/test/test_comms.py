@@ -20,9 +20,10 @@ from aries_common import devices  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    # CYCLONEDDS_URI stays in this list although the stack no longer reads it:
+    # a leftover in the developer's shell must not leak into a test.
     for name in ("ARIES_DOMAIN_ID", "ARIES_EXTRA_PEERS", "CYCLONEDDS_URI",
-                 "ARIES_KEEP_CYCLONEDDS_URI", "ARIES_LOCAL_ADDRESS",
-                 "ARIES_RMW", "ARIES_KEEP_FASTDDS_PROFILES",
+                 "ARIES_LOCAL_ADDRESS", "ARIES_KEEP_FASTDDS_PROFILES",
                  "FASTRTPS_DEFAULT_PROFILES_FILE",
                  "FASTDDS_DEFAULT_PROFILES_FILE"):
         monkeypatch.delenv(name, raising=False)
@@ -72,29 +73,39 @@ def test_extra_peers_env(monkeypatch):
 
 
 def test_xml_names_the_local_address_and_disables_multicast():
+    """The three things the field link needs from the profile."""
     rover, base = comms.hosts()["rover"], comms.hosts()["base"]
-    xml = comms.cyclone_xml(rover, [base, "127.0.0.1"])
-    assert f'<NetworkInterface address="{rover}"/>' in xml
-    # The airMAX link sends multicast at its lowest data rate.
-    assert "<AllowMulticast>false</AllowMulticast>" in xml
-    assert f'<Peer address="{base}"/>' in xml
-    # The stack is ~30 nodes; Cyclone's default cap of 9 kills bringup partway.
-    assert comms.MAX_AUTO_PARTICIPANT_INDEX >= 40
+    xml = comms.dds_xml(rover, [base, "127.0.0.1"])
+
+    # 1. the interface pin
+    assert f"<address>{rover}</address>" in xml
+    assert "interfaceWhiteList" in xml
+
+    # 2. explicit unicast peers. The airMAX link sends multicast at its lowest
+    #    data rate, so discovery must not rely on it.
+    for peer in (base, "127.0.0.1"):
+        assert f"<udpv4><address>{peer}</address></udpv4>" in xml, peer
+
+    # 3. UDP only. Left to its defaults Fast DDS adds shared memory and prefers
+    #    it for anything on the same host, which bypasses the interface pin
+    #    entirely and is invisible to anything watching the wire.
+    assert "<useBuiltinTransports>false</useBuiltinTransports>" in xml
+    assert "<type>UDPv4</type>" in xml
 
 
 def test_write_config_uses_the_detected_address(tmp_path, monkeypatch):
     rover = comms.hosts()["rover"]
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: rover)
-    path, local = comms.write_cyclone_config(tmp_path / "cyclone.xml")
+    path, local = comms.write_dds_config(tmp_path / "dds.xml")
     assert local == rover
-    assert f'address="{local}"' in Path(path).read_text()
+    assert f"<address>{local}</address>" in Path(path).read_text()
 
 
 def test_missing_link_raises_rather_than_falling_back(monkeypatch):
     """A missing cable must fail here, not later as an unexplained empty graph."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
     with pytest.raises(RuntimeError):
-        comms.write_cyclone_config()
+        comms.write_dds_config()
 
 
 def test_environment_is_complete(tmp_path, monkeypatch):
@@ -103,19 +114,16 @@ def test_environment_is_complete(tmp_path, monkeypatch):
     env = comms.dds_environment(tmp_path / "dds.xml")
     assert env["RMW_IMPLEMENTATION"] == comms.RMW
     assert env["ROS_DOMAIN_ID"] == comms.domain_id()
-    if comms.RMW == "rmw_fastrtps_cpp":
-        # PLAIN PATH, no file:// -- Fast DDS silently ignores a prefixed value,
-        # which would leave every participant on its own defaults.
-        assert env["FASTRTPS_DEFAULT_PROFILES_FILE"] == env["FASTDDS_DEFAULT_PROFILES_FILE"]
-        assert not env["FASTDDS_DEFAULT_PROFILES_FILE"].startswith("file://")
-    else:
-        assert env["CYCLONEDDS_URI"].startswith("file://")
+    # PLAIN PATH, no file:// -- Fast DDS silently ignores a prefixed value,
+    # which would leave every participant on its own defaults.
+    assert env["FASTRTPS_DEFAULT_PROFILES_FILE"] == env["FASTDDS_DEFAULT_PROFILES_FILE"]
+    assert not env["FASTDDS_DEFAULT_PROFILES_FILE"].startswith("file://")
 
 
 def test_fastdds_profile_pins_the_interface_and_lists_peers():
-    """The Fast DDS profile must give the field link what the Cyclone XML did."""
+    """The profile must give the field link its pin and its unicast peers."""
     rover, base = comms.hosts()["rover"], comms.hosts()["base"]
-    xml = comms.fastdds_xml(rover, [base, "127.0.0.1"])
+    xml = comms.dds_xml(rover, [base, "127.0.0.1"])
     assert f"<address>{rover}</address>" in xml, "interface not pinned"
     assert "interfaceWhiteList" in xml
     for peer in (base, "127.0.0.1"):
@@ -126,18 +134,6 @@ def test_fastdds_profile_pins_the_interface_and_lists_peers():
     assert "<type>UDPv4</type>" in xml
 
 
-def test_inherited_uri_is_replaced_not_honoured(tmp_path, monkeypatch):
-    """The shell's value is almost always a stale export naming an address this
-    machine does not have. A launch that inherited it would be back to the
-    domain being a property of the terminal."""
-    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
-    monkeypatch.setenv("CYCLONEDDS_URI", "file:///tmp/stale-hardcoded.xml")
-    monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["rover"])
-    env = comms.dds_environment(tmp_path / "cyclone.xml")
-    assert env["CYCLONEDDS_URI"] != "file:///tmp/stale-hardcoded.xml"
-    assert env["CYCLONEDDS_URI"].endswith("cyclone.xml")
-
-
 def test_inherited_fastdds_profile_is_replaced_not_honoured(tmp_path, monkeypatch):
     """Same rule for the other vendor: the shell does not get to decide."""
     monkeypatch.setattr(comms, "RMW", "rmw_fastrtps_cpp")
@@ -146,15 +142,6 @@ def test_inherited_fastdds_profile_is_replaced_not_honoured(tmp_path, monkeypatc
     env = comms.dds_environment(tmp_path / "fast.xml")
     assert env["FASTRTPS_DEFAULT_PROFILES_FILE"] != "/tmp/stale-profiles.xml"
     assert env["FASTDDS_DEFAULT_PROFILES_FILE"].endswith("fast.xml")
-
-
-def test_deliberate_override_can_be_kept(monkeypatch):
-    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
-    monkeypatch.setenv("CYCLONEDDS_URI", "file:///tmp/hand-written.xml")
-    monkeypatch.setenv("ARIES_KEEP_CYCLONEDDS_URI", "1")
-    monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
-    env = comms.dds_environment()
-    assert env["CYCLONEDDS_URI"] == "file:///tmp/hand-written.xml"
 
 
 def test_deliberate_fastdds_override_can_be_kept(monkeypatch):
@@ -169,19 +156,15 @@ def test_deliberate_fastdds_override_can_be_kept(monkeypatch):
 def test_env_dict_carries_only_what_the_middleware_needs(tmp_path, monkeypatch):
     """Anything else here becomes a real exported variable on every node."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["rover"])
-
-    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
-    env = comms.dds_environment(tmp_path / "cyclone.xml")
-    assert set(env) == {"ROS_DOMAIN_ID", "RMW_IMPLEMENTATION", "CYCLONEDDS_URI"}
-
+    env = comms.dds_environment(tmp_path / "fast.xml")
     # Two profile variables, not one: Fast DDS renamed it at 2.12 and still
     # honours the old name. Which one a given build reads is not worth finding
     # out in the field.
-    monkeypatch.setattr(comms, "RMW", "rmw_fastrtps_cpp")
-    env = comms.dds_environment(tmp_path / "fast.xml")
     assert set(env) == {"ROS_DOMAIN_ID", "RMW_IMPLEMENTATION",
                         "FASTRTPS_DEFAULT_PROFILES_FILE",
                         "FASTDDS_DEFAULT_PROFILES_FILE"}
+    # And no retired one.
+    assert "CYCLONEDDS_URI" not in env
 
 
 def test_env_script_is_installed():
@@ -320,38 +303,32 @@ def test_a_guessed_address_is_never_silent(monkeypatch, capsys):
 def test_local_only_config_pins_only_loopback(monkeypatch, tmp_path):
     """Off the link, the only address safe to pin is the one every machine has.
 
-    The original rule was "pin nothing here", because Cyclone treats an address
-    the machine does not hold as fatal. 127.0.0.1 is not such an address, and
-    pinning nothing turned out to have its own failure: Cyclone then picks a
-    physical NIC once, at participant creation, and never re-selects — so a
-    bench run started with an Ethernet cable in dies into
-
-        tev: ddsi_udp_conn_write to udp/239.255.0.1:14900 failed with retcode -1
-
-    from every participant, forever, the moment the cable comes out.
+    The original rule was "pin nothing here", because pinning an address the
+    machine does not hold is fatal -- the middleware refuses to create the
+    domain and every node dies at startup. 127.0.0.1 is not such an address, and
+    pinning nothing turned out to have its own failure: an unpinned participant
+    picks a physical NIC once, at creation, and never re-selects, so a bench run
+    started with an Ethernet cable in dies from every participant, forever, the
+    moment the cable comes out.
     """
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
-    path, local = comms.write_cyclone_config(tmp_path / "c.xml", require_link=False)
+    path, local = comms.write_dds_config(tmp_path / "c.xml", require_link=False)
     assert local is None
     xml = Path(path).read_text()
-
-    pins = re.findall(r'<NetworkInterface\s+address="([^"]+)"', xml)
+    pins = re.findall(r"<interfaceWhiteList>\s*<address>([^<]+)</address>", xml)
     assert pins == ["127.0.0.1"], (
-        f"off the field link the only pinnable interface is loopback, got {pins}"
-    )
+        "off the field link the only pinnable interface is loopback, got %r" % pins)
 
 
 def test_local_only_config_never_uses_multicast(monkeypatch, tmp_path):
     """`lo` carries no MULTICAST flag, so a multicast write over it cannot
     succeed; discovery has to go to an explicit localhost peer instead."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
-    path, _ = comms.write_cyclone_config(tmp_path / "c.xml", require_link=False)
+    path, _ = comms.write_dds_config(tmp_path / "c.xml", require_link=False)
     xml = Path(path).read_text()
-    assert "<AllowMulticast>false</AllowMulticast>" in xml
-    assert '<Peer address="127.0.0.1"/>' in xml, (
-        "multicast off with no peer leaves a single-machine run with no "
-        "discovery at all"
-    )
+    assert "<udpv4><address>127.0.0.1</address></udpv4>" in xml, (
+        "no explicit localhost peer leaves a single-machine run relying on "
+        "multicast over lo, which cannot work")
 
 
 def test_local_only_config_still_matches_the_robot_domain(monkeypatch, tmp_path):
@@ -368,7 +345,7 @@ def test_field_launches_still_demand_the_link(monkeypatch):
     there has to fail loudly, not come up local-only and see nothing."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
     with pytest.raises(RuntimeError):
-        comms.write_cyclone_config(require_link=True)
+        comms.write_dds_config(require_link=True)
     with pytest.raises(RuntimeError):
         comms.dds_environment()
 
