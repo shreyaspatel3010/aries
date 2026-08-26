@@ -67,6 +67,12 @@
   <exec_depend>compressed_image_transport</exec_depend>
   <exec_depend>compressed_depth_image_transport</exec_depend>
   <!-- Unicast discovery to explicit peers: the field link drops multicast. -->
+  <!-- BOTH middlewares are runtime dependencies. The stack pins Fast DDS
+       (aries_common/comms.py) because micro_ros_agent cannot be built against
+       Cyclone and the Teensy's topics are therefore always Fast DDS. Cyclone
+       stays declared because ARIES_RMW=rmw_cyclonedds_cpp still selects it and
+       a machine missing the package would fail at node startup, not here. -->
+  <exec_depend>rmw_fastrtps_cpp</exec_depend>
   <exec_depend>rmw_cyclonedds_cpp</exec_depend>
 
   <export>

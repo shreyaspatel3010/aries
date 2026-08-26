@@ -13,33 +13,59 @@
 # with for as long as it lives, so a terminal opened before these were exported
 # stays on the old domain forever -- which looks exactly like a dead link: ping
 # fine, empty topic list, no error anywhere.
+#
+# THE VARIABLES ARE NOT LISTED HERE ON PURPOSE. This script exports whatever
+# comms.dds_environment() returns, which differs per middleware -- Fast DDS
+# wants FASTRTPS_/FASTDDS_DEFAULT_PROFILES_FILE, Cyclone wants CYCLONEDDS_URI.
+# Hard-coding either set in shell is how a launch file and a terminal end up on
+# different transports while both look correct.
 
 _aries_dds_env() {
     local out
     # require_link=False: a machine with no antenna gets a local-only config
     # rather than an error. This runs from ~/.bashrc on developer laptops that
     # only ever run simulation, and an interface pin they do not have is FATAL
-    # -- Cyclone refuses to create the domain and every node in a launch dies
-    # at startup, which is a spectacular way to break a machine that was fine.
-    if ! out="$(python3 -c 'import aries_common.comms as c; print(c.domain_id()); p,a=c.write_cyclone_config(require_link=False); print(p); print(a or "")' 2>&1)"; then
+    # -- the middleware refuses to create the domain and every node in a launch
+    # dies at startup, which is a spectacular way to break a machine that was
+    # fine.
+    if ! out="$(python3 -c '
+import aries_common.comms as c
+env = c.dds_environment(require_link=False)
+for k, v in env.items():
+    print("%s=%s" % (k, v))
+print("_ARIES_ADDRESS=%s" % (c.local_address() or ""))
+' 2>&1)"; then
         echo "ARIES comms: could not configure DDS; leaving this shell alone." >&2
         echo "$out" >&2
-        # Clear rather than leave a stale URI behind: an unset CYCLONEDDS_URI
-        # is a working default, a wrong one stops every node from starting.
+        # Clear rather than leave a stale config behind: an unset variable is a
+        # working default, a wrong one stops every node from starting. Both
+        # vendors' variables, because the shell may be carrying the other one
+        # from before a middleware change.
         unset CYCLONEDDS_URI
+        unset FASTRTPS_DEFAULT_PROFILES_FILE
+        unset FASTDDS_DEFAULT_PROFILES_FILE
         return 1
     fi
 
-    local domain path address
-    domain="$(echo "$out" | sed -n 1p)"
-    path="$(echo "$out" | sed -n 2p)"
-    address="$(echo "$out" | sed -n 3p)"
+    # Drop the other vendor's leftovers BEFORE exporting, so switching
+    # middleware in a live shell cannot leave a stale pointer behind.
+    unset CYCLONEDDS_URI
+    unset FASTRTPS_DEFAULT_PROFILES_FILE
+    unset FASTDDS_DEFAULT_PROFILES_FILE
 
-    export ROS_DOMAIN_ID="$domain"
-    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    # Deliberately overwritten rather than preserved: a stale value carried in
-    # from this shell is the exact thing being corrected.
-    export CYCLONEDDS_URI="file://${path}"
+    local address="" line key value
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [ "$key" = "_ARIES_ADDRESS" ]; then
+            address="$value"
+        else
+            export "$key=$value"
+        fi
+    done <<EOF
+$out
+EOF
 
     if [ -n "$address" ]; then
         echo "ARIES comms: domain $ROS_DOMAIN_ID, $RMW_IMPLEMENTATION, interface $address"
@@ -48,10 +74,12 @@ _aries_dds_env() {
         echo "             (not on the field link — fine for simulation; run"
         echo "              scripts/setup_field_link.sh before going to the field)"
     fi
-    echo "             $CYCLONEDDS_URI"
+    echo "             ${FASTDDS_DEFAULT_PROFILES_FILE:-$CYCLONEDDS_URI}"
 
     # The ros2 CLI daemon caches the node graph per (domain, rmw) and will
-    # happily serve the old, empty one after a change.
+    # happily serve the old, empty one after a change. It is especially
+    # important after a MIDDLEWARE change: the cached graph is from the other
+    # vendor entirely and looks like a stack that half-vanished.
     ros2 daemon stop >/dev/null 2>&1
 }
 

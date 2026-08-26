@@ -38,9 +38,10 @@ WHAT THIS CHANGES AGAINST full_hardware.launch.py
       full_hardware sets the environment too, as of 2026-08-25 -- it used to
       set none, so launching it directly landed on whatever the calling
       terminal had, and a terminal opened before the exports existed keeps
-      domain 0 with rmw_fastrtps_cpp for as long as it lives. The base station
-      is on domain 30 with Cyclone, so the two never see each other: ping
-      works, `ros2 topic list` is empty, and nothing logs an error.
+      domain 0 for as long as it lives. The base station is on domain 30, so
+      the two never see each other: ping works, `ros2 topic list` is empty, and
+      nothing logs an error. The DOMAIN is the trap here, not the middleware --
+      both ends have run Fast DDS since 2026-08-26.
 
       What is still different here is require_link. full_hardware passes False
       because it is also the bench entry point and a laptop with no antenna

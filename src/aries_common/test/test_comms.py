@@ -21,7 +21,10 @@ from aries_common import devices  # noqa: E402
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for name in ("ARIES_DOMAIN_ID", "ARIES_EXTRA_PEERS", "CYCLONEDDS_URI",
-                 "ARIES_KEEP_CYCLONEDDS_URI", "ARIES_LOCAL_ADDRESS"):
+                 "ARIES_KEEP_CYCLONEDDS_URI", "ARIES_LOCAL_ADDRESS",
+                 "ARIES_RMW", "ARIES_KEEP_FASTDDS_PROFILES",
+                 "FASTRTPS_DEFAULT_PROFILES_FILE",
+                 "FASTDDS_DEFAULT_PROFILES_FILE"):
         monkeypatch.delenv(name, raising=False)
     devices.load_devices(refresh=True)
     yield
@@ -95,17 +98,39 @@ def test_missing_link_raises_rather_than_falling_back(monkeypatch):
 
 
 def test_environment_is_complete(tmp_path, monkeypatch):
+    """Whichever middleware is pinned, the env must carry its config pointer."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["base"])
-    env = comms.dds_environment(tmp_path / "cyclone.xml")
-    assert env["RMW_IMPLEMENTATION"] == "rmw_cyclonedds_cpp"
+    env = comms.dds_environment(tmp_path / "dds.xml")
+    assert env["RMW_IMPLEMENTATION"] == comms.RMW
     assert env["ROS_DOMAIN_ID"] == comms.domain_id()
-    assert env["CYCLONEDDS_URI"].startswith("file://")
+    if comms.RMW == "rmw_fastrtps_cpp":
+        # PLAIN PATH, no file:// -- Fast DDS silently ignores a prefixed value,
+        # which would leave every participant on its own defaults.
+        assert env["FASTRTPS_DEFAULT_PROFILES_FILE"] == env["FASTDDS_DEFAULT_PROFILES_FILE"]
+        assert not env["FASTDDS_DEFAULT_PROFILES_FILE"].startswith("file://")
+    else:
+        assert env["CYCLONEDDS_URI"].startswith("file://")
+
+
+def test_fastdds_profile_pins_the_interface_and_lists_peers():
+    """The Fast DDS profile must give the field link what the Cyclone XML did."""
+    rover, base = comms.hosts()["rover"], comms.hosts()["base"]
+    xml = comms.fastdds_xml(rover, [base, "127.0.0.1"])
+    assert f"<address>{rover}</address>" in xml, "interface not pinned"
+    assert "interfaceWhiteList" in xml
+    for peer in (base, "127.0.0.1"):
+        assert f"<udpv4><address>{peer}</address></udpv4>" in xml, peer
+    # Shared memory bypasses the interface pin entirely and is invisible on the
+    # wire, so the profile must declare UDPv4 and nothing else.
+    assert "<useBuiltinTransports>false</useBuiltinTransports>" in xml
+    assert "<type>UDPv4</type>" in xml
 
 
 def test_inherited_uri_is_replaced_not_honoured(tmp_path, monkeypatch):
     """The shell's value is almost always a stale export naming an address this
     machine does not have. A launch that inherited it would be back to the
     domain being a property of the terminal."""
+    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
     monkeypatch.setenv("CYCLONEDDS_URI", "file:///tmp/stale-hardcoded.xml")
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["rover"])
     env = comms.dds_environment(tmp_path / "cyclone.xml")
@@ -113,7 +138,18 @@ def test_inherited_uri_is_replaced_not_honoured(tmp_path, monkeypatch):
     assert env["CYCLONEDDS_URI"].endswith("cyclone.xml")
 
 
+def test_inherited_fastdds_profile_is_replaced_not_honoured(tmp_path, monkeypatch):
+    """Same rule for the other vendor: the shell does not get to decide."""
+    monkeypatch.setattr(comms, "RMW", "rmw_fastrtps_cpp")
+    monkeypatch.setenv("FASTRTPS_DEFAULT_PROFILES_FILE", "/tmp/stale-profiles.xml")
+    monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["rover"])
+    env = comms.dds_environment(tmp_path / "fast.xml")
+    assert env["FASTRTPS_DEFAULT_PROFILES_FILE"] != "/tmp/stale-profiles.xml"
+    assert env["FASTDDS_DEFAULT_PROFILES_FILE"].endswith("fast.xml")
+
+
 def test_deliberate_override_can_be_kept(monkeypatch):
+    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
     monkeypatch.setenv("CYCLONEDDS_URI", "file:///tmp/hand-written.xml")
     monkeypatch.setenv("ARIES_KEEP_CYCLONEDDS_URI", "1")
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
@@ -121,11 +157,31 @@ def test_deliberate_override_can_be_kept(monkeypatch):
     assert env["CYCLONEDDS_URI"] == "file:///tmp/hand-written.xml"
 
 
-def test_env_dict_carries_only_the_three_variables(tmp_path, monkeypatch):
+def test_deliberate_fastdds_override_can_be_kept(monkeypatch):
+    monkeypatch.setattr(comms, "RMW", "rmw_fastrtps_cpp")
+    monkeypatch.setenv("FASTRTPS_DEFAULT_PROFILES_FILE", "/tmp/hand-written.xml")
+    monkeypatch.setenv("ARIES_KEEP_FASTDDS_PROFILES", "1")
+    monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
+    env = comms.dds_environment()
+    assert env["FASTDDS_DEFAULT_PROFILES_FILE"] == "/tmp/hand-written.xml"
+
+
+def test_env_dict_carries_only_what_the_middleware_needs(tmp_path, monkeypatch):
     """Anything else here becomes a real exported variable on every node."""
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: comms.hosts()["rover"])
+
+    monkeypatch.setattr(comms, "RMW", "rmw_cyclonedds_cpp")
     env = comms.dds_environment(tmp_path / "cyclone.xml")
     assert set(env) == {"ROS_DOMAIN_ID", "RMW_IMPLEMENTATION", "CYCLONEDDS_URI"}
+
+    # Two profile variables, not one: Fast DDS renamed it at 2.12 and still
+    # honours the old name. Which one a given build reads is not worth finding
+    # out in the field.
+    monkeypatch.setattr(comms, "RMW", "rmw_fastrtps_cpp")
+    env = comms.dds_environment(tmp_path / "fast.xml")
+    assert set(env) == {"ROS_DOMAIN_ID", "RMW_IMPLEMENTATION",
+                        "FASTRTPS_DEFAULT_PROFILES_FILE",
+                        "FASTDDS_DEFAULT_PROFILES_FILE"}
 
 
 def test_env_script_is_installed():
@@ -304,7 +360,7 @@ def test_local_only_config_still_matches_the_robot_domain(monkeypatch, tmp_path)
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
     env = comms.dds_environment(tmp_path / "c.xml", require_link=False)
     assert env["ROS_DOMAIN_ID"] == comms.domain_id()
-    assert env["RMW_IMPLEMENTATION"] == "rmw_cyclonedds_cpp"
+    assert env["RMW_IMPLEMENTATION"] == comms.RMW
 
 
 def test_field_launches_still_demand_the_link(monkeypatch):

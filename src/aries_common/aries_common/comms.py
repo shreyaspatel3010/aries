@@ -64,40 +64,39 @@ import tempfile
 
 from aries_common.devices import device
 
-# Cyclone needs a discovery port per participant when multicast is off, picked
-# from a bounded range of participant indices. The default cap is 9 -- ten
-# participants per machine -- while the rover stack is roughly thirty nodes.
-# Past the cap, bringup dies partway through with "Failed to find a free
-# participant index for domain 30" and a scatter of unrelated-looking
-# rmw_create_node errors.
+# The middleware. Pinned, and there is only one -- a stack that comes up half on
+# one vendor and half on another looks perfectly healthy per-node and cannot see
+# itself.
 #
-# Raising it costs discovery traffic, and not trivially: a participant unicasts
-# SPDP to every index from 0 to this number, for every peer. 60 covers the whole
-# stack with room to spare; lower it if `iftop` shows discovery crowding the
-# link, but never below the node count.
-MAX_AUTO_PARTICIPANT_INDEX = int(os.environ.get("ARIES_MAX_PARTICIPANT_INDEX", "60"))
+# FAST DDS, AND THE REASON IS STRUCTURAL, NOT PREFERENCE. micro_ros_agent
+# find_package(REQUIRED)s fastrtps, rmw_fastrtps_shared_cpp and
+# rosidl_typesupport_fastrtps_cpp -- it CANNOT be built against CycloneDDS. The
+# drill/gripper/load-cell board's topics are therefore always Fast DDS, and on
+# 2026-08-26 a Cyclone stack could not discover them from any configuration
+# tried: multicast either way, loopback-only, loopback plus the real NIC in
+# <Interfaces>, the real NIC added to <Peers>, no config at all, and a Fast DDS
+# UDP-only profile to rule out shared memory. Measured back to back with the
+# board confirmed connected (agent log: 7 readers, 1 writer) both times:
+#
+#     rmw_fastrtps_cpp   board on the graph, gripper controller active,
+#                        ZERO "Never received /gripper/state" warnings
+#     rmw_cyclonedds_cpp 11 of those warnings in 60 s, gripper unusable
+#
+# Cyclone meant no gripper, no drill and no load cells, because all three live
+# on that one board. The Cyclone path was REMOVED rather than left as an option:
+# an escape hatch that silently disables three subsystems is not an escape
+# hatch, it is a way to lose an afternoon.
+#
+# WHAT THE CYCLONE CONFIG GAVE THE FIELD LINK is reproduced in dds_xml():
+# interfaceWhiteList for the interface pin, initialPeersList for the unicast
+# peers. One Cyclone knob has no counterpart and needs none --
+# MaxAutoParticipantIndex existed because Cyclone unicasts SPDP to a bounded
+# range of participant indices and its default cap of 9 is below this stack's
+# ~30 nodes. Fast DDS addresses peers by locator, so there is no cap to raise
+# and no "Failed to find a free participant index" to hit.
+RMW = "rmw_fastrtps_cpp"
 
-# The middleware, and it is pinned rather than left to whatever the shell has:
-# a stack that comes up half on one vendor and half on another looks perfectly
-# healthy per-node and cannot see itself.
-#
-# ARIES_RMW OVERRIDES IT, for one specific reason. micro_ros_agent is hard-linked
-# against Fast DDS (libfastrtps) and ignores RMW_IMPLEMENTATION entirely, so the
-# Teensy's topics are created on Fast DDS while the rest of the stack is on
-# Cyclone -- and the two do not discover each other here. The symptom is a
-# gripper that never responds while every log reads healthy: the agent reports
-# all its entities created, /gripper/state exists (the HOST advertises it), but
-# `ros2 topic info /gripper/state` shows Publisher count 0.
-#
-#     ARIES_RMW=rmw_fastrtps_cpp ros2 launch aries_bringup full_hardware.launch.py
-#
-# NOTE that the field-link config written below is CycloneDDS XML. Fast DDS
-# ignores it, so an override also drops the interface pinning and the
-# participant-index tuning that config exists for -- fine on one machine, NOT
-# yet equivalent for the two-machine field link.
-RMW = os.environ.get("ARIES_RMW", "").strip() or "rmw_cyclonedds_cpp"
-
-_CONFIG_BASENAME = "aries_cyclonedds.xml"
+_CONFIG_BASENAME = "aries_fastdds.xml"
 
 
 def domain_id():
@@ -281,100 +280,78 @@ def peers(local=None):
     return [p for p in dict.fromkeys(found) if p != local or p == "127.0.0.1"]
 
 
-def cyclone_xml(local, peer_list, domain=None):
-    """The transport config text for one machine."""
-    peer_xml = "\n".join(f'        <Peer address="{p}"/>' for p in peer_list)
+def dds_xml(local, peer_list):
+    """The transport config text for one machine.
+
+    Same three guarantees, expressed in the other vendor's dialect:
+
+      Cyclone <Interfaces><NetworkInterface address=/>  -> interfaceWhiteList
+      Cyclone <Discovery><Peers><Peer address=/>        -> initialPeersList
+      Cyclone <AllowMulticast>false</AllowMulticast>    -> unicast initial peers
+
+    useBuiltinTransports=false is not decoration. Left true, Fast DDS adds its
+    SHARED MEMORY transport and prefers it for anything on the same host, which
+    (a) bypasses the interface pin entirely and (b) is invisible to any tooling
+    that watches the wire. Declaring one UDPv4 transport and nothing else keeps
+    every byte on the pinned address, which is the whole point of the file.
+
+    There is no MaxAutoParticipantIndex equivalent. That knob exists because
+    Cyclone unicasts SPDP to a bounded range of participant indices and the
+    default cap of 9 is below this stack's ~30 nodes. Fast DDS addresses peers
+    by locator rather than by index, so the cap -- and the bug where bringup
+    died partway through with "Failed to find a free participant index" -- has
+    no counterpart here.
+    """
+    peer_xml = "\n".join(
+        f"            <locator><udpv4><address>{p}</address></udpv4></locator>"
+        for p in peer_list
+    )
     return f"""<?xml version="1.0" encoding="UTF-8" ?>
 <!-- GENERATED by aries_common.comms on {socket.gethostname()}. Do not edit:
      it is rewritten every time a launch file or aries_dds_env.sh runs. The
      interface address below is detected, which is what lets the rover and the
      base station share one workspace without mirroring a file by hand. -->
-<CycloneDDS xmlns="https://cdds.io/config">
-  <Domain id="any">
-    <General>
-      <Interfaces>
-        <NetworkInterface address="{local}"/>
-      </Interfaces>
-      <AllowMulticast>false</AllowMulticast>
-    </General>
-    <Discovery>
-      <Peers>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>aries_udpv4</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>{local}</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="aries" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>aries_udpv4</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
 {peer_xml}
-      </Peers>
-      <ParticipantIndex>auto</ParticipantIndex>
-      <MaxAutoParticipantIndex>{MAX_AUTO_PARTICIPANT_INDEX}</MaxAutoParticipantIndex>
-    </Discovery>
-  </Domain>
-</CycloneDDS>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>
 """
 
 
 def local_only_xml():
-    """A config for a machine that is not on the field link at all.
+    """Fast DDS config for a machine that is not on the field link at all.
 
-    Loopback, unicast, no multicast -- deliberately identical to what
-    ``ARIES_LOCAL_ADDRESS=127.0.0.1`` produces through the pinned path, because
-    that is exactly the situation: one machine, talking to itself.
-
-    IT USED TO LEAVE THE INTERFACE TO CYCLONE, AND THAT IS A TRAP.
-
-        With no <Interfaces> pin Cyclone enumerates the machine's interfaces
-        and picks one -- preferring a wired NIC -- **once, at participant
-        creation**. It never re-selects. So a bench run started with an
-        Ethernet cable plugged in binds every one of its ~30 participants to
-        that NIC, and the moment the cable comes out (measured 2026-08-23:
-        carrier lost 13:22:11, first error 13:23:05) every SPDP announcement
-        fails forever:
-
-            tev: ddsi_udp_conn_write to udp/239.255.0.1:14900 failed with
-            retcode -1
-
-        one line per participant per resend, drowning the launch. Nothing
-        recovers it but a restart, and nothing about the message says
-        "your cable came out".
-
-        A simulation on one machine has no reason to be on a physical NIC at
-        all, so it no longer is. Loopback cannot lose carrier.
-
-    Multicast is off for the same reason it is off on the field link, plus one
-    more here: ``lo`` does not carry the MULTICAST flag, so a multicast write
-    over it could not succeed anyway. Discovery instead goes to an explicit
-    localhost peer, which is what the thirty-odd participants of one launch use
-    to find each other.
-
-    TWO MACHINES ON A SWITCH is a different case and already has an answer:
-    ``ARIES_LOCAL_ADDRESS=<this machine's LAN address>``. That takes the pinned
-    path above -- interface pinned, unicast peers from the hosts table -- and
-    never reaches this function. Do not restore multicast here to serve it.
+    Loopback only -- deliberately the same situation local_only_xml() covers,
+    and pinned for the same reason: an unpinned participant binds to whatever
+    interface it found at creation time and never re-selects, so pulling a cable
+    mid-run kills every announcement it had already bound to.
     """
-    return f"""<?xml version="1.0" encoding="UTF-8" ?>
-<!-- GENERATED by aries_common.comms on {socket.gethostname()}: this machine is
-     NOT on the field link, so this is a loopback-only configuration. Nothing
-     leaves the machine and no physical interface is touched, so an unplugged
-     cable or a roaming Wi-Fi association cannot take the run down. Domain and
-     middleware still match the robot. For two machines on a switch, set
-     ARIES_LOCAL_ADDRESS to this machine's LAN address instead. -->
-<CycloneDDS xmlns="https://cdds.io/config">
-  <Domain id="any">
-    <General>
-      <Interfaces>
-        <NetworkInterface address="127.0.0.1"/>
-      </Interfaces>
-      <AllowMulticast>false</AllowMulticast>
-    </General>
-    <Discovery>
-      <Peers>
-        <Peer address="127.0.0.1"/>
-      </Peers>
-      <ParticipantIndex>auto</ParticipantIndex>
-      <MaxAutoParticipantIndex>{MAX_AUTO_PARTICIPANT_INDEX}</MaxAutoParticipantIndex>
-    </Discovery>
-  </Domain>
-</CycloneDDS>
-"""
+    return dds_xml("127.0.0.1", ["127.0.0.1"])
 
 
-def write_cyclone_config(path=None, require_link=True):
+def write_dds_config(path=None, require_link=True):
     """Write the config for this machine and return (path, local_address).
 
     ``require_link=True`` (the field launches) raises when this machine is not
@@ -383,13 +360,13 @@ def write_cyclone_config(path=None, require_link=True):
 
     ``require_link=False`` (the shell environment, simulation) falls back to a
     local-only config and returns ``(path, None)``. A developer laptop has no
-    antenna and does not need one; making it an error there would mean the
-    whole simulation stack refuses to start on any machine off the field.
+    antenna and does not need one; making it an error there would mean the whole
+    simulation stack refuses to start on any machine off the field.
     """
     local = local_address()
+    if path is None:
+        path = os.path.join(tempfile.gettempdir(), _CONFIG_BASENAME)
     if local is None and not require_link:
-        if path is None:
-            path = os.path.join(tempfile.gettempdir(), _CONFIG_BASENAME)
         with open(path, "w") as handle:
             handle.write(local_only_xml())
         return path, None
@@ -403,36 +380,52 @@ def write_cyclone_config(path=None, require_link=True):
             "ARIES_LOCAL_ADDRESS=127.0.0.1 (one machine) or to this machine's "
             "LAN address (two machines on a switch)."
         )
-    if path is None:
-        path = os.path.join(tempfile.gettempdir(), _CONFIG_BASENAME)
     with open(path, "w") as handle:
-        handle.write(cyclone_xml(local, peers(local)))
+        handle.write(dds_xml(local, peers(local)))
     return path, local
 
 
 def dds_environment(path=None, require_link=True):
-    """The three variables every ARIES process must agree on.
+    """The variables every ARIES process must agree on.
 
-    A CYCLONEDDS_URI already in the environment is REPLACED, not honoured. That
+    A profile path already in the environment is REPLACED, not honoured. That
     looks aggressive and is the entire point of this module: the value in your
     shell is almost always a stale export naming an address this machine does
-    not have, and Cyclone answers that by warning once and choosing its own
-    interface -- an empty topic list on a link that pings fine. A launch file
+    not have, and the middleware answers that by falling back to its own
+    defaults -- an empty topic list on a link that pings fine. A launch file
     that inherited it would be back to the domain being a property of the
-    terminal, which is what it exists to stop.
+    terminal, which is what this exists to stop.
 
-    Set ARIES_KEEP_CYCLONEDDS_URI=1 to keep a deliberate hand-written config.
+    Set ARIES_KEEP_FASTDDS_PROFILES=1 to keep a deliberate hand-written profile.
     """
     env = {
         "ROS_DOMAIN_ID": domain_id(),
         "RMW_IMPLEMENTATION": RMW,
     }
-    existing = os.environ.get("CYCLONEDDS_URI", "").strip()
-    if existing and os.environ.get("ARIES_KEEP_CYCLONEDDS_URI", "").strip():
-        env["CYCLONEDDS_URI"] = existing
+
+    existing = (os.environ.get("FASTDDS_DEFAULT_PROFILES_FILE", "").strip()
+                or os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", "").strip())
+    if existing and os.environ.get("ARIES_KEEP_FASTDDS_PROFILES", "").strip():
+        env["FASTRTPS_DEFAULT_PROFILES_FILE"] = existing
+        env["FASTDDS_DEFAULT_PROFILES_FILE"] = existing
         return env
-    config_path, _ = write_cyclone_config(path, require_link=require_link)
-    env["CYCLONEDDS_URI"] = f"file://{config_path}"
+
+    config_path, _ = write_dds_config(path, require_link=require_link)
+
+    # BOTH names, deliberately. Fast DDS renamed the variable at 2.12 and still
+    # honours the old one; which of the two a given build reads is not worth
+    # discovering in the field, and setting both costs nothing.
+    #
+    # PLAIN PATHS, no file:// prefix. Fast DDS silently IGNORES a prefixed value
+    # -- every participant then quietly runs on its own defaults, which is the
+    # same empty-topic-list symptom this function exists to prevent.
+    #
+    # str(), because callers pass pathlib paths and these become real
+    # environment variables -- SetEnvironmentVariable and os.environ both want
+    # text, and a PosixPath here surfaces much later as a launch that will not
+    # start.
+    env["FASTRTPS_DEFAULT_PROFILES_FILE"] = str(config_path)
+    env["FASTDDS_DEFAULT_PROFILES_FILE"] = str(config_path)
     return env
 
 
@@ -445,7 +438,13 @@ def dds_launch_actions(path=None, require_link=True):
     """
     from launch.actions import LogInfo, SetEnvironmentVariable
 
-    inherited = os.environ.get("CYCLONEDDS_URI", "").strip()
+    # Whichever variable this middleware uses to point at its config. Indexing
+    # CYCLONEDDS_URI unconditionally is what this used to do, and it raised
+    # KeyError the moment the default moved to Fast DDS -- taking the whole
+    # launch down before a single node started.
+    _CONFIG_VARS = ("CYCLONEDDS_URI", "FASTDDS_DEFAULT_PROFILES_FILE")
+
+    inherited = {name: os.environ.get(name, "").strip() for name in _CONFIG_VARS}
     env = dds_environment(path, require_link=require_link)
     actions = [SetEnvironmentVariable(name, value) for name, value in env.items()]
     actions.append(
@@ -453,15 +452,27 @@ def dds_launch_actions(path=None, require_link=True):
             msg=f"[comms] domain {env['ROS_DOMAIN_ID']}, {env['RMW_IMPLEMENTATION']}"
         )
     )
-    actions.append(LogInfo(msg=f"[comms] {env['CYCLONEDDS_URI']}"))
-    if inherited and inherited != env["CYCLONEDDS_URI"]:
-        # Said out loud rather than done quietly: someone put that there.
-        actions.append(LogInfo(
-            msg=f"[comms] replaced inherited CYCLONEDDS_URI={inherited} "
-                f"(set ARIES_KEEP_CYCLONEDDS_URI=1 to keep yours). If that came "
-                f"from ~/.bashrc, delete the line -- it names a fixed address "
-                f"and is wrong on every machine but one."
-        ))
+    config_var = next((n for n in _CONFIG_VARS if n in env), None)
+    if config_var:
+        actions.append(LogInfo(msg=f"[comms] {config_var}={env[config_var]}"))
+        was = inherited.get(config_var, "")
+        if was and was != env[config_var]:
+            # Said out loud rather than done quietly: someone put that there.
+            actions.append(LogInfo(
+                msg=f"[comms] replaced inherited {config_var}={was} "
+                    f"(ARIES_KEEP_CYCLONEDDS_URI=1 / ARIES_KEEP_FASTDDS_PROFILES=1 "
+                    f"to keep yours). If that came from ~/.bashrc, delete the line "
+                    f"-- it names a fixed address and is wrong on every machine "
+                    f"but one."
+            ))
+    # A pointer left over from the OTHER vendor is worth saying too: it is inert
+    # now, and it is exactly what someone will find later and be misled by.
+    for name in _CONFIG_VARS:
+        if name not in env and inherited.get(name):
+            actions.append(LogInfo(
+                msg=f"[comms] NOTE {name}={inherited[name]} is set but this stack "
+                    f"is on {env['RMW_IMPLEMENTATION']}, which ignores it."
+            ))
     actions.append(
         LogInfo(
             msg="[comms] shells started by hand need: source \"$(ros2 pkg prefix "
@@ -472,7 +483,9 @@ def dds_launch_actions(path=None, require_link=True):
 
 
 if __name__ == "__main__":
-    written, address = write_cyclone_config(require_link=False)
+    writer = (write_fastdds_config if RMW == "rmw_fastrtps_cpp"
+              else write_cyclone_config)
+    written, address = writer(require_link=False)
     if address is None:
         print(f"local only (not on the field link), domain {domain_id()}")
     else:

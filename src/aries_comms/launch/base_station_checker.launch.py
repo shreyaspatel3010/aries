@@ -76,8 +76,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "check_link", default_value="true",
-            description="Address, domain, RMW, Cyclone config and ICMP to the "
-                        "other host and the radios.",
+            description="Address, domain, RMW, the DDS config file the active "
+                        "middleware actually pins, and ICMP to the other host "
+                        "and the radios.",
         ),
         DeclareLaunchArgument("check_downlink", default_value="true"),
         DeclareLaunchArgument(

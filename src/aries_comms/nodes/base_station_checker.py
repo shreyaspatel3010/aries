@@ -558,17 +558,43 @@ class BaseStationChecker(Node):
         """
         domain = os.environ.get("ROS_DOMAIN_ID", "")
         rmw = os.environ.get("RMW_IMPLEMENTATION", "")
-        uri = os.environ.get("CYCLONEDDS_URI", "")
 
-        path = uri[len("file://"):] if uri.startswith("file://") else ""
+        # WHICH VARIABLE AND WHICH XML DEPENDS ON THE MIDDLEWARE. This used to
+        # read CYCLONEDDS_URI unconditionally, which meant that the moment the
+        # stack moved to Fast DDS the checker reported "no CYCLONEDDS_URI" and
+        # "Cyclone interface unpinned" on a completely healthy link. A checker
+        # that cries wolf is worse than no checker, so it follows comms.RMW.
+        #
+        #   Cyclone   CYCLONEDDS_URI, file:// prefixed
+        #             <NetworkInterface address="X"/>
+        #   Fast DDS  FASTDDS_/FASTRTPS_DEFAULT_PROFILES_FILE, PLAIN path
+        #             <interfaceWhiteList><address>X</address>
+        #
+        # Both spellings of the Fast DDS variable are checked because
+        # comms.dds_environment() sets both -- the name changed at Fast DDS 2.12
+        # and the old one is still honoured.
+        if rmw == "rmw_cyclonedds_cpp":
+            config_var = "CYCLONEDDS_URI"
+            uri = os.environ.get(config_var, "")
+            path = uri[len("file://"):] if uri.startswith("file://") else ""
+        else:
+            config_var = "FASTDDS_DEFAULT_PROFILES_FILE"
+            uri = (os.environ.get(config_var, "")
+                   or os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", ""))
+            # No file:// here -- Fast DDS silently ignores a prefixed value, so
+            # one appearing is itself the bug and must not be quietly stripped.
+            path = uri
+
         pinned = None
         readable = None
         if path:
             try:
                 text = Path(path).read_text()
                 readable = True
-                match = re.search(r'<NetworkInterface\s+address="([^"]+)"', text)
-                pinned = match.group(1) if match else None
+                match = (re.search(r'<NetworkInterface\s+address="([^"]+)"', text)
+                         or re.search(r"<interfaceWhiteList>\s*<address>([^<]+)</address>",
+                                      text))
+                pinned = match.group(1).strip() if match else None
             except OSError:
                 readable = False
 
@@ -577,15 +603,17 @@ class BaseStationChecker(Node):
             "domain_ok": domain == self.domain_expected,
             "rmw": rmw,
             "rmw_ok": rmw == comms.RMW,
+            "config_var": config_var,
             "uri": uri,
             "uri_path": path,
             "uri_readable": readable,
             "pinned": pinned,
-            # A pinned address this machine does not hold is fatal to Cyclone,
-            # not a warning: it refuses to create the domain and every node
-            # dies at startup. If this node is alive to report it, the address
-            # was right when it started -- but the config on disk can have been
-            # rewritten since by another launch, so it is still worth saying.
+            # A pinned address this machine does not hold is fatal, not a
+            # warning: the middleware refuses to create the domain and every
+            # node dies at startup. If this node is alive to report it, the
+            # address was right when it started -- but the config on disk can
+            # have been rewritten since by another launch, so it is still worth
+            # saying.
             "pinned_ok": pinned is None or pinned == self.local_address,
         }
 
@@ -902,23 +930,25 @@ class BaseStationChecker(Node):
             if dds["rmw_ok"]:
                 print(f"  {G}✓{RST} RMW — {G}{dds['rmw']}{RST}", flush=True)
             else:
-                shown = dds["rmw"] or "unset (= rmw_fastrtps_cpp)"
+                shown = dds["rmw"] or "unset (ROS 2 default, NOT the pinned one)"
                 print(f"  {R}✗{RST} RMW — {R}{shown}, rover uses {comms.RMW}{RST}",
                       flush=True)
                 problems.append(f"RMW {shown} != {comms.RMW}: the two never match")
 
+            var = dds["config_var"]
             if dds["uri_readable"] is None:
-                print(f"  {R}✗{RST} CYCLONEDDS_URI — {R}not set{RST}", flush=True)
-                problems.append("no CYCLONEDDS_URI: discovery is multicast, which "
-                                "the airMAX link sends at its lowest rate")
+                print(f"  {R}✗{RST} {var} — {R}not set{RST}", flush=True)
+                problems.append(
+                    f"no {var}: discovery falls back to multicast, which the "
+                    "airMAX link sends at its lowest rate")
             elif dds["uri_readable"] is False:
-                print(f"  {R}✗{RST} CYCLONEDDS_URI — {R}{dds['uri']} cannot be read{RST}",
+                print(f"  {R}✗{RST} {var} — {R}{dds['uri']} cannot be read{RST}",
                       flush=True)
-                problems.append("the Cyclone config file is unreadable; Cyclone "
-                                "treats that as FATAL, not a warning")
+                problems.append(f"the DDS config named by {var} is unreadable; "
+                                "the middleware treats that as FATAL, not a warning")
             elif not dds["pinned_ok"]:
                 print(
-                    f"  {R}✗{RST} Cyclone interface — {R}pinned to {dds['pinned']}, "
+                    f"  {R}✗{RST} DDS interface — {R}pinned to {dds['pinned']}, "
                     f"this machine has {s['local_address']}{RST}",
                     flush=True,
                 )
@@ -928,7 +958,7 @@ class BaseStationChecker(Node):
                 )
             else:
                 where = dds["pinned"] or "unpinned (local-only config)"
-                print(f"  {G}✓{RST} Cyclone interface — {G}{where}{RST}", flush=True)
+                print(f"  {G}✓{RST} DDS interface — {G}{where}{RST}", flush=True)
 
             for label, reachable in sorted(s["ping"].items()):
                 kind, _, name = label.partition(":")

@@ -279,3 +279,56 @@ def test_the_checker_reads_the_rover_without_a_second_state_publisher(base):
     assert "create_publisher" not in body, (
         "the base station checker publishes something; it is a listener"
     )
+
+
+# --- the checker must follow the middleware ---------------------------------
+#
+# base_station_checker reads the DDS config of its OWN process to report what
+# the stack actually has. It used to read CYCLONEDDS_URI unconditionally, so the
+# moment comms.RMW moved to Fast DDS it reported "no CYCLONEDDS_URI" and an
+# unpinned interface on a completely healthy link. A checker that cries wolf on
+# a working system is worse than no checker -- people stop reading it, and then
+# it is silent for the failure it exists to catch.
+
+import sys                                                        # noqa: E402
+
+sys.path.insert(0, str(PKG.parents[0] / "aries_common"))
+from aries_common import comms                                    # noqa: E402
+
+CHECKER_NODE = (PKG / "nodes" / "base_station_checker.py").read_text()
+
+
+def _pinned_interface(text):
+    """The checker's own parsing, applied to a config file."""
+    match = (re.search(r'<NetworkInterface\s+address="([^"]+)"', text)
+             or re.search(r"<interfaceWhiteList>\s*<address>([^<]+)</address>", text))
+    return match.group(1).strip() if match else None
+
+
+@pytest.mark.parametrize("writer_name", ["write_fastdds_config", "write_cyclone_config"])
+def test_checker_finds_the_pinned_interface_in_either_config(writer_name, tmp_path):
+    """Both vendors spell the interface pin differently; both must be found."""
+    writer = getattr(comms, writer_name)
+    path, _ = writer(tmp_path / "dds.xml", require_link=False)
+    pinned = _pinned_interface(Path(path).read_text())
+    assert pinned, f"{writer_name} produced a config the checker cannot parse"
+    assert pinned == (comms.local_address() or "127.0.0.1")
+
+
+def test_checker_reads_the_variable_its_middleware_actually_uses():
+    """Not CYCLONEDDS_URI unconditionally -- that is the bug this pins."""
+    assert 'if rmw == "rmw_cyclonedds_cpp":' in CHECKER_NODE
+    assert '"FASTDDS_DEFAULT_PROFILES_FILE"' in CHECKER_NODE
+    assert '"FASTRTPS_DEFAULT_PROFILES_FILE"' in CHECKER_NODE
+
+
+def test_checker_does_not_strip_a_file_prefix_from_the_fastdds_path():
+    """Fast DDS silently ignores a file:// value, so one appearing IS the bug.
+
+    Stripping it would hide exactly the misconfiguration worth reporting.
+    """
+    body = CHECKER_NODE[CHECKER_NODE.index("def _dds_environment"):]
+    body = body[:body.index("def _any_publisher")]
+    fastdds_branch = body[body.index("else:"):]
+    assert 'len("file://")' not in fastdds_branch, (
+        "the Fast DDS branch must take the path as-is")
