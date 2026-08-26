@@ -4,6 +4,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     SetLaunchConfiguration,
 )
 from launch.conditions import IfCondition
@@ -11,11 +12,44 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.comms import dds_launch_actions, local_address
 from aries_common.devices import device_str
 
 
 def generate_launch_description():
+    # This machine's field-link address, or None if it has no antenna. Read
+    # once here only so the launch can SAY which of the two configurations it
+    # ended up with; dds_environment() detects it again for itself.
+    link_address = local_address()
+
     return LaunchDescription([
+        # MUST stay first: launch executes actions in order, and a node started
+        # above these keeps the calling terminal's environment. That is not
+        # cosmetic -- a terminal that never sourced aries_dds_env.sh puts this
+        # whole stack on domain 0 with rmw_fastrtps_cpp, where every driver
+        # runs perfectly and nothing else on the robot can see a single topic.
+        # Nothing logs an error; the symptom is an empty `ros2 topic list` on a
+        # link that pings fine. See aries_common/comms.py.
+        #
+        # require_link=False, unlike rover_field.launch.py's require_link=True.
+        # This file is also the bench and single-machine entry point, and a
+        # developer laptop with no antenna must still be able to bring the
+        # stack up -- it gets a loopback-only config instead of an exception.
+        # rover_field keeps the hard failure, because out there a missing cable
+        # IS the bug and should stop the launch rather than degrade it.
+        #
+        # To override: ARIES_DOMAIN_ID for the domain, ARIES_KEEP_CYCLONEDDS_URI=1
+        # to keep a hand-written Cyclone config. Plain ROS_DOMAIN_ID in the
+        # shell is deliberately NOT honoured -- that is the whole point.
+        *dds_launch_actions(require_link=False),
+        LogInfo(msg=(
+            f"[full_hardware] field link: this machine is {link_address}"
+            if link_address else
+            "[full_hardware] field link: NOT on it -- loopback-only DDS. "
+            "Nothing off this machine will see these topics. Check the antenna "
+            "cable and `ip -4 -br addr` if that is not what you wanted."
+        )),
+
         DeclareLaunchArgument("use_gui", default_value="true"),
         DeclareLaunchArgument("use_joystick", default_value="true"),
         # Whether the pad is READ on this machine, separately from whether the

@@ -94,6 +94,56 @@ def test_both_sides_set_dds_before_any_node(base, rover):
                 )
 
 
+def test_full_hardware_sets_its_own_dds_environment():
+    """Launched directly on the rover, it is nobody's child.
+
+    rover_field sets the environment before including this file, so the field
+    path was always correct -- which is exactly why the gap here went unnoticed.
+    Run on its own (`ros2 launch aries_bringup full_hardware.launch.py`) from a
+    terminal that never sourced aries_dds_env.sh, the whole stack landed on
+    domain 0 with rmw_fastrtps_cpp. Every driver came up, the cameras included,
+    and not one topic was visible to anything else on the robot.
+    """
+    source = FULL.read_text()
+    assert "*dds_launch_actions(" in source, (
+        "full_hardware no longer sets the DDS environment; launching it "
+        "directly is back to inheriting the calling terminal's domain"
+    )
+    env_at = source.index("*dds_launch_actions(")
+    body = source.index("def generate_launch_description")
+    for action in ("Node(", "IncludeLaunchDescription("):
+        first = source.find(action, body)
+        if first != -1:
+            assert env_at < first, (
+                f"full_hardware: {action} appears before the DDS environment is set"
+            )
+
+
+def test_full_hardware_does_not_require_the_field_link():
+    """It is the bench entry point too, and a laptop has no antenna.
+
+    require_link=True raises when the machine holds none of the addresses in
+    the hosts table, which is correct for rover_field and would stop every
+    single-machine run of this file dead.
+    """
+    source = FULL.read_text()
+    assert "dds_launch_actions(require_link=False)" in source, (
+        "full_hardware must fall back to a loopback-only DDS config off the "
+        "field link, not refuse to launch"
+    )
+
+
+def test_rover_field_is_the_strict_one():
+    """Out there a missing cable is the bug, not a configuration to degrade to."""
+    source = ROVER.read_text()
+    body = source.split('"""', 2)[-1]
+    assert "*dds_launch_actions()" in body, (
+        "rover_field must keep the default require_link=True, so a rover with "
+        "the antenna cable out fails the launch instead of coming up on "
+        "loopback where the base station will never see it"
+    )
+
+
 def test_moveit_launch_can_separate_driver_from_consumers():
     """The split this all depends on. Gating both on one flag is what made the
     pad un-movable in the first place."""

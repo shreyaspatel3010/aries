@@ -34,14 +34,21 @@ WHY THIS LIVES HERE AND NOT IN aries_bringup
 
 WHAT THIS CHANGES AGAINST full_hardware.launch.py
 
-  DDS environment set here, not inherited.
-      full_hardware sets none, so it lands on whatever the calling terminal
-      had -- and a terminal opened before the exports existed keeps domain 0
-      with rmw_fastrtps_cpp for as long as it lives. The base station is on
-      domain 30 with Cyclone, so the two never see each other: ping works,
-      `ros2 topic list` is empty, and nothing logs an error. Setting it here
-      as a launch action makes the domain a property of the launch instead of
-      the terminal. See aries_common/comms.py.
+  DDS environment set here with require_link=True, not merely inherited.
+      full_hardware sets the environment too, as of 2026-08-25 -- it used to
+      set none, so launching it directly landed on whatever the calling
+      terminal had, and a terminal opened before the exports existed keeps
+      domain 0 with rmw_fastrtps_cpp for as long as it lives. The base station
+      is on domain 30 with Cyclone, so the two never see each other: ping
+      works, `ros2 topic list` is empty, and nothing logs an error.
+
+      What is still different here is require_link. full_hardware passes False
+      because it is also the bench entry point and a laptop with no antenna
+      must still come up; it falls back to a loopback-only config. This file
+      passes True, so a rover with the cable out fails the launch instead of
+      quietly bringing up a stack the base station will never see. Setting it
+      here as well is not redundant: it runs FIRST, and it is the stricter of
+      the two. See aries_common/comms.py.
 
   use_joy_node:=false
       The pad is plugged into the base station. Every teleop consumer still
