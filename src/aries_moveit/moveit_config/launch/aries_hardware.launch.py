@@ -30,6 +30,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from aries_common.comms import write_agent_dds_config
 from aries_common.devices import device, device_str
 
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
@@ -414,9 +415,18 @@ def launch_setup(context, *args, **kwargs):
 
     micro_ros_agent = None
     if gripper_hardware_protocol == "rebel":
-        _fastdds_xml = os.path.join(
-            get_package_share_directory("aries_moveit"), "config", "fastdds_low_latency.xml"
-        )
+        # GENERATED, not a checked-in file, and it carries this machine's
+        # interface pin as well as the low-latency QoS. Fast DDS reads ONE
+        # profiles file per process and the variables below outrank the
+        # stack-wide ones the launch already exported, so this file is the
+        # agent's entire DDS configuration -- if it does not pin the agent
+        # where the rest of the stack is pinned, the agent cannot discover
+        # ros2_control_node and no command ever reaches the servo. The
+        # hand-written config/fastdds_low_latency.xml this replaced did
+        # exactly that: it pinned the agent to 127.0.0.1 while everything
+        # else ran on a transport whitelisted to the field-link address.
+        # See write_agent_dds_config() for the full account.
+        _fastdds_xml, _ = write_agent_dds_config(require_link=False)
         micro_ros_agent = ExecuteProcess(
             cmd=[
                 "ros2", "run", "micro_ros_agent", "micro_ros_agent",
@@ -434,16 +444,28 @@ def launch_setup(context, *args, **kwargs):
                 "serial", "--dev", serial_port, "-b", "115200",
             ],
             additional_env={
-                # Unicast-only participant + synchronous publish mode + zero latency budget.
-                # Eliminates multicast discovery overhead and DDS write-thread buffering,
-                # cutting the agent ↔ ROS2 round-trip by several milliseconds.
-                "FASTRTPS_DEFAULT_PROFILES_FILE": _fastdds_xml,
+                # Synchronous publish mode + zero latency budget, on the same
+                # pinned UDPv4 transport as every other node. BOTH spellings:
+                # FASTRTPS_ is the one this build actually reads, and setting
+                # only it would leave the stack-wide FASTDDS_ value inherited
+                # from the launch environment pointing at a different file --
+                # which is confusing to debug even when it is not the one that
+                # wins.
+                "FASTRTPS_DEFAULT_PROFILES_FILE": str(_fastdds_xml),
+                "FASTDDS_DEFAULT_PROFILES_FILE": str(_fastdds_xml),
             },
             output="screen",
             # The agent is the ONLY path between /gripper/cmd and the servo, and
             # it does die on its own: observed exit code 254 roughly 6 minutes
             # into a session, with /dev/ttyACM0 never re-enumerating (so not a
-            # USB drop). Without respawn nothing restarts it, the Teensy falls
+            # USB drop).
+            #
+            # BUT DO NOT READ 254 ALONE AS THAT FAULT. `ros2 run` exits 254 on
+            # a normal Ctrl-C, where a native node reports -2, so every clean
+            # shutdown of this launch also ends with 254 in the log. To tell
+            # the two apart, check whether "user interrupted with ctrl-c" or
+            # any other process death shares the timestamp. Chasing a 254 that
+            # was only the operator stopping the stack costs an afternoon. Without respawn nothing restarts it, the Teensy falls
             # back to WAITING_AGENT and pings a closed port forever, and the
             # gripper stops responding mid-run with no error anywhere: the
             # hardware plugin keeps state_received_ latched true, so read()

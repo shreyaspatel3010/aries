@@ -362,3 +362,43 @@ def test_env_script_never_requires_the_link():
         "on failure it must clear the variable — an unset URI is a working "
         "default, a wrong one stops every node from starting"
     )
+
+
+def test_agent_profile_is_pinned_exactly_like_the_rest_of_the_stack(tmp_path, monkeypatch):
+    """The micro-ROS agent must land on the same transport as everything else.
+
+    Regression for a gripper that never moved while the whole stack looked
+    healthy. The agent was handed a hand-written profile that pinned its
+    metatraffic to 127.0.0.1, from back when the stack was on CycloneDDS and
+    the agent was the only Fast DDS participant on the box. Once the stack
+    generated its own interface-pinned Fast DDS profile the two stopped
+    overlapping, and the agent -- the ONLY path from the Teensy to the servo --
+    could no longer discover ros2_control_node. Nothing errored: the board's
+    session came up, the controller went active, and TeensyGripperSystem just
+    warned "Never received /gripper/state" forever.
+
+    Fast DDS reads ONE profiles file per process, so the agent's file has to
+    carry the participant config too -- QoS alone is not enough.
+    """
+    rover = comms.hosts()["rover"]
+    monkeypatch.setattr(comms, "local_address", lambda *a, **k: rover)
+
+    stack, _ = comms.write_dds_config(tmp_path / "stack.xml")
+    agent, _ = comms.write_agent_dds_config(tmp_path / "agent.xml")
+    stack_xml, agent_xml = Path(stack).read_text(), Path(agent).read_text()
+
+    # Same pin, same transport, same peers -- or they cannot discover each other.
+    assert f"<address>{rover}</address>" in agent_xml
+    assert "<useBuiltinTransports>false</useBuiltinTransports>" in agent_xml
+    for peer in comms.peers(rover):
+        assert f"<udpv4><address>{peer}</address></udpv4>" in agent_xml, peer
+
+    # The agent must NOT carry a metatraffic locator list of its own: setting
+    # one replaces the default locators and silently drops multicast discovery.
+    assert "metatrafficUnicastLocatorList" not in agent_xml
+
+    # What the agent gets on top: low-latency writer/reader defaults.
+    assert "SYNCHRONOUS" in agent_xml
+    # And those must NOT leak into the stack-wide file, where they would also
+    # apply to the camera and point-cloud writers.
+    assert "SYNCHRONOUS" not in stack_xml
