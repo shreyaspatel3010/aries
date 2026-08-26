@@ -5,9 +5,9 @@
 #   GREEN   ready, doing nothing
 #   off     the stack is not running
 #
-# The light is the three-colour tower on the mast, wired to the gripper
-# Teensy. The firmware (firmware/teensy_gripper/teensy_gripper.ino) subscribes
-# to a std_msgs/UInt8 and switches one GPIO per colour; aries_bringup's
+# The light is the three-colour tower on the mast, wired to the drill/science
+# Teensy. The firmware (firmware/teensy_drill_sys) subscribes to a
+# std_msgs/UInt8 and switches one GPIO per colour, active LOW; aries_bringup's
 # stacklight node is the only thing that publishes it.
 #
 # HOW A STATE IS DECIDED. `priority` is evaluated top to bottom and the first

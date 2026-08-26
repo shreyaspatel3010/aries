@@ -5,8 +5,8 @@
     YELLOW  operating
     GREEN   ready, doing nothing
 
-The light hangs off the gripper Teensy, whose firmware already subscribes to
-std_msgs/UInt8 on /stacklight_subscription; this node is the publisher that was
+The light hangs off the drill/science Teensy, whose firmware already subscribes
+to std_msgs/UInt8 on /stacklight_subscription; this node is the publisher that was
 missing, so the light stayed dark whatever the rover did. The Teensy is reached
 through the micro-ROS agent aries_hardware.launch.py starts -- this node only
 publishes the topic, so it does not care which machine the agent runs on.

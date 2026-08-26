@@ -9,6 +9,7 @@ install(
   PROGRAMS
     nodes/camera_downlink.py
     nodes/downlink_report.py
+    nodes/drill_driver.py
     nodes/full_hardware_checker.py
     nodes/mock_rover_drive.py
     nodes/hardware_checker.py
@@ -43,10 +44,19 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
   # The stack light must agree with the Teensy firmware's colour codes, and it
-  # must never show green on no evidence.
+  # must never show green on no evidence. The drill firmware arrived with red
+  # and green transposed, which would have shown GREEN for an e-stop.
   ament_add_pytest_test(
     stacklight
     test/test_stacklight.py
+    TIMEOUT 60
+  )
+  # The drill driver is the only thing between the joystick's physical rates and
+  # the Teensy's duty cycle, and every way it can disagree with the firmware --
+  # the actuator's free speed, the output topic names -- is silent at runtime.
+  ament_add_pytest_test(
+    drill_driver
+    test/test_drill_driver.py
     TIMEOUT 60
   )
   # Gazebo depth is 32FC1 metres, not the D435i's 16UC1 millimetres. Rejecting

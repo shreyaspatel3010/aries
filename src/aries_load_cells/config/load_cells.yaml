@@ -4,9 +4,10 @@
 #   stone_box        the box behind it, also on the left, the stone sample
 #   drill_container  the drill's sample bin
 #
-# All three hang off the gripper Teensy and arrive over the micro-ROS link that
-# aries_hardware.launch.py already starts. There is no second board and nothing
-# to add to devices.yaml.
+# All three hang off the drill/science Teensy -- the one board that also runs the
+# gripper servo, the stack light and the drill -- and arrive over the micro-ROS
+# link that aries_hardware.launch.py already starts. There is no second board and
+# nothing to add to devices.yaml.
 #
 # WHAT YOU SEE
 #   /load_cells/sand_box/weight            std_msgs/Float32, kilograms

@@ -6,11 +6,11 @@
     GREEN   ready, doing nothing
     off     this node is not running
 
-The light itself hangs off the gripper Teensy, whose firmware
-(firmware/teensy_gripper/teensy_gripper.ino) subscribes to a std_msgs/UInt8 and
-switches one of three GPIOs: 1 red, 2 yellow, 3 green, 4 all off. That firmware
-has been ready for a while; nothing in the workspace was publishing the topic,
-so the light was dark whatever the rover did. This node is that publisher, and
+The light itself hangs off the drill/science Teensy, whose firmware
+(firmware/teensy_drill_sys) subscribes to a std_msgs/UInt8 and switches one of
+three GPIOs: 1 red, 2 yellow, 3 green, 4 all off. That firmware has been ready
+for a while; nothing in the workspace was publishing the topic, so the light was
+dark whatever the rover did. This node is that publisher, and
 it is the ONLY thing that should write the topic - two publishers on a latching
 GPIO means the light shows whichever message landed last.
 
@@ -39,7 +39,7 @@ see the rover must not claim it is safe.
 PUBLISHING. On every change, plus a refresh every publish_period_s. The refresh
 is not redundant. The firmware's stack-light subscription is RELIABLE but not
 TRANSIENT_LOCAL, and it is torn down and recreated on every micro-ROS
-reconnect (create_entities/destroy_entities in the sketch), which happens
+reconnect (create_entities/destroy_entities in the firmware), which happens
 whenever the agent restarts. A late-joining subscriber gets no history, so a
 publisher that only spoke on change would leave the light dark - or worse,
 showing a colour from before the reconnect - until the state next changed. The
@@ -62,8 +62,13 @@ from std_msgs.msg import Bool, Float64, String, UInt8
 
 
 # The firmware's enum, and the reason this node exists at all. Keep in step
-# with stacklight_color in teensy_gripper.ino: an unknown value there lights
-# red, which is the right way round, but do not rely on it.
+# with StackLightColor in firmware/teensy_drill_sys/lib/emg/emg.h -- an unknown
+# value there lights red, which is the right way round, but do not rely on it.
+#
+# THE FIRMWARE ARRIVED WITH RED AND GREEN TRANSPOSED against this table and was
+# corrected to match it, because everything else on this side -- the config, the
+# RViz marker overlay, the tests -- was already built on these numbers.
+# test_stacklight.py parses the enum out of the firmware and checks it.
 COLOR_CODES = {"red": 1, "yellow": 2, "green": 3, "off": 4}
 
 

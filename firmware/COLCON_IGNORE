@@ -1,0 +1,15 @@
+Microcontroller firmware, not ROS packages. Keeps `colcon build` from
+descending into this tree.
+
+This file is load-bearing as of the move to PlatformIO. The old firmware/ held
+nothing but .ino sketches, which colcon has no reason to look at -- but
+teensy_drill_sys/extra_packages/rover_sensor_interfaces is a real ament_cmake
+message package, complete with package.xml, and without this marker `colcon
+list` finds it and `colcon build` starts building the rover's firmware
+interfaces into the host workspace.
+
+DO NOT put a COLCON_IGNORE inside teensy_drill_sys/extra_packages/ instead.
+micro_ros_platformio copies that directory into its own build workspace and
+runs colcon there, which is exactly how the custom message is meant to reach
+the board -- an ignore marker inside it would be copied along and silently
+drop the message from the firmware build.

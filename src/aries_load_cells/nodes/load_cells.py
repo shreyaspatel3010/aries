@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three load cells on the gripper Teensy, published as weights in kilograms.
+"""Three load cells on the drill/science Teensy, published as weights in kilograms.
 
     sand_box         front-left deck box, the sand sample
     stone_box        the box behind it, also on the left, the stone sample

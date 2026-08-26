@@ -1,0 +1,4 @@
+# PlatformIO build output: the toolchain, the micro-ROS sources it fetches, and
+# the compiled library. Hundreds of MB, all reproducible from platformio.ini and
+# colcon.meta by ./flash.sh.
+.pio/

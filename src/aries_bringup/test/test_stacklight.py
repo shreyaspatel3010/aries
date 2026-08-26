@@ -3,9 +3,17 @@
 The light is a bystander's only cue about a rover that can move six wheels and
 spin an auger, so the two properties worth pinning are:
 
-  * the colour CODES match teensy_gripper.ino's stacklight_color enum. They are
-    bare integers on the wire with nothing to catch a mismatch -- swap two and
-    the rover shows green while it drives.
+  * the colour CODES match the firmware's StackLightColor enum. They are bare
+    integers on the wire with nothing to catch a mismatch -- swap two and the
+    rover shows green while it drives.
+
+    This is not hypothetical. The drill firmware
+    (firmware/teensy_drill_sys, which replaced teensy_gripper.ino) arrived with
+    red and green TRANSPOSED against this node: 1=green, 2=yellow, 3=red. Every
+    state stacklight.py shows red for -- e-stop, drive fault, halt, and the
+    `unknown` it holds before it can see the rover at all -- would have lit
+    green. The firmware was corrected to this node's numbering; this test is
+    what would have caught it either way.
   * green is only ever shown on EVIDENCE. Anything this node cannot see is
     `unknown`, which is red. A node that has lost the drive bridge must not
     keep claiming the rover is parked and safe.
@@ -41,7 +49,12 @@ from std_msgs.msg import Bool, Float64, String  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
 NODES = Path(__file__).resolve().parents[1] / "nodes"
-FIRMWARE = REPO / "firmware" / "teensy_gripper" / "teensy_gripper.ino"
+# The firmware is a PlatformIO project now, not a single sketch, so the two
+# things this file checks live in two files: the colour enum with the stack
+# light driver, the topic name with the micro-ROS entities.
+FIRMWARE_DIR = REPO / "firmware" / "teensy_drill_sys"
+FIRMWARE_STACKLIGHT = FIRMWARE_DIR / "lib" / "emg" / "emg.h"
+FIRMWARE_MAIN = FIRMWARE_DIR / "src" / "main.cpp"
 
 
 def _load(name):
@@ -99,29 +112,53 @@ class TestFirmwareContract:
 
     def test_colour_codes_match_the_teensy_enum(self):
         module = _load("stacklight")
-        source = FIRMWARE.read_text()
-        match = re.search(r"enum\s+stacklight_color\s*\{([^}]*)\}", source)
-        assert match, "stacklight_color enum not found in the firmware"
+        source = FIRMWARE_STACKLIGHT.read_text()
+        match = re.search(
+            r"enum\s+StackLightColor\s*(?::\s*\w+\s*)?\{([^}]*)\}", source)
+        assert match, "StackLightColor enum not found in %s" % FIRMWARE_STACKLIGHT
 
-        # `enum { red = 1, yellow, green, disable }` -- C++ implicit numbering.
+        # C++ implicit numbering, in case a value is ever left off.
         codes, value = {}, None
         for item in match.group(1).split(","):
             name, _, explicit = item.partition("=")
+            name = name.strip()
+            if not name:
+                continue        # trailing comma
             value = int(explicit.strip()) if explicit.strip() else (value or 0) + 1
-            codes[name.strip()] = value
+            codes[name] = value
 
-        assert module.COLOR_CODES["red"] == codes["red"]
-        assert module.COLOR_CODES["yellow"] == codes["yellow"]
-        assert module.COLOR_CODES["green"] == codes["green"]
-        assert module.COLOR_CODES["off"] == codes["disable"]
+        assert module.COLOR_CODES["red"] == codes["STACKLIGHT_RED"]
+        assert module.COLOR_CODES["yellow"] == codes["STACKLIGHT_YELLOW"]
+        assert module.COLOR_CODES["green"] == codes["STACKLIGHT_GREEN"]
+        assert module.COLOR_CODES["off"] == codes["STACKLIGHT_OFF"]
 
     def test_default_topic_matches_the_firmware_subscription(self, light):
         _, instance, _, _ = light
-        source = FIRMWARE.read_text()
-        topic = re.search(r'UInt8\),\s*"([^"]+)"\)', source).group(1)
+        source = FIRMWARE_MAIN.read_text()
+        # Anchored on the subscription HANDLE, not on the message type: there
+        # is more than one UInt8 subscription now (linact/state is the other),
+        # and a positional match would silently start checking the wrong one if
+        # the initialisation order in create_entities ever changed.
+        match = re.search(
+            r'&stalig_cmd_sub,.*?UInt8\),\s*"([^"]+)"', source, re.DOTALL)
+        assert match, "stalig_cmd_sub subscription not found in %s" % FIRMWARE_MAIN
+        topic = match.group(1)
         # The firmware declares it relative under an empty namespace, which
         # resolves to a leading slash.
         assert instance.pub.topic_name == "/" + topic.lstrip("/")
+
+    def test_firmware_drives_the_light_active_low(self):
+        """The tier driver SINKS current: LOW lights a tier.
+
+        The retired sketch was active HIGH on different pins, and the rewire
+        changed both at once. If someone reinstates active-high levels without
+        rewiring, the light inverts -- every colour on except the one being
+        shown -- which reads as a fault to anyone looking at the mast.
+        """
+        source = FIRMWARE_STACKLIGHT.read_text()
+        assert re.search(r"TIER_ON\s*=\s*LOW", source), (
+            "the stack light is wired active low; see PINOUT.md")
+        assert re.search(r"TIER_OFF\s*=\s*HIGH", source)
 
 
 class TestNeverLiesAboutSafety:

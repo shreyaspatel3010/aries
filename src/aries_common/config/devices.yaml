@@ -18,10 +18,22 @@ arm:
   port: 3920
 
 gripper:
-  # Teensy running the gripper firmware. Always the by-id path: /dev/ttyACM*
-  # numbering moves when another board is plugged in, and a swapped board that
-  # still enumerates silently resolves to mock hardware instead of failing.
-  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
+  # THE ONE TEENSY. Despite the key name -- kept because the gripper's
+  # ros2_control hardware component reads it and renaming ripples through every
+  # launch path -- this board runs the drill, the gripper servo AND the mast
+  # stack light, on one micro-ROS serial link with one agent. See
+  # firmware/teensy_drill_sys, which replaced the retired teensy_gripper.ino.
+  #
+  # Always the by-id path: /dev/ttyACM* numbering moves when another board is
+  # plugged in, and a swapped board that still enumerates silently resolves to
+  # mock hardware instead of failing.
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_20379650-if00"
+  # Serial was 16739090 until 2026-08-26. The board was swapped, and the old
+  # number stayed here long enough to be worth a warning: a by-id path that no
+  # longer exists does NOT fail, it resolves the gripper to mock_hardware, and
+  # the launch log, list_controllers and the checker all still read healthy
+  # while nothing reaches the servo. `ros2 control list_hardware_components`
+  # is the one that tells the truth.
 
 rover:
   # SocketCAN interface to the six ODrives. The bitrate has to match the

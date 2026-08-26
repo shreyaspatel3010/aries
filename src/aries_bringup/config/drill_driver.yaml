@@ -1,0 +1,99 @@
+# The drill driver: physical rate commands in, Teensy duty cycle out.
+#
+#   /aries/drill_bit_joint/cmd_vel        rad/s  ->  motor1/cmd_speed  Int32
+#   /aries/drill_motor_joint/cmd_vel      m/s    ->  motor2/cmd_speed  Int32
+#   /aries/drill_container_joint/cmd_vel  m/s    ->  linact/cext       Float32 mm
+#
+# The three input topics are drill_joystick.py's, unchanged and in physical
+# units. The three outputs are the firmware's contract
+# (firmware/teensy_drill_sys/src/main.cpp), declared there with no leading slash
+# under an empty namespace.
+#
+# NOTHING IN THIS FILE IS MEASURED YET. Every `full_scale` below is currently
+# set to the matching commanded speed out of joystick.yaml, which quietly
+# assumes each axis reaches exactly what the operator asks for at 100 % duty
+# cycle. It will not. Until they are calibrated the drill moves, but the
+# numbers on the topics are not the rates the mechanism is doing, and the node
+# says so at startup.
+#
+# TO CALIBRATE ONE AXIS
+#   1. Command it at full scale and time it over a known distance (or count
+#      auger revolutions over a known time).
+#   2. Set full_scale to the rate it ACTUALLY reached.
+#   3. If it runs the wrong way, set the matching `invert` here rather than
+#      making a speed negative - the sign is which way the motor is wired, and
+#      it belongs somewhere a reader will look for it.
+#
+# Do this on a charged pack. A DC motor at 100 % duty cycle is a battery-voltage
+# machine, so an axis calibrated flat runs fast when charged.
+
+drill_driver:
+  ros__parameters:
+    # --- inputs (drill_joystick.py's topics, physical units) ---------------
+    bit_cmd_topic: "/aries/drill_bit_joint/cmd_vel"
+    motor_cmd_topic: "/aries/drill_motor_joint/cmd_vel"
+    container_cmd_topic: "/aries/drill_container_joint/cmd_vel"
+
+    # --- outputs (the firmware's contract) --------------------------------
+    auger_pwm_topic: "/motor1/cmd_speed"
+    feed_pwm_topic: "/motor2/cmd_speed"
+    container_cext_topic: "/linact/cext"
+
+    # --- the auger (MOTOR1) -----------------------------------------------
+    # Rate at 100 % duty cycle. Placeholder: joystick.yaml's bit_max_speed,
+    # which is half drill_bit_joint's 60 rad/s URDF velocity limit (~285 rpm).
+    auger_full_scale_rad_s: 30.0
+    # Below this the auger is stopped, not turning slowly. A few percent duty
+    # cycle does not turn a cutting head, it heats the bridge.
+    auger_deadband_rad_s: 0.05
+    # Stiction floor: a command that cleared the deadband must not be rounded
+    # into a duty cycle the head cannot break away at. Raise it if the auger
+    # buzzes without turning at the bottom of the stick.
+    auger_min_pwm: 40
+    # Stick UP should turn the auger in its cutting direction - a right-hand
+    # flight, clockwise seen from above. Flip here if it cuts backwards.
+    auger_invert: false
+
+    # --- the feed carriage (MOTOR2) ---------------------------------------
+    # Placeholder: joystick.yaml's motor_speed.
+    feed_full_scale_m_s: 0.05
+    feed_deadband_m_s: 0.0001
+    # Higher than the auger's: the carriage lifts its own 4.1 kg up a lead
+    # screw, so it breaks away later.
+    feed_min_pwm: 60
+    # POSITIVE IS UP, matching the host all the way down: drill.xacro runs the
+    # joint -0.375 (bottom) to 0.185 (top), and joystick.yaml documents D-pad UP
+    # as raising the carriage. The firmware's limit-switch gating assumes it
+    # too. If the carriage goes the wrong way, flip invert_motor in
+    # joystick.yaml OR this one - not both.
+    feed_invert: false
+
+    # --- the sample bin (linear actuator) ---------------------------------
+    # THE ACTUATOR'S OWN FREE SPEED, not a commanded rate, and it MUST match
+    # LinearActuator::m_oem_max_speed in firmware/teensy_drill_sys/lib/drill/
+    # drill.h. The firmware converts a requested distance into a run TIME using
+    # that number, so if these two ever disagree every bin move is wrong by the
+    # ratio between them, silently and in the same direction every time.
+    container_actuator_mm_s: 15.0
+    container_deadband_m_s: 0.0001
+    # RIGHT parks the bin forward of the mast, LEFT runs it back under the
+    # auger. See joystick.yaml's invert_container.
+    container_invert: false
+    # Each timed slice covers this many command periods. Above 1.0 the slices
+    # overlap so a held command is continuous motion instead of a stutter; the
+    # cost is that release coasts for the remainder of the last slice. At
+    # 1.5 x 30 Hz that is a 50 ms slice and up to 50 ms of coast, which at
+    # 15 mm/s is 0.75 mm.
+    container_slice_overlap: 1.5
+
+    # --- timing ------------------------------------------------------------
+    # Matches drill_joystick.py's publish_rate_hz. The firmware re-arms its
+    # watchdog on every message, so this is also how often a held command is
+    # restated.
+    publish_rate_hz: 30.0
+    # An input that was non-zero and has gone quiet for this long is a
+    # publisher that died, not an axis at rest: drill_joystick.py always sends
+    # its zeros (stop_hold_sec: 0.5) before going silent. Generous against
+    # 30 Hz, and well inside the firmware's own 500 ms timeout so this is the
+    # one that normally acts.
+    input_timeout_s: 0.4

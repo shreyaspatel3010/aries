@@ -8,9 +8,11 @@ The rover's three load cells, published as weights in kilograms.
 | `stone_box` | the box behind it, also on the left, the stone sample |
 | `drill_container` | the drill's sample bin |
 
-All three hang off the **gripper Teensy**, so they arrive over the micro-ROS
-link `aries_bringup`'s `aries_hardware.launch.py` already brings up. There is no
-second board, no second agent, and nothing to add to `devices.yaml`. This
+All three hang off the **drill/science Teensy** — the one board that also runs
+the gripper servo, the stack light and the drill — so they arrive over the
+micro-ROS link `aries_bringup`'s `aries_hardware.launch.py` already brings up.
+There is no second board, no second agent, and nothing to add to
+`devices.yaml`. This
 package holds only the node that turns the firmware's raw converter counts into
 kilograms, and the calibration it does it with.
 
@@ -97,7 +99,12 @@ Dead reckoning drifts. Two things bound it, and one retires it:
 
 ## The firmware contract — not written yet
 
-The sketch is expected to publish **one** topic:
+The firmware is `firmware/teensy_drill_sys`. Its `LoadCell` class
+(`lib/drill/drill.h`) is a stub with no definition and nothing constructs one,
+so nothing publishes this topic yet; the HX711 pins are reserved but unassigned
+in `include/pins.h`. See that project's `PINOUT.md`.
+
+It is expected to publish **one** topic:
 
 ```
 load_cells/raw    std_msgs/Int32MultiArray, three elements,
@@ -114,12 +121,20 @@ is swapped. Kept in `load_cells.yaml` they are a YAML edit and a relaunch — th
 workspace is `--symlink-install`, so there is no rebuild either. Kept in the
 sketch, every recalibration is a trip to the Arduino IDE with the rover open.
 
-**One publisher, not three.** `micro_ros_arduino` ships `libmicroros.a`
-precompiled with a fixed entity budget, and `teensy_gripper.ino` already spends
-one publisher and two subscriptions; three more is the kind of thing that fails
-at `rclc_publisher_init` and takes the gripper down with it. Three cells read in
-sequence off one HX711 chain also belong in one message, because they were
-sampled together.
+**One publisher, not three.** The entity budget is no longer a hard ceiling --
+`micro_ros_platformio` builds the client library from source, so
+`RMW_UXRCE_MAX_PUBLISHERS` is a number in `firmware/teensy_drill_sys/colcon.meta`
+rather than something baked into a precompiled `libmicroros.a` the way
+`micro_ros_arduino` shipped it. Raising it is an edit.
+
+It is still one publisher, for the better reason: three cells read in sequence
+off one HX711 chain were **sampled together**, and splitting them across three
+topics throws that away -- the subscriber then has to re-pair samples that
+arrived as a set, and gets it wrong at exactly the moment the link is slow.
+
+Do note that the firmware already spends six subscriptions and one publisher,
+against a `colcon.meta` that allows eight and four. Adding to it means checking
+that file, not just adding the entity.
 
 If the firmware ends up with three separate `std_msgs/Int32` publishers anyway,
 list them in `raw_topics` and this node reads those instead.

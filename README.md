@@ -198,8 +198,18 @@ provided by the task's height-map, roughness, slope, reach, and motion guards.
 Microcontroller sources are kept outside `src/` so colcon scans only ROS
 packages:
 
-- `firmware/teensy_gripper/teensy_gripper.ino`: current gripper controller.
-- `firmware/legacy_controller/legacy_controller.ino`: legacy controller sketch.
+- `firmware/teensy_drill_sys/`: **the current firmware.** A PlatformIO project,
+  not an Arduino sketch. One Teensy 4.1 runs the drill, the gripper servo and
+  the mast stack light, over one micro-ROS serial link. Pin map and wiring
+  notes in `firmware/teensy_drill_sys/PINOUT.md`; build and flash instructions
+  in its README.
+- `firmware/legacy/`: the retired `.ino` sketches, kept for reference and not
+  flashed. `teensy_gripper.ino` was the gripper controller this replaced;
+  `legacy_controller.ino` came before that.
+
+Building the firmware needs the PlatformIO IDE extension for VS Code — no
+manual library installs, no Arduino IDE, and no separate uploader. Everything
+the project needs is pinned in its `platformio.ini`.
 
 ## Quick Start
 

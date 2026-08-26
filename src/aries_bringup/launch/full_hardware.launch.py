@@ -160,6 +160,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument("use_stacklight", default_value="true"),
         DeclareLaunchArgument("use_load_cells", default_value="true"),
+        DeclareLaunchArgument("use_drill_driver", default_value="true"),
         DeclareLaunchArgument("load_cell_source", default_value="auto",
                               choices=["auto", "microros", "mock"]),
         DeclareLaunchArgument("start_checker", default_value="true"),
@@ -250,7 +251,7 @@ def generate_launch_description():
         ),
 
         # Mast stack light: red on e-stop or halt, yellow operating, green
-        # ready. The publisher for the topic the gripper Teensy's firmware has
+        # ready. The publisher for the topic the drill Teensy's firmware has
         # always subscribed to -- without it the light stays dark whatever the
         # rover does. Reads the drive bringup's status, so it belongs on the
         # rover side even though the Teensy is on the arm's.
@@ -263,6 +264,27 @@ def generate_launch_description():
                 ])
             ),
             condition=IfCondition(LaunchConfiguration("use_stacklight")),
+        ),
+
+        # The drill driver: turns drill_joystick.py's rate commands into the
+        # duty cycle the drill Teensy takes. Same board and same agent as the
+        # stack light and the gripper -- one Teensy runs all three since the
+        # firmware moved to firmware/teensy_drill_sys.
+        #
+        # Until this existed the drill's three command topics reached nothing on
+        # the real rover; drill_joystick.py's own docstring said as much. NOTE
+        # that its calibration is not measured yet: the drill moves, but the
+        # rates on those topics are not the rates the mechanism is doing. See
+        # config/drill_driver.yaml.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_bringup"),
+                    "launch",
+                    "drill_driver.launch.py",
+                ])
+            ),
+            condition=IfCondition(LaunchConfiguration("use_drill_driver")),
         ),
 
         # The three load cells (aries_load_cells): the sand and stone boxes on

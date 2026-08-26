@@ -5,7 +5,7 @@
     stone_box        the box behind it, also on the left, the stone sample
     drill_container  the drill's sample bin
 
-All three hang off the gripper Teensy, so they arrive over the micro-ROS link
+All three hang off the drill/science Teensy, so they arrive over the micro-ROS link
 aries_hardware.launch.py already brings up -- this launch starts only the node
 that turns the firmware's raw counts into kilograms. It does not start an agent
 and does not care which machine one is running on.
