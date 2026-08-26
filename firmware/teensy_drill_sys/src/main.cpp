@@ -90,6 +90,29 @@ static const uint32_t MOTOR_COMMAND_TIMEOUT_MS = 500;
 // gripper hardware interface runs at.
 static const uint32_t GRIPPER_STATE_PERIOD_MS = 10;
 
+// THE ROS DOMAIN. MUST MATCH network.domain_id IN
+// src/aries_common/config/devices.yaml.
+//
+// A micro-ROS client defaults to domain 0. Nothing in the transport or the
+// handshake carries the domain, so unless it is set here the board joins domain
+// 0 while the entire rover runs on 30 -- and the failure is completely silent:
+//
+//   * the agent connects, and its log shows every entity created correctly
+//   * `ros2 topic list` on the rover shows /gripper/state, because the HOST
+//     side advertises it too (the hardware interface subscribes, drill_driver
+//     publishes the motor topics) -- so the names all look present
+//   * but `Publisher count: 0`, and the board's own node never appears
+//   * TeensyGripperSystem then reports "Never received /gripper/state" forever
+//     and silently swallows every gripper command
+//
+// That is exactly what happened on 2026-08-26. The board was findable the whole
+// time -- on `ROS_DOMAIN_ID=0 ros2 node list`.
+//
+// It has to be compiled in: the board has no config file and no way to learn
+// the domain at runtime. test_firmware_domain.py pins this against devices.yaml
+// so the two cannot drift apart unnoticed.
+static const size_t ROS_DOMAIN = 30;
+
 // rcl's teardown and publish functions are declared warn_unused_result, and a
 // (void) cast does NOT silence that in GCC -- only actually consuming the value
 // does. Every use below is a path where the return is genuinely not actionable:
@@ -205,7 +228,30 @@ static bool create_entities()
   allocator = rcl_get_default_allocator();
   entities_stage = 0;
 
-  if (RCL_RET_OK != rclc_support_init(&support, 0, NULL, &allocator))
+  // Domain must be set through init options -- rclc_support_init() takes the
+  // default, which is 0. See ROS_DOMAIN above for what that costs.
+  //
+  // EVERY PATH OUT OF HERE MUST fini THE OPTIONS. rclc_support_init_with_options
+  // copies them into the context, so this copy is ours to release. micro-ROS
+  // allocates from a fixed static pool, and create_entities() is retried on
+  // every reconnect -- so leaking one set per attempt is not a slow leak, it is
+  // a board that works on the first connection after a flash and then never
+  // again. Observed exactly that: 7 readers and 1 writer on the first agent,
+  // then zero sessions on the next.
+  rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
+  if (RCL_RET_OK != rcl_init_options_init(&init_options, allocator))
+    return false;
+
+  if (RCL_RET_OK != rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN))
+  {
+    IGNORE_RC(rcl_init_options_fini(&init_options));
+    return false;
+  }
+
+  const rcl_ret_t support_rc =
+      rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator);
+  IGNORE_RC(rcl_init_options_fini(&init_options));
+  if (RCL_RET_OK != support_rc)
     return false;
   entities_stage = 1;
 

@@ -77,7 +77,25 @@ from aries_common.devices import device
 # link, but never below the node count.
 MAX_AUTO_PARTICIPANT_INDEX = int(os.environ.get("ARIES_MAX_PARTICIPANT_INDEX", "60"))
 
-RMW = "rmw_cyclonedds_cpp"
+# The middleware, and it is pinned rather than left to whatever the shell has:
+# a stack that comes up half on one vendor and half on another looks perfectly
+# healthy per-node and cannot see itself.
+#
+# ARIES_RMW OVERRIDES IT, for one specific reason. micro_ros_agent is hard-linked
+# against Fast DDS (libfastrtps) and ignores RMW_IMPLEMENTATION entirely, so the
+# Teensy's topics are created on Fast DDS while the rest of the stack is on
+# Cyclone -- and the two do not discover each other here. The symptom is a
+# gripper that never responds while every log reads healthy: the agent reports
+# all its entities created, /gripper/state exists (the HOST advertises it), but
+# `ros2 topic info /gripper/state` shows Publisher count 0.
+#
+#     ARIES_RMW=rmw_fastrtps_cpp ros2 launch aries_bringup full_hardware.launch.py
+#
+# NOTE that the field-link config written below is CycloneDDS XML. Fast DDS
+# ignores it, so an override also drops the interface pinning and the
+# participant-index tuning that config exists for -- fine on one machine, NOT
+# yet equivalent for the two-machine field link.
+RMW = os.environ.get("ARIES_RMW", "").strip() or "rmw_cyclonedds_cpp"
 
 _CONFIG_BASENAME = "aries_cyclonedds.xml"
 
