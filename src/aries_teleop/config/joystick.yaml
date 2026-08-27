@@ -230,9 +230,18 @@ drill_joystick:
     # runs it back under the auger; stick UP turns the auger clockwise seen
     # from above (the cutting direction of a right-hand flight, and a negative
     # rate about +Z). Flip any of them here rather than in code.
-    invert_motor: false
+    #
+    # invert_motor AND invert_bit TRUE since 2026-08-27: on the bench both ran
+    # backwards under the pad. Flipped HERE, not in aries_bringup's
+    # drill_driver.yaml, because these two topics are ALSO bridged straight
+    # into Gazebo (aries/config/gazebo_bridge.yaml) -- so the convention was
+    # wrong in sim as well, and fixing it on the PWM side would have left sim
+    # backwards forever. drill_driver.yaml's auger_invert / feed_invert are the
+    # motor-wiring half of the same sign and MUST stay false, or the two flips
+    # cancel and the bench goes back to where it started.
+    invert_motor: true
     invert_container: false
-    invert_bit: false
+    invert_bit: true
 
     # Zeros keep going out for this long after LT is released, so a single
     # dropped message cannot leave a motor running.

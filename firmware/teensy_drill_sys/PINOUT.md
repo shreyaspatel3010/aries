@@ -21,7 +21,7 @@ not flashed.
 | **Gripper servo** | `GRIPPER_SERVO` | 23 | out, servo | ✅ |
 | **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 10 | out, servo | ⚠️ |
 | **Stack light** green / yellow / red | `STALIG_*` | 37 / 36 / 35 | out, active **LOW** | ✅ |
-| **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 2 / 3 | in, `INPUT_PULLUP` | ⚠️ |
+| **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 4 / 5 | in, `INPUT_PULLUP` | ✅ |
 | Status LED | `LED_BUILTIN` | 13 | out | ✅ |
 | **Load cell** — sand box (front-left) | `HX711_SAND_BOX_*` | DT 17 / SCK 16 | in/out | ✅ |
 | **Load cell** — stone box (back-left) | `HX711_STONE_BOX_*` | DT 34 / SCK 33 | in/out | ✅ |
@@ -111,14 +111,16 @@ power-up.
 ## What is still proposed
 
 Everything is now assigned — no pin is `PIN_UNASSIGNED` and the status LED no
-longer fast-blinks. Three things are still **guesses**, all mine:
+longer fast-blinks. Two things are still **guesses**, both mine:
 
-* **The two limit switches, 2 and 3.** Nothing has confirmed them, and nothing
-  will notice if they are wrong: a switch on the wrong pin simply never trips,
-  and the feed carriage runs into its mechanical stop under power.
 * **The container lid servo, 10.** Free and PWM-capable, but unverified.
 * **The feed carriage's 15 / 41 / 40**, from `pin-def-ref.txt` and never checked
   against the loom.
+
+The **limit switches moved from 2 / 3 to 4 / 5 on 2026-08-27**, given from the
+bench, and are no longer a guess. 2 / 3 were `pin-def-ref.txt`'s and had never
+been checked — which is exactly the failure this list warns about, since a
+switch on the wrong pin never trips and the carriage finds its stop instead.
 
 **Confirm all of these against the harness before powering the drill.** A wrong
 direction pin runs an axis into its end stop at 100 % duty cycle.

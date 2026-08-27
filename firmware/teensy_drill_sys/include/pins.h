@@ -88,15 +88,19 @@
 // no end of travel to reach. drill_joystick.py has had the correct model all
 // along -- "drill_motor has one at each end of its travel, bottom and top".
 //
-// PROPOSED, NOT CONFIRMED, same as the actuator above.
+// MOVED TO 4 / 5 on 2026-08-27, given from the bench. Was 2 / 3, which came
+// from pin-def-ref.txt and was never checked against the loom. A limit switch
+// on the wrong pin is SILENT -- it simply never trips, and the first thing that
+// notices is the carriage arriving at its mechanical stop under power. See the
+// unconfirmed-pins list in PINOUT.md.
 //
 // The BIN's two switches are not in this map. The mechanism has four switches
 // across two axes; the firmware has two instances (LIMIT_SWITCH_INSTANCES in
 // drill.h, which caps the ISR router table). Wiring the bin's pair needs that
 // constant raised to 4 and two more routers added. Until then the bin is
 // dead-reckoned, exactly as the aries_load_cells README describes.
-#define LIMIT_SWITCH1 2  // feed carriage, BOTTOM of travel
-#define LIMIT_SWITCH2 3  // feed carriage, TOP of travel
+#define LIMIT_SWITCH1 4  // feed carriage, BOTTOM of travel
+#define LIMIT_SWITCH2 5  // feed carriage, TOP of travel
 
 // --- Stack light ------------------------------------------------------------
 // Three GPIOs, one per tier, on the mast. ACTIVE LOW: the driver sinks current,
