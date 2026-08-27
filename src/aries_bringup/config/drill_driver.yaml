@@ -52,7 +52,15 @@ drill_driver:
     auger_min_pwm: 40
     # Stick UP should turn the auger in its cutting direction - a right-hand
     # flight, clockwise seen from above. Flip here if it cuts backwards.
-    auger_invert: false
+    #
+    # TRUE since 2026-08-27: on the bench the auger ran backwards under the
+    # stick. Flipped HERE and not with joystick.yaml's invert_bit, because
+    # invert_bit flips the /aries/drill_bit_joint/cmd_vel rate itself and that
+    # topic is bridged straight into Gazebo (aries/config/gazebo_bridge.yaml),
+    # so inverting there would have fixed the bench by breaking the sim. This
+    # is a wiring fact about the motor, so it belongs on the PWM side. Set
+    # ONE of the two, never both.
+    auger_invert: true
 
     # --- the feed carriage (MOTOR2) ---------------------------------------
     # Placeholder: joystick.yaml's motor_speed.

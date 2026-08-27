@@ -333,7 +333,7 @@ void LimitSwitch::init()
 
     if (isr_func != nullptr)
     {
-      attachInterrupt(digitalPinToInterrupt(m_pin_switch), isr_func, FALLING);
+      attachInterrupt(digitalPinToInterrupt(m_pin_switch), isr_func, RISING);
     }
   }
 }
