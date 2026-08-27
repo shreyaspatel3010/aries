@@ -15,13 +15,13 @@ not flashed.
 
 | Function | Code name | Pin | Direction | Confirmed? |
 |---|---|---|---|---|
-| **Feed carriage** — moves the whole drill **up/down** | `FEED_*` | 15 / 41 / 40 | out, PWM 10 kHz + 2 dir | ⚠️ |
+| **Feed carriage** — moves the whole drill **up/down** | `FEED_*` | 15 / 40 / 41 | out, PWM 10 kHz + 2 dir | ⚠️ |
 | **Auger** — spins the cutting head | `AUGER_*` | 22 / 19 / 18 | out, PWM 10 kHz + 2 dir | ✅ |
 | **Sample bin actuator** — slides bin fore/aft | `BIN_*` | 28 / 30 / 29 | out, PWM 10 kHz + 2 dir | ✅ |
 | **Gripper servo** | `GRIPPER_SERVO` | 23 | out, servo | ✅ |
 | **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 10 | out, servo | ⚠️ |
 | **Stack light** green / yellow / red | `STALIG_*` | 37 / 36 / 35 | out, active **LOW** | ✅ |
-| **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 4 / 5 | in, `INPUT_PULLUP` | ✅ |
+| **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 7 / 6 | in, `INPUT_PULLUP` | ✅ |
 | Status LED | `LED_BUILTIN` | 13 | out | ✅ |
 | **Load cell** — sand box (front-left) | `HX711_SAND_BOX_*` | DT 17 / SCK 16 | in/out | ✅ |
 | **Load cell** — stone box (back-left) | `HX711_STONE_BOX_*` | DT 34 / SCK 33 | in/out | ✅ |
@@ -42,6 +42,20 @@ table is the one to trust:
 | **The whole drill, up and down** | `FEED_*` | `feed_motor` | `motor2/cmd_speed` | `/aries/drill_motor_joint/cmd_vel` |
 | The auger spinning (no travel) | `AUGER_*` | `auger` | `motor1/cmd_speed` | `/aries/drill_bit_joint/cmd_vel` |
 | The sample bin, fore and aft | `BIN_*` | `bin_actuator` | `linact/cext` | `/aries/drill_container_joint/cmd_vel` |
+
+The feed's two limit switches go the other way — they are the only thing the
+drill **reports**:
+
+| Senses | Firmware pins | C++ object | ROS topic | Host consumer |
+|---|---|---|---|---|
+| Feed carriage at either end | `LIMIT_SWITCH1/2` | `switch_feed_bottom/top` | `drill/limits` | `drill_joystick.py` |
+
+`drill/limits` is a `UInt8` bitfield — **bit0 bottom, bit1 top** — published on
+change plus a 2 Hz heartbeat, so silence means the board is gone rather than the
+switches being open. No drill axis has an encoder, so this is the entire
+feedback path: before it existed, a switch on the wrong pin, an unwired switch
+and a working one were indistinguishable from the host, because all three look
+like a carriage that simply does not stop.
 
 `drill_motor_joint` is the **vertical feed**, not the motor that drills.
 `drill_bit_joint` is the auger's **rotation**. Confirmed from `drill.xacro`:
@@ -114,13 +128,29 @@ Everything is now assigned — no pin is `PIN_UNASSIGNED` and the status LED no
 longer fast-blinks. Two things are still **guesses**, both mine:
 
 * **The container lid servo, 10.** Free and PWM-capable, but unverified.
-* **The feed carriage's 15 / 41 / 40**, from `pin-def-ref.txt` and never checked
-  against the loom.
+* **The feed carriage's 15 / 40 / 41**, from `pin-def-ref.txt` and never checked
+  against the loom. The two direction pins were **swapped from 41 / 40 on
+  2026-08-27**: positive PWM drove the carriage *down*, and because
+  `apply_motor_commands()` chooses the top switch for a positive PWM and the
+  bottom one for a negative, that reversal pointed the limit gate at the far end
+  of the travel — the carriage ran into the top stop with the firmware watching
+  the bottom switch. Fix a reversed feed HERE and never on the host, which sits
+  above the sign the gating reads.
 
-The **limit switches moved from 2 / 3 to 4 / 5 on 2026-08-27**, given from the
-bench, and are no longer a guess. 2 / 3 were `pin-def-ref.txt`'s and had never
-been checked — which is exactly the failure this list warns about, since a
-switch on the wrong pin never trips and the carriage finds its stop instead.
+The **limit switches are on 7 (bottom) and 6 (top)**, measured 2026-08-27 and
+the only pins in this file established by asking the hardware rather than
+reading a document. They were `2 / 3` from `pin-def-ref.txt`, then `4 / 5` from
+a bench report the same day; both were wrong and **nothing could tell**, because
+an `INPUT_PULLUP` pin reads HIGH whether the switch is open or the pin is
+connected to nothing. "Wrong pin" and "carriage mid-travel" are the same
+reading, so three numbers were tried blind before the board was asked directly.
+
+**Ask it, don't guess:** `scripts/check_drill_limits.py` holds every unused pin
+`INPUT_PULLUP` and publishes them on `drill/pin_scan`; press a switch by hand and
+the pin that moves is the pin it is on. Both switches are **normally open to
+GND** — they rest HIGH and go LOW while held — so `is_at_stop()`'s `== LOW` and
+the `FALLING` interrupt edge are both the correct sense. Note that pins 9, 14,
+21, 24 and 27 *do* rest low on this harness; they belong to something else.
 
 **Confirm all of these against the harness before powering the drill.** A wrong
 direction pin runs an axis into its end stop at 100 % duty cycle.

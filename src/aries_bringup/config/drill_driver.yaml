@@ -70,9 +70,16 @@ drill_driver:
     feed_min_pwm: 60
     # POSITIVE IS UP, matching the host all the way down: drill.xacro runs the
     # joint -0.375 (bottom) to 0.185 (top), and joystick.yaml documents D-pad UP
-    # as raising the carriage. The firmware's limit-switch gating assumes it
-    # too. If the carriage goes the wrong way, flip invert_motor in
-    # joystick.yaml OR this one - not both.
+    # as raising the carriage.
+    #
+    # DO NOT INVERT THE FEED HERE EITHER. The firmware does not merely obey this
+    # sign, it GATES on it -- apply_motor_commands() reads the top switch for a
+    # positive PWM and the bottom one for a negative. Flipping the feed on the
+    # host therefore aims the limit gate at the wrong end of the travel while
+    # making the pad feel correct, which is how the carriage came to drive into
+    # the top stop unguarded on 2026-08-27. If the carriage runs the wrong way,
+    # swap FEED_INA/FEED_INB in firmware/teensy_drill_sys/include/pins.h and
+    # reflash; that is the only place the fix keeps every layer agreeing.
     feed_invert: false
 
     # --- the sample bin (linear actuator) ---------------------------------

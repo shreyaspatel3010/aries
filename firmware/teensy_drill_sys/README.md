@@ -24,6 +24,7 @@ resolves to one.
 |---|---|---|---|---|
 | `/gripper/cmd` | `Float32` | in | best effort | Jaw target, 0–1 |
 | `/gripper/state` | `Float32` | out | best effort | Jaw command echoed, 100 Hz |
+| `drill/limits` | `UInt8` | out | reliable | Feed switches: bit0 bottom, bit1 top. On change + 2 Hz |
 | `stacklight_subscription` | `UInt8` | in | reliable | 1 red, 2 yellow, 3 green, 4 off |
 | `motor1/cmd_speed` | `Int32` | in | best effort | Auger, −255…255 |
 | `motor2/cmd_speed` | `Int32` | in | best effort | Feed carriage, −255…255 |

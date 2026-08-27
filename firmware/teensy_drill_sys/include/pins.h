@@ -58,9 +58,27 @@
 // THE FEED CARRIAGE -- the lead screw that moves the WHOLE DRILL up and down
 // (drill_motor_joint, prismatic on Z, -0.375 .. +0.185). This is the vertical
 // axis, despite the URDF calling it "motor" and the auger "bit".
+//
+// INA/INB SWAPPED 2026-08-27 (was 41 / 40). POSITIVE PWM MUST DRIVE THE
+// CARRIAGE UP, and on the bench it drove it DOWN. That sign is not cosmetic:
+// apply_motor_commands() picks WHICH SWITCH to consult from it --
+//
+//     feed_pwm > 0  ->  switch_feed_top
+//     feed_pwm < 0  ->  switch_feed_bottom
+//
+// -- so a reversed bridge does not merely invert the pad, it points the gate at
+// the far end of the travel. The carriage then climbs into the TOP switch while
+// the firmware is watching the BOTTOM one, and neither switch ever stops
+// anything. That is what "limit switches not working" was on 2026-08-27.
+//
+// FIX IT HERE, NOT ON THE HOST. Inverting in joystick.yaml or drill_driver.yaml
+// makes the pad feel right and leaves the gate pointed the wrong way, because
+// both of those sit ABOVE the sign the firmware gates on. Driver::drive() maps
+// dir=true to INA HIGH / INB LOW, so exchanging these two numbers is exactly
+// equivalent to swapping the motor's two leads at the bridge.
 #define FEED_PWM 15
-#define FEED_INA 41
-#define FEED_INB 40
+#define FEED_INA 40
+#define FEED_INB 41
 
 // --- Sample-bin linear actuator ---------------------------------------------
 // The bin rides its rails between q = 0 (parked forward of the mast) and
@@ -88,19 +106,29 @@
 // no end of travel to reach. drill_joystick.py has had the correct model all
 // along -- "drill_motor has one at each end of its travel, bottom and top".
 //
-// MOVED TO 4 / 5 on 2026-08-27, given from the bench. Was 2 / 3, which came
-// from pin-def-ref.txt and was never checked against the loom. A limit switch
-// on the wrong pin is SILENT -- it simply never trips, and the first thing that
-// notices is the carriage arriving at its mechanical stop under power. See the
-// unconfirmed-pins list in PINOUT.md.
+// 7 = BOTTOM, 6 = TOP. MEASURED, 2026-08-27, and these are the first numbers
+// here that were not somebody's guess: with drill/pin_scan running, each switch
+// was pressed by hand and the board reported which pin moved. 2 / 3 came from
+// pin-def-ref.txt, and 4 / 5 replaced them the same day on a bench report --
+// both were wrong, and nothing could tell, because a limit switch on the wrong
+// pin is SILENT. An INPUT_PULLUP pin reads HIGH whether the switch is open or
+// the pin is connected to nothing at all, so "wrong pin" and "carriage
+// mid-travel" are the same reading. Three pin numbers were tried blind before
+// the board was simply asked. Ask it: scripts/check_drill_limits.py.
+//
+// NORMALLY OPEN, switching to GND, exactly as described above -- confirmed by
+// the same test: both pins rest HIGH and go LOW while the switch is held. So
+// is_at_stop()'s digitalRead(pin) == LOW is the right sense, and the FALLING
+// interrupt edge is the closure. (Pins 9, 14, 21, 24 and 27 DO rest low on this
+// harness; they are something else's, and are not these switches.)
 //
 // The BIN's two switches are not in this map. The mechanism has four switches
 // across two axes; the firmware has two instances (LIMIT_SWITCH_INSTANCES in
 // drill.h, which caps the ISR router table). Wiring the bin's pair needs that
 // constant raised to 4 and two more routers added. Until then the bin is
 // dead-reckoned, exactly as the aries_load_cells README describes.
-#define LIMIT_SWITCH1 4  // feed carriage, BOTTOM of travel
-#define LIMIT_SWITCH2 5  // feed carriage, TOP of travel
+#define LIMIT_SWITCH1 7  // feed carriage, BOTTOM of travel
+#define LIMIT_SWITCH2 6  // feed carriage, TOP of travel
 
 // --- Stack light ------------------------------------------------------------
 // Three GPIOs, one per tier, on the mast. ACTIVE LOW: the driver sinks current,

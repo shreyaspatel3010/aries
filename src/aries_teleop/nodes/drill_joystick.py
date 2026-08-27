@@ -67,7 +67,7 @@ They are bridged into gz by aries/config/*_gazebo_bridge.yaml.
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy, JointState
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, UInt8
 
 
 class LimitSwitchedAxis:
@@ -202,8 +202,19 @@ class DrillJoystick(Node):
         # in the loom or the firmware pin map, so nothing can read them. See
         # LimitSwitchedAxis' docstring for why gating the bin on dead reckoning
         # blocked it outright instead of protecting it.
-        self.declare_parameter("motor_has_limits", True)
+        self.declare_parameter("motor_has_limits", False)
         self.declare_parameter("container_has_limits", False)
+
+        # THE REAL SWITCHES, straight off the board. firmware/teensy_drill_sys
+        # publishes drill/limits as a UInt8 -- bit0 bottom, bit1 top -- and it
+        # is the only feedback the drill has: no axis carries an encoder, so
+        # nothing else here is a measurement. Gate on this and never on a
+        # position, which can only ever be dead reckoning.
+        self.declare_parameter("limits_topic", "/drill/limits")
+        # Two missed heartbeats. The board republishes at 2 Hz even when
+        # nothing changes, so silence for this long means the board, the agent
+        # or the link is gone -- NOT that the switches are open.
+        self.declare_parameter("limits_timeout_sec", 1.5)
 
         # drill_bit_joint's URDF velocity limit is 60 rad/s; half of that is a
         # sane manual ceiling (~285 rpm). The auger is continuous - it has no
@@ -284,12 +295,20 @@ class DrillJoystick(Node):
         self.command_container = 0.0
         self.command_bit = 0.0
 
+        self.limits_timeout_sec = float(g("limits_timeout_sec").value)
+        self.limit_bottom = False
+        self.limit_top = False
+        self.limits_time = 0.0
+        self.limits_seen = False
+        self.switch_tripped = 0
+
         self.pub_motor = self.create_publisher(Float64, str(g("motor_cmd_topic").value), 10)
         self.pub_container = self.create_publisher(Float64, str(g("container_cmd_topic").value), 10)
         self.pub_bit = self.create_publisher(Float64, str(g("bit_cmd_topic").value), 10)
 
         self.create_subscription(Joy, joy_topic, self._joy_cb, 10)
         self.create_subscription(JointState, joint_states_topic, self._joint_state_cb, 10)
+        self.create_subscription(UInt8, str(g("limits_topic").value), self._limits_cb, 10)
 
         self.dt = 1.0 / max(self.publish_rate_hz, 1.0)
         self.create_timer(self.dt, self._timer_cb)
@@ -336,6 +355,39 @@ class DrillJoystick(Node):
             if axis is not None:
                 axis.measure(position)
 
+    def _limits_cb(self, msg):
+        bits = int(msg.data)
+        self.limit_bottom = bool(bits & 0x01)
+        self.limit_top = bool(bits & 0x02)
+        self.limits_time = self._now()
+        if not self.limits_seen:
+            self.limits_seen = True
+            self.get_logger().info(
+                "drill/limits is live: gating the feed on the real switches")
+
+    def _switch_cut(self, rate):
+        """Cut a feed rate that drives into a CLOSED switch. Returns (rate, trip).
+
+        The mirror of apply_motor_commands() in the firmware, which gates the
+        same way on the same two bits -- deliberately, so the operator sees the
+        cut in the log at the moment the board applies it. The firmware is what
+        actually protects the mechanism; this is the half the operator can see.
+
+        Stale or absent feedback does NOT block: with no board there is no
+        switch to believe, and refusing to move is its own failure. The firmware
+        still holds the real gate, and a missing drill/limits is reported rather
+        than silently turned into a stop.
+        """
+        if not self.limits_seen:
+            return rate, 0
+        if self._now() - self.limits_time > self.limits_timeout_sec:
+            return rate, 0
+        if rate > 0.0 and self.limit_top:
+            return 0.0, 1
+        if rate < 0.0 and self.limit_bottom:
+            return 0.0, -1
+        return rate, 0
+
     def _joy_cb(self, msg):
         self.last_joy_time = self._now()
 
@@ -377,6 +429,7 @@ class DrillJoystick(Node):
             # a dropped message cannot leave a motor running.
             self.motor.tripped = 0
             self.container.tripped = 0
+            self.switch_tripped = 0
             if now < self.stop_until:
                 self._publish(0.0, 0.0, 0.0)
             return
@@ -386,6 +439,11 @@ class DrillJoystick(Node):
         self.was_active = True
 
         motor_rate, motor_trip = self.motor.rate(self.command_motor, self.dt)
+        # The real switches outrank anything the axis dead-reckoned.
+        motor_rate, switch_trip = self._switch_cut(motor_rate)
+        if switch_trip != self.switch_tripped:
+            motor_trip = switch_trip or motor_trip
+        self.switch_tripped = switch_trip
         container_rate, container_trip = self.container.rate(
             self.command_container, self.dt)
         self._report(self.motor, motor_trip)

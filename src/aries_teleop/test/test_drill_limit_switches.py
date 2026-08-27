@@ -54,6 +54,7 @@ os.environ["CYCLONEDDS_URI"] = f"file://{_ISOLATED_DDS}"
 rclpy = pytest.importorskip("rclpy")
 
 from sensor_msgs.msg import Joy, JointState  # noqa: E402
+from std_msgs.msg import UInt8  # noqa: E402
 
 NODES = Path(__file__).resolve().parents[1] / "nodes"
 
@@ -129,6 +130,13 @@ def _hold(instance, clock, ticks=10, **joy):
         instance._joy_cb(_joy(**joy))
         clock.advance(instance.dt)
         instance._timer_cb()
+
+
+def _limits(instance, bottom=False, top=False):
+    """One drill/limits sample, as the board publishes it."""
+    msg = UInt8()
+    msg.data = (0x01 if bottom else 0) | (0x02 if top else 0)
+    instance._limits_cb(msg)
 
 
 def _measure(instance, motor=None, container=None):
@@ -215,8 +223,9 @@ class TestFeedLimitSwitches:
         assert sent["motor"][-1] == pytest.approx(instance.motor.speed)
 
     def test_bottom_switch_cuts_down_but_not_up(self, drill):
+        """The CLOSED switch is the whole input. No position is consulted."""
         instance, clock, sent = drill
-        _measure(instance, motor=instance.motor.lower)
+        _limits(instance, bottom=True)
         _hold(instance, clock, trigger=1.0, dpad_v=-1.0)
         assert set(sent["motor"]) == {0.0}, "bottom switch must cut the motor"
 
@@ -225,20 +234,44 @@ class TestFeedLimitSwitches:
 
     def test_top_switch_cuts_up_but_not_down(self, drill):
         instance, clock, sent = drill
-        _measure(instance, motor=instance.motor.upper)
+        _limits(instance, top=True)
         _hold(instance, clock, trigger=1.0, dpad_v=1.0)
         assert set(sent["motor"]) == {0.0}, "top switch must cut the motor"
 
         _hold(instance, clock, trigger=1.0, dpad_v=-1.0)
         assert sent["motor"][-1] < 0.0
 
-    def test_switch_trips_short_of_the_mechanical_stop(self, drill):
-        """It is a switch, not the stop it protects: it fires limit_margin
-        before the carriage lands on the plate."""
+    def test_an_open_switch_never_cuts_however_far_it_has_travelled(self, drill):
+        """The regression of 2026-08-27. The feed used to gate on a position it
+        dead-reckoned from its own commands, so it cut after 0.185 m of
+        COMMANDED travel wherever the carriage really was -- a timer wearing a
+        limit switch's name. With the switches open, nothing may stop it."""
         instance, clock, sent = drill
-        _measure(instance, motor=instance.motor.lower + instance.motor.margin / 2.0)
-        _hold(instance, clock, trigger=1.0, dpad_v=-1.0)
-        assert set(sent["motor"]) == {0.0}
+        _limits(instance, bottom=False, top=False)
+        travel = instance.motor.upper - instance.motor.lower
+        ticks = int(travel / instance.motor.speed / instance.dt) + 120
+        _hold(instance, clock, ticks=ticks, trigger=1.0, dpad_v=1.0)
+        assert sent["motor"][-1] == pytest.approx(instance.motor.speed)
+        assert 0.0 not in set(sent["motor"])
+
+    def test_a_switch_closing_mid_travel_cuts_immediately(self, drill):
+        """A real switch is a level, not a distance: it acts the moment it
+        closes, at whatever position the carriage happens to be."""
+        instance, clock, sent = drill
+        _hold(instance, clock, ticks=5, trigger=1.0, dpad_v=1.0)
+        assert sent["motor"][-1] > 0.0
+        _limits(instance, top=True)
+        _hold(instance, clock, ticks=3, trigger=1.0, dpad_v=1.0)
+        assert sent["motor"][-1] == 0.0
+
+    def test_stale_switch_feedback_does_not_block_the_carriage(self, drill):
+        """No board, no switch to believe. The firmware holds the real gate;
+        refusing to move because the topic went quiet is its own failure."""
+        instance, clock, sent = drill
+        _limits(instance, top=True)
+        clock.advance(instance.limits_timeout_sec + 0.5)
+        _hold(instance, clock, ticks=3, trigger=1.0, dpad_v=1.0)
+        assert sent["motor"][-1] > 0.0
 
     def test_the_bin_is_not_gated_because_it_has_no_switches(self, drill):
         """The regression of 2026-08-27, in the state the rover boots in.
@@ -282,16 +315,15 @@ class TestFeedLimitSwitches:
         _hold(instance, clock, trigger=1.0, dpad_h=-1.0)
         assert sent["container"][-1] > 0.0
 
-    def test_switches_work_with_no_joint_states_at_all(self, drill):
-        """Nothing publishes the drill's state in a bare `ros2 run`, so the
-        axis dead-reckons from what it commanded and still stops itself."""
+    def test_no_switch_feed_at_all_leaves_the_axis_free(self, drill):
+        """A bare `ros2 run` with no board: drill/limits never arrives. The
+        node must not invent a limit to replace it."""
         instance, clock, sent = drill
-        assert not instance.motor.measured
+        assert not instance.limits_seen
         travel = instance.motor.upper - instance.motor.lower
         ticks = int(travel / instance.motor.speed / instance.dt) + 60
         _hold(instance, clock, ticks=ticks, trigger=1.0, dpad_v=-1.0)
-        assert sent["motor"][-1] == 0.0
-        assert instance.motor.position <= instance.motor.lower + instance.motor.margin
+        assert sent["motor"][-1] == pytest.approx(-instance.motor.speed)
 
 
 class TestAuger:

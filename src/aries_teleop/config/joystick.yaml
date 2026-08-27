@@ -236,8 +236,25 @@ drill_joystick:
     # the "drill_container_joint: top limit switch, motor cut" flood of
     # 2026-08-27, with the actuator never moving. Gating on an invented
     # position protects nothing; it only refuses to move.
-    motor_has_limits: true
+    # BOTH FALSE: this is the URDF-position gate, and the drill has no position
+    # to gate on. Not one of the three axes carries an encoder -- the two limit
+    # switches are the entire feedback path -- so `position` in this node is
+    # dead reckoning from an assumed q = 0 start, and it drifts from the first
+    # command onward. The feed's gate used to run off it and would cut the
+    # carriage after 0.185 m of COMMANDED travel wherever the carriage actually
+    # was, which is not a limit switch, just a timer that says "switch".
+    #
+    # The real switches arrive on drill/limits (limits_topic below) and gate the
+    # feed directly, mirroring the firmware. Turn these on only for an axis that
+    # genuinely has a measured position.
+    motor_has_limits: false
     container_has_limits: false
+
+    # The board's own switch feed -- the drill's only sensor. bit0 bottom,
+    # bit1 top, republished at 2 Hz even when nothing changes so that silence
+    # means "board gone", not "switches open".
+    limits_topic: "/drill/limits"
+    limits_timeout_sec: 1.5
 
     # drill_bit_joint's URDF velocity limit is 60 rad/s. Half of it (~285 rpm)
     # is the manual ceiling.
@@ -248,15 +265,25 @@ drill_joystick:
     # from above (the cutting direction of a right-hand flight, and a negative
     # rate about +Z). Flip any of them here rather than in code.
     #
-    # invert_motor AND invert_bit TRUE since 2026-08-27: on the bench both ran
-    # backwards under the pad. Flipped HERE, not in aries_bringup's
-    # drill_driver.yaml, because these two topics are ALSO bridged straight
-    # into Gazebo (aries/config/gazebo_bridge.yaml) -- so the convention was
-    # wrong in sim as well, and fixing it on the PWM side would have left sim
-    # backwards forever. drill_driver.yaml's auger_invert / feed_invert are the
-    # motor-wiring half of the same sign and MUST stay false, or the two flips
-    # cancel and the bench goes back to where it started.
-    invert_motor: true
+    # invert_bit TRUE since 2026-08-27: the auger ran backwards under the
+    # stick. Flipped HERE, not in aries_bringup's drill_driver.yaml, because
+    # the topic is ALSO bridged straight into Gazebo
+    # (aries/config/gazebo_bridge.yaml) -- so the convention was wrong in sim
+    # as well, and fixing it on the PWM side would have left sim backwards
+    # forever. drill_driver.yaml's auger_invert is the motor-wiring half of the
+    # same sign and MUST stay false, or the two flips cancel.
+    #
+    # invert_motor STAYS FALSE, and the feed must NEVER be inverted here.
+    # Unlike the auger, the feed carriage has limit switches, and the FIRMWARE
+    # picks which one to consult from the sign of the PWM it receives
+    # (apply_motor_commands() in firmware/teensy_drill_sys/src/main.cpp:
+    # +ve -> top switch, -ve -> bottom). Inverting anywhere on the host makes
+    # the pad feel right while pointing that gate at the opposite end of the
+    # travel, so the carriage drives into the top stop with the firmware
+    # watching the bottom one. This was set true for a few minutes on
+    # 2026-08-27 and that is exactly what happened. The feed's direction is
+    # fixed at the bridge instead -- FEED_INA/FEED_INB in pins.h.
+    invert_motor: false
     invert_container: false
     invert_bit: true
 

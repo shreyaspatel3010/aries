@@ -18,6 +18,7 @@
 //   TOPIC                      TYPE     MEANING                        C++ NAME
 //   /gripper/cmd               Float32  jaws, 0..1        BEST EFFORT  gservo
 //   /gripper/state             Float32  jaws echoed, 100 Hz, BEST EFF  gservo
+//   drill/limits               UInt8    bit0 bottom, bit1 top   RELIABLE  switch_feed_*
 //   stacklight_subscription    UInt8    1=red 2=yellow 3=green 4=off   stalig
 //   motor1/cmd_speed           Int32    -255..255  AUGER, spins        auger
 //   motor2/cmd_speed           Int32    -255..255  FEED, drill up/down feed_motor
@@ -65,6 +66,8 @@
 
 #include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/u_int32.h>
+#include <std_msgs/msg/u_int64.h>
 #include <std_msgs/msg/u_int8.h>
 
 #include "drill.h"
@@ -175,6 +178,76 @@ SlewServo lid_servo(LID_SERVO_SAND_BOX);
 // it on switch 1 anyway. See pins.h.
 LimitSwitch switch_feed_bottom(LIMIT_SWITCH1, 50);
 LimitSwitch switch_feed_top(LIMIT_SWITCH2, 50);
+
+// THE ONLY SENSOR THE DRILL HAS. There is no encoder on any of the three axes,
+// so these two switches are the entire feedback path -- and until 2026-08-27
+// the firmware kept them to itself. Nothing on the host could tell a switch
+// that was working from one on the wrong pin, unwired, or never closing,
+// because all three look identical: the carriage simply does not stop.
+// drill_joystick.py had filled that hole by dead-reckoning a position from
+// the commanded rate and gating on the URDF limits, which is a guess, not a
+// measurement, and drifts from the first slipped count onward.
+//
+// bit0 = bottom switch closed, bit1 = top switch closed. RELIABLE and
+// published on change (plus a slow heartbeat) rather than streamed: it is an
+// event, it is rare, and a dropped edge is exactly the sample that matters.
+rcl_publisher_t drill_limits_pub;
+std_msgs__msg__UInt8 drill_limits_msg;
+
+// --- Pin scan: WHERE IS THE SWITCH ACTUALLY WIRED? --------------------------
+//
+// A switch that never closes and a switch on the wrong pin are the same event
+// from the host -- an INPUT_PULLUP pin reads HIGH both when the switch is open
+// and when nothing is connected to it at all. drill/limits reporting 0
+// therefore cannot distinguish "correctly wired, carriage mid-travel" from
+// "these two pins are not connected to anything".
+//
+// So the board checks every pin it is NOT using. Hold a limit switch closed and
+// exactly one bit goes high, and that bit IS the pin the switch is on -- whether
+// or not it is the pin pins.h believes. If NO bit goes high, the switch is not
+// reaching the Teensy at all (open circuit, or it is not switching to GND) and
+// no amount of renumbering pins.h will help.
+//
+// INPUT ONLY. Every pin here is configured INPUT_PULLUP and never driven, so
+// this cannot fight anything already on the harness.
+static const uint8_t kScanPins[] = {
+    0, 1, 2, 3, 4, 5, 8, 9, 11, 12, 14, 20, 21, 24, 25, 26, 27, 38, 39,
+    // The two the switches are SUPPOSED to be on, reported alongside for
+    // comparison. Already INPUT_PULLUP via LimitSwitch::init().
+    LIMIT_SWITCH1, LIMIT_SWITCH2,
+};
+static const uint8_t kScanCount = sizeof(kScanPins) / sizeof(kScanPins[0]);
+
+rcl_publisher_t pin_scan_pub;
+// 64 bits, not 32: pins 38 and 39 are free on a Teensy 4.1 and a 32-bit mask
+// silently cannot address them, so a switch wired there was invisible to the
+// first version of this scan.
+std_msgs__msg__UInt64 pin_scan_msg;
+
+// Bit N is set when digital pin N reads LOW -- i.e. something is pulling it
+// down. Bit index IS the pin number, so the value decodes by eye.
+static uint64_t pin_scan_state()
+{
+  uint64_t bits = 0;
+  for (uint8_t i = 0; i < kScanCount; ++i)
+  {
+    const uint8_t pin = kScanPins[i];
+    if (pin < 64 && digitalRead(pin) == LOW)
+      bits |= (uint64_t)1 << pin;
+  }
+  return bits;
+}
+
+// Rebuilt from the switches every cycle; see publish_drill_limits().
+static uint8_t drill_limits_state()
+{
+  uint8_t bits = 0;
+  if (switch_feed_bottom.is_at_stop())
+    bits |= 0x01;
+  if (switch_feed_top.is_at_stop())
+    bits |= 0x02;
+  return bits;
+}
 
 // --- Command state ----------------------------------------------------------
 
@@ -336,9 +409,23 @@ static bool create_entities()
   // project root (currently 8) -- without it the sixth init above fails and the
   // board is dead. That file is part of the build, not a convenience, and it is
   // the file to check before adding an eighth.
-  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 7, &allocator))
+  // RELIABLE, unlike /gripper/state: this is an edge, not a stream. Losing the
+  // sample where a switch closes is losing the whole message.
+  if (RCL_RET_OK != rclc_publisher_init_default(
+                        &drill_limits_pub, &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "drill/limits"))
     return false;
   entities_stage = 11;
+
+  if (RCL_RET_OK != rclc_publisher_init_default(
+                        &pin_scan_pub, &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt64), "drill/pin_scan"))
+    return false;
+  entities_stage = 12;
+
+  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 7, &allocator))
+    return false;
+  entities_stage = 13;
 
   rclc_executor_add_subscription(&executor, &gservo_cmd_sub, &gservo_cmd_msg,
                                  &gservo_cmd_callback, ON_NEW_DATA);
@@ -366,8 +453,12 @@ static void destroy_entities()
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
   // Reverse creation order.
-  if (entities_stage >= 11)
+  if (entities_stage >= 13)
     rclc_executor_fini(&executor);
+  if (entities_stage >= 12)
+    IGNORE_RC(rcl_publisher_fini(&pin_scan_pub, &node));
+  if (entities_stage >= 11)
+    IGNORE_RC(rcl_publisher_fini(&drill_limits_pub, &node));
   if (entities_stage >= 10)
     IGNORE_RC(rcl_subscription_fini(&lid_cmd_sub, &node));
   if (entities_stage >= 9)
@@ -496,6 +587,10 @@ void setup()
 
   switch_feed_bottom.init();
   switch_feed_top.init();
+
+  // Diagnostic pin scan -- see kScanPins. INPUT_PULLUP only, never driven.
+  for (uint8_t i = 0; i < kScanCount; ++i)
+    pinMode(kScanPins[i], INPUT_PULLUP);
   auger.init_motor();
   feed_motor.init_motor();
   bin_actuator.init_motor();
@@ -582,6 +677,36 @@ void loop()
       last_state_pub_ms = millis();
       gservo_state_msg.data = gservo.current();
       IGNORE_RC(rcl_publish(&gservo_state_pub, &gservo_state_msg, NULL));
+    }
+
+    // On change, so an operator watching the topic sees the exact moment a
+    // switch closes; plus a 2 Hz heartbeat so a late subscriber learns the
+    // current state without having to wait for the carriage to move, and so
+    // "the switches say nothing" is distinguishable from "the board is gone".
+    {
+      static uint8_t last_limits = 0xFF;
+      static uint32_t last_limits_pub_ms = 0;
+      const uint8_t bits = drill_limits_state();
+      if (bits != last_limits || millis() - last_limits_pub_ms >= 500)
+      {
+        last_limits = bits;
+        last_limits_pub_ms = millis();
+        drill_limits_msg.data = bits;
+        IGNORE_RC(rcl_publish(&drill_limits_pub, &drill_limits_msg, NULL));
+      }
+    }
+
+    {
+      static uint64_t last_scan = 0xFFFFFFFFFFFFFFFFULL;
+      static uint32_t last_scan_pub_ms = 0;
+      const uint64_t scan = pin_scan_state();
+      if (scan != last_scan || millis() - last_scan_pub_ms >= 500)
+      {
+        last_scan = scan;
+        last_scan_pub_ms = millis();
+        pin_scan_msg.data = scan;
+        IGNORE_RC(rcl_publish(&pin_scan_pub, &pin_scan_msg, NULL));
+      }
     }
     break;
   }

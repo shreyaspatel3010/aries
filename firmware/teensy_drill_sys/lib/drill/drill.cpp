@@ -333,7 +333,13 @@ void LimitSwitch::init()
 
     if (isr_func != nullptr)
     {
-      attachInterrupt(digitalPinToInterrupt(m_pin_switch), isr_func, RISING);
+      // FALLING, not RISING. The switch shorts the pin to GND and the pin is
+      // INPUT_PULLUP, so CLOSING it is a HIGH->LOW edge; RISING fired on
+      // RELEASE instead, marking the switch as tripped exactly as the carriage
+      // left the stop. Latent until now only because is_triggered() has no
+      // caller -- the motion gate uses the LEVEL, is_at_stop(). See pins.h,
+      // which has described the wiring as FALLING all along.
+      attachInterrupt(digitalPinToInterrupt(m_pin_switch), isr_func, FALLING);
     }
   }
 }
