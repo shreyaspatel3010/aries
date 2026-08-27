@@ -46,12 +46,32 @@ Needed by anything started by hand -- rviz2, rqt_image_view, ros2 topic list.
 A launch file cannot reach into your shell, and a process keeps the DDS
 environment it STARTED with for as long as it lives.
 
-WHY UNICAST
+WHY EXPLICIT PEERS, AND WHY MULTICAST IS STILL ON
 
-    AllowMulticast is false and discovery goes to explicit peers, because the
-    airMAX link sends multicast at its lowest data rate. The cost is that a
-    machine which is not in the ``hosts`` table will never be discovered: add
-    it to devices.yaml, or set ARIES_EXTRA_PEERS=<ip>,<ip> for a one-off.
+    Discovery goes to the explicit peers below so that a machine which the
+    airMAX link will not carry multicast to is still found. A machine that is
+    not in the ``hosts`` table will never be discovered: add it to devices.yaml,
+    or set ARIES_EXTRA_PEERS=<ip>,<ip> for a one-off.
+
+    MULTICAST IS NOT DISABLED HERE, whatever the Cyclone config this replaced
+    did. An earlier version of this file claimed initialPeersList was the Fast
+    DDS spelling of Cyclone's <AllowMulticast>false</AllowMulticast>. It is not:
+    initial peers are announced to IN ADDITION TO the default multicast locator,
+    and a participant started under this profile still joins 239.255.0.1 --
+    check with ``ip maddr show dev <iface> | grep 239.255`` while the stack runs.
+
+    DO NOT "FIX" THAT BY TURNING MULTICAST OFF without reading the next
+    paragraph. Multicast is what currently discovers the thirty-odd participants
+    on one machine to each other, and two things have to be dealt with first:
+
+      * The peer list must gain this machine's own address. The 127.0.0.1 entry
+        does NOT stand in for it -- see peers().
+      * maxInitialPeersRange must be raised. Measured on one machine with
+        multicast off and participant slots 0-5 already taken, a further
+        listener heard 0 messages in 12 s at the default and 11 at 60.
+
+    Measured both ways, same machine, talker and listener: multicast on, 11
+    messages; multicast off with the peer list as it stands, 0.
 """
 
 import ipaddress
@@ -93,6 +113,48 @@ from aries_common.devices import device
 # ~30 nodes. Fast DDS addresses peers by locator, so there is no cap to raise
 # and no "Failed to find a free participant index" to hit.
 RMW = "rmw_fastrtps_cpp"
+
+# UDP socket buffer, in bytes, asked of every socket the transport opens.
+#
+# THIS IS THE MEASURED REGRESSION FROM THE 2026-08-26 SWITCH, and the reason the
+# link felt slower afterwards. Fast DDS leaves sendBufferSize/receiveBufferSize
+# at 0 (fastdds/rtps/transport/SocketTransportDescriptor.h), which means "take
+# the OS default" -- it does NOT raise them. Cyclone asks for 1 MiB. Back to
+# back on one machine, one `ros2 run demo_nodes_cpp talker` each, `ss -u -a -m`:
+#
+#     rmw_cyclonedds_cpp   rb2097152     (1 MiB asked, kernel doubles it)
+#     rmw_fastrtps_cpp     rb212992      (net.core.rmem_default, untouched)
+#
+# A 10x smaller receive buffer, and 208 kB is less than ONE downlink frame pair
+# -- camera_downlink measures 98 kB of colour plus 91 kB of depth. A burst that
+# lands while the reader thread is descheduled overflows the socket, and on a
+# best-effort keep_last(1) video topic the frame is simply gone. On the reliable
+# topics it is worse: the loss is repaired, so it costs a NACK round trip on the
+# link instead of a dropped frame.
+#
+# THE KERNEL CLAMPS THIS to net.core.rmem_max and then doubles what it grants,
+# so what a socket actually gets is min(this, rmem_max) * 2.
+# scripts/setup_system.sh raises rmem_max/wmem_max to match; on a machine that
+# has not had that run, this number is silently cut down to the stock 208 kB and
+# nothing anywhere says so. `ss -u -a -m | grep rb` is how you check.
+SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
+
+# Largest UDP datagram the transport will build, in bytes.
+#
+# Fast DDS defaults this to 65500 (s_maximumMessageSize in
+# fastdds/rtps/transport/TransportInterface.h), so a large sample is handed to
+# the kernel as 64 kB datagrams and the IP layer chops each one into ~45
+# fragments to fit the link's 1500-byte MTU. Losing ANY ONE of those 45 destroys
+# the whole 64 kB, and the failed reassemblies sit in the kernel's fragment
+# cache for ipfrag_time (30 s), where they crowd out unrelated flows -- which is
+# how a burst of video ends up delaying a joystick packet. Cyclone never did
+# this: it fragments at the RTPS layer instead, and its datagrams already fitted
+# the MTU.
+#
+# 1400 leaves room for the IP and UDP headers with slack to spare, so nothing
+# below RTPS ever has to fragment. Verified end to end: 640x480 rgb8 images
+# (921600 bytes) publish and arrive intact at this setting, 99 of 100 sent.
+MAX_DATAGRAM_BYTES = 1400
 
 _CONFIG_BASENAME = "aries_fastdds.xml"
 _AGENT_CONFIG_BASENAME = "aries_fastdds_agent.xml"
@@ -273,9 +335,18 @@ def peers(local=None):
     found = list(hosts().values()) + ["127.0.0.1"]
     extra = os.environ.get("ARIES_EXTRA_PEERS", "")
     found += [p.strip() for p in extra.split(",") if p.strip()]
-    # Loopback stays in the list even when it IS the local address: it is how
-    # the thirty-odd participants on one machine find each other, and dropping
-    # it would leave a single-host bench run with no discovery at all.
+    # Loopback stays in the list because a single-host bench run, where local
+    # IS 127.0.0.1, has nothing else to peer with.
+    #
+    # IT DOES NOT DISCOVER THIS MACHINE'S OWN PARTICIPANTS TO EACH OTHER on a
+    # machine that is on the link, whatever an earlier comment here said. The
+    # transport is whitelisted to the field-link address, so participants listen
+    # on that address and never on 127.0.0.1: announcements sent to the loopback
+    # locator arrive nowhere. Multicast is what actually does that job today --
+    # measured, with multicast off and this list unchanged, a listener heard 0
+    # messages from a talker on the same machine in 12 s; adding `local` to the
+    # list took it to 11. Adding `local` is therefore the first half of ever
+    # turning multicast off; see the module docstring for the other half.
     return [p for p in dict.fromkeys(found) if p != local or p == "127.0.0.1"]
 
 
@@ -287,29 +358,67 @@ def dds_xml(local, peer_list, low_latency=False):
     participant block below as well, and cannot simply be handed a file of its
     own that only carries the QoS.
 
-    Same three guarantees, expressed in the other vendor's dialect:
+    Two of the three guarantees, expressed in the other vendor's dialect:
 
       Cyclone <Interfaces><NetworkInterface address=/>  -> interfaceWhiteList
       Cyclone <Discovery><Peers><Peer address=/>        -> initialPeersList
-      Cyclone <AllowMulticast>false</AllowMulticast>    -> unicast initial peers
+      Cyclone <AllowMulticast>false</AllowMulticast>    -> NOT REPRODUCED
 
-    useBuiltinTransports=false is not decoration. Left true, Fast DDS adds its
-    SHARED MEMORY transport and prefers it for anything on the same host, which
-    (a) bypasses the interface pin entirely and (b) is invisible to any tooling
-    that watches the wire. Declaring one UDPv4 transport and nothing else keeps
-    every byte on the pinned address, which is the whole point of the file.
+    The third one is not carried over and the module docstring says why: adding
+    initial peers does not stop Fast DDS announcing to multicast as well, and
+    multicast is currently the only thing discovering this machine's own
+    participants to each other.
 
-    There is no MaxAutoParticipantIndex equivalent. That knob exists because
-    Cyclone unicasts SPDP to a bounded range of participant indices and the
-    default cap of 9 is below this stack's ~30 nodes. Fast DDS addresses peers
-    by locator rather than by index, so the cap -- and the bug where bringup
-    died partway through with "Failed to find a free participant index" -- has
-    no counterpart here.
+    useBuiltinTransports=false is not decoration: it stops Fast DDS adding
+    transports of its own on top of the two declared here, so the only route off
+    this machine is the whitelisted UDPv4 one and the interface pin holds.
+
+    SHARED MEMORY IS DECLARED ON PURPOSE, which reverses an earlier decision in
+    this file. The objection to it was that it bypasses the interface pin and is
+    invisible to tooling watching the wire. The first half is not true -- SHM
+    cannot leave the host, so it can never put a byte on the wrong NIC, which is
+    what the pin exists to prevent -- and the second is a debugging cost that
+    got much too expensive to keep paying once MAX_DATAGRAM_BYTES came down to
+    1400. The rover's own raw camera streams are the heaviest traffic on this
+    machine and never leave it (the RealSense drivers to camera_downlink, of the
+    order of 400 Mbit/s), and pushing those through UDP loopback in 1400-byte
+    datagrams is roughly 20k extra packets/s per camera of pure kernel work.
+    SHM carries them instead, which is faster than the UDP loopback path they
+    were on before this change, and UDPv4 is left carrying only the link.
+
+    THE COST SHM DOES BRING is zombie segments. A process killed outright --
+    e-stop, power cut, SIGKILL -- leaves its /dev/shm/fastrtps_* files behind,
+    of the order of 12 MB per abandoned stack. Nothing here deletes them,
+    because doing that at launch would risk taking out a stack that is already
+    running. `fastdds shm clean` removes only the ones no process holds, and is
+    the thing to run if /dev/shm ever fills.
+
+    THERE IS a MaxAutoParticipantIndex equivalent, and an earlier version of
+    this file said there was not. It is maxInitialPeersRange, it belongs to the
+    transport descriptor, and it defaults to FOUR
+    (s_maximumInitialPeersRange, fastdds/rtps/transport/TransportInterface.h) --
+    lower than Cyclone's default of 9, against the same ~30-node stack. It is
+    the number of participant slots probed at each address in initialPeersList,
+    so unicast discovery reaches the first five participants on a peer machine
+    and no more.
+
+    It is left at the default here ON PURPOSE, because it is not currently load
+    bearing: multicast has not been disabled (see above), so it is multicast and
+    not the peer sweep that discovers the far machine's later participants. The
+    two are a pair -- raise this the moment multicast goes away, and expect it
+    to cost airtime when you do, since every participant then sweeps every slot
+    at every peer on every announcement instead of sending one multicast frame.
+
+    If the base station ever shows only the first handful of the rover's nodes,
+    this is the knob: the link stopped carrying multicast and the sweep is all
+    that is left.
     """
     peer_xml = "\n".join(
         f"            <locator><udpv4><address>{p}</address></udpv4></locator>"
         for p in peer_list
     )
+    buffer_bytes = SOCKET_BUFFER_BYTES
+    datagram_bytes = MAX_DATAGRAM_BYTES
     # SYNCHRONOUS + a zero latency budget are wanted for the agent's 100 Hz
     # gripper topics and NOT for the rest of the stack: as a default writer
     # profile they would also apply to the camera and point-cloud writers,
@@ -339,14 +448,27 @@ def dds_xml(local, peer_list, low_latency=False):
       <transport_descriptor>
         <transport_id>aries_udpv4</transport_id>
         <type>UDPv4</type>
+        <!-- Order matters: fastRTPS_profiles.xsd declares these as an
+             xs:sequence, so they go before interfaceWhiteList. -->
+        <sendBufferSize>{buffer_bytes}</sendBufferSize>
+        <receiveBufferSize>{buffer_bytes}</receiveBufferSize>
+        <maxMessageSize>{datagram_bytes}</maxMessageSize>
         <interfaceWhiteList>
           <address>{local}</address>
         </interfaceWhiteList>
+      </transport_descriptor>
+      <!-- Same-host traffic only; SHM has no interfaceWhiteList because it can
+           never reach another machine. Left at the stock 512 kB segment, which
+           carries 640x480 rgb8 frames without a fallback to UDP. -->
+      <transport_descriptor>
+        <transport_id>aries_shm</transport_id>
+        <type>SHM</type>
       </transport_descriptor>
     </transport_descriptors>
     <participant profile_name="aries" is_default_profile="true">
       <rtps>
         <userTransports>
+          <transport_id>aries_shm</transport_id>
           <transport_id>aries_udpv4</transport_id>
         </userTransports>
         <useBuiltinTransports>false</useBuiltinTransports>

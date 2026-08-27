@@ -7,7 +7,8 @@
 #   ./scripts/setup_system.sh --dry-run    print what would change
 #
 # Everything the stack needs from root lives here: the passwordless CAN
-# bring-up rule, the udev rules, and the group memberships. Re-running is safe —
+# bring-up rule, the udev rules, the DDS socket-buffer ceilings, and the group
+# memberships. Re-running is safe —
 # every step is idempotent and reports whether it changed anything.
 #
 # Run it as yourself, not with sudo: it calls sudo only for the steps that need
@@ -37,6 +38,7 @@ SUDOERS_FILE="$PREFIX/etc/sudoers.d/rover_can"
 UDEV_DIR="$PREFIX/etc/udev/rules.d"
 REALSENSE_RULES="$UDEV_DIR/99-aries-realsense.rules"
 TEENSY_RULES="$UDEV_DIR/99-aries-teensy.rules"
+SYSCTL_FILE="$PREFIX/etc/sysctl.d/99-aries-dds.conf"
 REQUIRED_GROUPS=(dialout plugdev input video)
 
 MODE=install
@@ -224,7 +226,42 @@ fi
 #
 # The RealSenses are unaffected either way: their udev rules put them in plugdev
 # and librealsense claims them from userspace rather than through V4L2.
-head2 "3. Group membership for $TARGET_USER"
+# ── 3. DDS socket buffers ────────────────────────────────────────────────────
+head2 "3. DDS socket buffers ($SYSCTL_FILE)"
+
+# aries_common.comms asks every UDP socket for SOCKET_BUFFER_BYTES. The kernel
+# clamps that request to net.core.rmem_max, so without this file the request is
+# cut back to the stock 208 kB and NOTHING REPORTS IT — the profile still says
+# 8 MB, the sockets just do not get it. Check with `ss -u -a -m | grep rb`.
+#
+# 208 kB is smaller than one downlink frame pair (98 kB colour + 91 kB depth),
+# which is why the link felt slower after the move to Fast DDS: Cyclone had been
+# asking for 1 MiB per socket and Fast DDS asks for nothing at all.
+SYSCTL_RULE='# Installed by aries/scripts/setup_system.sh — do not edit by hand.
+# DDS receive/send buffers. Fast DDS asks for 8 MB per socket; the kernel clamps
+# the request to these ceilings, so they have to be raised or the ask is
+# silently ignored. See SOCKET_BUFFER_BYTES in aries_common/comms.py.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216'
+install_file "$SYSCTL_FILE" "$SYSCTL_RULE" 0644
+
+if [ "$MODE" = install ]; then
+    if rehearsing; then
+        warn "sysctl reload skipped (rehearsal)"
+    else
+        as_root sysctl -q --system >/dev/null 2>&1 || true
+        for knob in net.core.rmem_max net.core.wmem_max; do
+            have="$(sysctl -n "$knob" 2>/dev/null || echo 0)"
+            if [ "$have" -ge 16777216 ]; then
+                ok "$knob = $have"
+            else
+                fail "$knob = $have (wanted 16777216); DDS buffers will be clamped"
+            fi
+        done
+    fi
+fi
+
+head2 "4. Group membership for $TARGET_USER"
 for group in "${REQUIRED_GROUPS[@]}"; do
     if ! getent group "$group" >/dev/null; then
         warn "group '$group' does not exist on this system — skipping"
@@ -245,7 +282,7 @@ for group in "${REQUIRED_GROUPS[@]}"; do
 done
 
 # ── 4. things this script will not install for you ───────────────────────────
-head2 "4. Packages and kernel support"
+head2 "5. Packages and kernel support"
 
 if modinfo gs_usb >/dev/null 2>&1 || [ -d /sys/module/gs_usb ]; then
     ok "gs_usb CAN driver available (the USB CAN adapter binds to it)"
@@ -284,7 +321,7 @@ else
 fi
 
 # ── 5. verify ────────────────────────────────────────────────────────────────
-head2 "5. Verification"
+head2 "6. Verification"
 
 if rehearsing; then
     [ -f "$SUDOERS_FILE" ] && ok "rehearsal wrote $SUDOERS_FILE" || fail "rehearsal did not write $SUDOERS_FILE"
@@ -303,7 +340,7 @@ else
     [ "$MODE" = install ] && fail "$SUDOERS_FILE missing" || warn "$SUDOERS_FILE would be created"
 fi
 
-for f in "$REALSENSE_RULES" "$TEENSY_RULES"; do
+for f in "$REALSENSE_RULES" "$TEENSY_RULES" "$SYSCTL_FILE"; do
     if [ -f "$f" ]; then ok "$(basename "$f") installed"
     elif [ "$MODE" = install ]; then fail "$(basename "$f") missing"
     fi

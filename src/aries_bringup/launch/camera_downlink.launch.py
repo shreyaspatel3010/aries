@@ -39,12 +39,14 @@ it helps so much.
 camera adds 1.6-3.9 Mbit/s on top at its 5 Hz default (colour only, no depth).
 The low end is measured on the bench (39 kB/frame indoors); the high end scales
 the Mars-yard colour figure above, and is what to plan the link against, since
-the field scene is the detailed one. Both frames
-also stay well under the 64 kB-per-datagram point where a single lost packet
-would cost the whole frame.
-Also note both frames stay under the 64 kB UDP datagram limit, so they are no
-longer fragmented -- a lost packet costs one frame instead of stalling a
-reliable writer that is retransmitting into a saturated link.
+the field scene is the detailed one.
+
+An earlier version of this docstring claimed both frames stay under the 64 kB
+per-datagram point and so are never fragmented. They do not -- 98 kB and 91 kB
+are both over it, and under Fast DDS's stock 65500-byte maxMessageSize each
+frame went out as two datagrams that the IP layer then split into ~45 fragments
+apiece. Fragmenting is now done at the RTPS layer instead, at the link MTU:
+see MAX_DATAGRAM_BYTES in aries_common/comms.py.
 """
 
 from launch import LaunchDescription

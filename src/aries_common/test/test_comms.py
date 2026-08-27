@@ -72,8 +72,14 @@ def test_extra_peers_env(monkeypatch):
     assert "10.0.0.9" in peers and "10.0.0.8" in peers
 
 
-def test_xml_names_the_local_address_and_disables_multicast():
-    """The three things the field link needs from the profile."""
+def test_xml_names_the_local_address_and_lists_explicit_peers():
+    """What the field link needs from the profile.
+
+    This test used to be called ..._and_disables_multicast. It never checked
+    that and the profile never did it: initial peers are announced to on top of
+    the default multicast locator, not instead of it. See the module docstring
+    of comms.py.
+    """
     rover, base = comms.hosts()["rover"], comms.hosts()["base"]
     xml = comms.dds_xml(rover, [base, "127.0.0.1"])
 
@@ -81,16 +87,58 @@ def test_xml_names_the_local_address_and_disables_multicast():
     assert f"<address>{rover}</address>" in xml
     assert "interfaceWhiteList" in xml
 
-    # 2. explicit unicast peers. The airMAX link sends multicast at its lowest
-    #    data rate, so discovery must not rely on it.
+    # 2. explicit unicast peers, so a link that will not carry multicast still
+    #    discovers the far end.
     for peer in (base, "127.0.0.1"):
         assert f"<udpv4><address>{peer}</address></udpv4>" in xml, peer
 
-    # 3. UDP only. Left to its defaults Fast DDS adds shared memory and prefers
-    #    it for anything on the same host, which bypasses the interface pin
-    #    entirely and is invisible to anything watching the wire.
+    # 3. exactly the two transports we declare, and no others bolted on.
     assert "<useBuiltinTransports>false</useBuiltinTransports>" in xml
     assert "<type>UDPv4</type>" in xml
+    assert "<type>SHM</type>" in xml
+
+
+def test_udp_datagrams_fit_the_link_mtu():
+    """Fast DDS defaults maxMessageSize to 65500, which the IP layer then splits
+    into ~45 fragments to cross a 1500-byte link -- and one lost fragment costs
+    the whole 64 kB. Cyclone fragmented at the RTPS layer and never did this, so
+    the switch to Fast DDS quietly took it on."""
+    xml = comms.dds_xml(comms.hosts()["rover"], [comms.hosts()["base"]])
+    assert f"<maxMessageSize>{comms.MAX_DATAGRAM_BYTES}</maxMessageSize>" in xml
+    assert comms.MAX_DATAGRAM_BYTES <= 1472, (
+        "a datagram larger than the 1500-byte MTU less the IP and UDP headers "
+        "is fragmented by the kernel, which is the thing this avoids")
+
+
+def test_sockets_ask_for_more_than_one_downlink_frame():
+    """The measured regression from the move to Fast DDS.
+
+    Cyclone asks for 1 MiB per socket; Fast DDS asks for nothing and gets
+    net.core.rmem_default. Back to back on one machine, `ss -u -a -m`:
+    rb2097152 under rmw_cyclonedds_cpp against rb212992 under rmw_fastrtps_cpp.
+    208 kB is less than one downlink frame pair (98 kB colour + 91 kB depth),
+    so a burst arriving while the reader is descheduled is simply lost.
+    """
+    xml = comms.dds_xml(comms.hosts()["rover"], [comms.hosts()["base"]])
+    assert f"<sendBufferSize>{comms.SOCKET_BUFFER_BYTES}</sendBufferSize>" in xml
+    assert f"<receiveBufferSize>{comms.SOCKET_BUFFER_BYTES}</receiveBufferSize>" in xml
+    assert comms.SOCKET_BUFFER_BYTES >= 2 * 1024 * 1024, (
+        "below what CycloneDDS was already asking for, so the move to Fast DDS "
+        "would still be a downgrade")
+
+
+def test_the_sysctl_ceiling_is_installed_with_the_rest_of_the_root_setup():
+    """SOCKET_BUFFER_BYTES is a request. The kernel clamps it to
+    net.core.rmem_max and says nothing, so the ceiling has to be raised too or
+    the profile claims 8 MB while the sockets get the stock 208 kB."""
+    setup = (Path(__file__).resolve().parents[3] / "scripts" / "setup_system.sh")
+    text = setup.read_text()
+    assert "net.core.rmem_max" in text and "net.core.wmem_max" in text, (
+        "nothing raises the kernel ceiling, so SOCKET_BUFFER_BYTES is clamped")
+    ceiling = int(re.search(r"net\.core\.rmem_max = (\d+)", text).group(1))
+    assert ceiling >= comms.SOCKET_BUFFER_BYTES, (
+        f"rmem_max ceiling {ceiling} is below the {comms.SOCKET_BUFFER_BYTES} "
+        "the profile asks for, so the request is silently cut down")
 
 
 def test_write_config_uses_the_detected_address(tmp_path, monkeypatch):
@@ -320,9 +368,13 @@ def test_local_only_config_pins_only_loopback(monkeypatch, tmp_path):
         "off the field link the only pinnable interface is loopback, got %r" % pins)
 
 
-def test_local_only_config_never_uses_multicast(monkeypatch, tmp_path):
+def test_local_only_config_has_an_explicit_localhost_peer(monkeypatch, tmp_path):
     """`lo` carries no MULTICAST flag, so a multicast write over it cannot
-    succeed; discovery has to go to an explicit localhost peer instead."""
+    succeed; discovery has to go to an explicit localhost peer instead.
+
+    Renamed from ..._never_uses_multicast, which overclaimed: this checks that
+    loopback does not NEED multicast, not that multicast is off. It is not.
+    """
     monkeypatch.setattr(comms, "local_address", lambda *a, **k: None)
     path, _ = comms.write_dds_config(tmp_path / "c.xml", require_link=False)
     xml = Path(path).read_text()
