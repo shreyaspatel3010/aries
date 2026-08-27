@@ -18,7 +18,9 @@
 //   TOPIC                      TYPE     MEANING                        C++ NAME
 //   /gripper/cmd               Float32  jaws, 0..1        BEST EFFORT  gservo
 //   /gripper/state             Float32  jaws echoed, 100 Hz, BEST EFF  gservo
-//   drill/limits               UInt8    bit0 bottom, bit1 top   RELIABLE  switch_feed_*
+//   drill/limits               UInt8    bit0 bottom, bit1 top,          RELIABLE
+//                                       bit2/3 = sign believed to        switch_feed_*
+//                                       drive INTO top/bottom
 //   stacklight_subscription    UInt8    1=red 2=yellow 3=green 4=off   stalig
 //   motor1/cmd_speed           Int32    -255..255  AUGER, spins        auger
 //   motor2/cmd_speed           Int32    -255..255  FEED, drill up/down feed_motor
@@ -238,6 +240,34 @@ static uint64_t pin_scan_state()
   return bits;
 }
 
+// --- Which PWM sign drives INTO each switch ---------------------------------
+//
+// This used to be assumed: positive raises the carriage, so positive runs into
+// the TOP switch. A WRONG assumption here is invisible and total -- each switch
+// gets consulted for the direction that moves AWAY from it, so the carriage
+// drives through both stops and every switch looks dead while being read
+// perfectly. It has been wrong twice on this machine already (a reversed
+// H-bridge, then a bottom/top swap), and nothing reported it either time.
+//
+// So it is no longer assumed. Seeded from the convention, then corrected from
+// what the mechanism actually does:
+//
+//   EDGE   a switch that closes while the motor runs was closed BY the sign
+//          that was running. Learned on the closing edge, which blocks that
+//          sign in the same pass -- so even the very first arrival stops.
+//   HELD   a switch that STAYS closed while one sign is driven for kSettleMs
+//          is being driven into: moving away would have opened it. This is the
+//          case the edge rule cannot see -- the carriage already sitting on a
+//          stop at power-up, where there is no edge to learn from.
+//
+// This cannot trap the carriage. Only one switch is closed at a time, and a
+// closed switch blocks exactly one sign, so the other is always free.
+static int8_t sign_into_top = +1;
+static int8_t sign_into_bottom = -1;
+static const uint32_t kSettleMs = 500;
+
+static inline int8_t sign_of(int v) { return v > 0 ? +1 : (v < 0 ? -1 : 0); }
+
 // Rebuilt from the switches every cycle; see publish_drill_limits().
 static uint8_t drill_limits_state()
 {
@@ -246,6 +276,13 @@ static uint8_t drill_limits_state()
     bits |= 0x01;
   if (switch_feed_top.is_at_stop())
     bits |= 0x02;
+  // bit2/bit3: which PWM sign the gate currently believes drives INTO the top
+  // and bottom switch (set = positive). Published so a wrong belief is visible
+  // instead of silently disabling both stops.
+  if (sign_into_top > 0)
+    bits |= 0x04;
+  if (sign_into_bottom > 0)
+    bits |= 0x08;
   return bits;
 }
 
@@ -503,12 +540,45 @@ static void stop_all_motors()
 // with nothing left to stop it again. Gating on the level means holding the pad
 // against a closed switch simply does nothing, while the opposite direction
 // stays free -- a carriage sitting on the bottom switch must still come back up.
+
+
 static void apply_motor_commands(bool force)
 {
+  const bool top_closed = switch_feed_top.is_at_stop();
+  const bool bottom_closed = switch_feed_bottom.is_at_stop();
+
+  // feed_applied is still the PREVIOUS pass's value here, which is exactly
+  // what is wanted: the sign that was actually driving when the switch closed.
+  const int8_t driving = sign_of(feed_applied);
+
+  static bool was_top = false;
+  static bool was_bottom = false;
+  static int8_t held_sign = 0;
+  static uint32_t held_since = 0;
+
+  const uint32_t now_ms = millis();
+  if (driving != held_sign)
+  {
+    held_sign = driving;
+    held_since = now_ms;
+  }
+
+  if (driving != 0)
+  {
+    const bool settled = (now_ms - held_since) >= kSettleMs;
+    if (top_closed && (!was_top || settled))
+      sign_into_top = driving;
+    if (bottom_closed && (!was_bottom || settled))
+      sign_into_bottom = driving;
+  }
+  was_top = top_closed;
+  was_bottom = bottom_closed;
+
   int feed_pwm = feed_cmd_signed;
-  if (feed_pwm > 0 && switch_feed_top.is_at_stop())
+  const int8_t want = sign_of(feed_pwm);
+  if (want != 0 && top_closed && want == sign_into_top)
     feed_pwm = 0;
-  if (feed_pwm < 0 && switch_feed_bottom.is_at_stop())
+  if (want != 0 && bottom_closed && want == sign_into_bottom)
     feed_pwm = 0;
 
   if (force || feed_pwm != feed_applied)

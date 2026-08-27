@@ -59,7 +59,17 @@ class Watch(Node):
             if bits & 0x02:
                 names.append("TOP")
             state = " + ".join(names) if names else "both open"
-            print(f"  drill/limits = {bits}  ->  {state}")
+            # bit2/bit3: which PWM sign the firmware believes drives INTO each
+            # switch. It seeds these from the convention and corrects them from
+            # what the mechanism does, so a disagreement with the seed is the
+            # gate telling you the convention was wrong -- not a fault.
+            into_top = "+" if bits & 0x04 else "-"
+            into_bottom = "+" if bits & 0x08 else "-"
+            note = ""
+            if (bits & 0x04) == 0 or (bits & 0x08) != 0:
+                note = "   (corrected from the seeded +up/-down convention)"
+            print(f"  drill/limits = {bits}  ->  {state}"
+                  f"   [into top: {into_top}PWM, into bottom: {into_bottom}PWM]{note}")
             self.limits = bits
 
     def _scan(self, msg):
@@ -93,11 +103,19 @@ class Watch(Node):
             else:
                 tag = (f"  <- pins.h does not know pin {p}: put it in "
                        f"LIMIT_SWITCH1/2")
+            # NORMALLY-CLOSED only if the pin RESTED low. For a normally-open
+            # switch the LOW->HIGH edge is simply the release, and calling that
+            # "normally closed" sends you looking for an inversion that is not
+            # there.
+            rests_low = bool(self.baseline is not None
+                             and self.baseline & (1 << p))
             if now_low:
-                print(f"  pin {p}: HIGH -> LOW  (closed to GND){tag}")
+                kind = "closed to GND" if not rests_low else "returned to rest"
+                print(f"  pin {p}: HIGH -> LOW  ({kind}){tag}")
             else:
-                print(f"  pin {p}: LOW -> HIGH  (opened -- NORMALLY-CLOSED "
-                      f"switch){tag}")
+                kind = ("opened -- NORMALLY CLOSED, sense must be inverted"
+                        if rests_low else "released")
+                print(f"  pin {p}: LOW -> HIGH  ({kind}){tag}")
         self.scan = bits
 
     def _nag(self):
