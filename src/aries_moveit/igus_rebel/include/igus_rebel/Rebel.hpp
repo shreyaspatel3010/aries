@@ -2,6 +2,7 @@
 #define REBEL_HPP_
 
 #include <thread>
+#include <chrono>
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
@@ -10,7 +11,10 @@
 #include "std_msgs/msg/int16.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "igus_rebel_msgs/msg/digital_output.hpp"
 #include "igus_rebel_msgs/srv/set_digital_output.hpp"
 #include <hardware_interface/system_interface.hpp>
@@ -66,6 +70,27 @@ namespace Igus
         int estop_pressed_value_;
         bool estop_published_;
         int last_estop_raw_;
+
+        // Per-joint motor current, straight out of the CRI status message.
+        // CriMessages has always parsed CURRENTJOINTS and nothing ever read it,
+        // so the stack had no measure of how hard the arm was pushing -- the
+        // first sign of a stall was the joint module tripping on 'Position lag'
+        // or 'Overcurrent' and disabling the motors. Publishing it is what lets
+        // teleop stop before the firmware does.
+        //
+        // Raw CRI units (mA on the Rebel), NOT newton-metres. It is also
+        // mirrored into the effort state interface so it shows up in
+        // /joint_states and can be plotted with the joint positions.
+        void PublishLoad(const CriMessages::Status &);
+
+        rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr joint_current_pub_;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr fault_pub_;
+        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fault_detail_pub_;
+        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
+        std::chrono::steady_clock::time_point last_current_publish_;
+        double current_publish_period_;
+        bool fault_published_;
+        bool last_fault_;
 
         // Current commanded jog
         float j1, j2, j3, j4, j5, j6;
@@ -159,6 +184,14 @@ namespace Igus
         void hand_guiding_callback(
             const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
             std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+
+        // Clear a tripped joint module and re-enable the motors without
+        // restarting the stack. After an overcurrent/position-lag trip the
+        // Rebel leaves the motors disabled and every later jog is ignored in
+        // silence, which reads as "the arm died".
+        void reset_callback(
+            const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+            std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
         void GetReferenceInfo();
 

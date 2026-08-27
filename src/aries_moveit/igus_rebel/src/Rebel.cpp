@@ -7,6 +7,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <utility>
 
 namespace Igus
 {
@@ -378,9 +379,122 @@ namespace Igus
                     estop_pressed_value_);
     }
 
+    // Text for the joint error bitfield CRI reports per joint. Used both by the
+    // change-triggered log below and by the /arm/fault_detail topic, so the two
+    // can never drift apart.
+    static std::string JointErrorText(int bits)
+    {
+        std::string text;
+        const std::pair<CriMessages::ErrorJoint, const char *> names[] = {
+            {CriMessages::ErrorJoint::TEMP, "Overtemperature"},
+            {CriMessages::ErrorJoint::ESTOP_LOWV, "Supply too low: Is emergency button pressed?"},
+            {CriMessages::ErrorJoint::MNE, "Motor not enabled"},
+            {CriMessages::ErrorJoint::COM, "Communication watch dog"},
+            {CriMessages::ErrorJoint::POS, "Position lag"},
+            {CriMessages::ErrorJoint::ENC, "Encoder Error"},
+            {CriMessages::ErrorJoint::OC, "Overcurrent"},
+            {CriMessages::ErrorJoint::DRV, "DriveError/SVM"},
+        };
+
+        for (const auto &entry : names)
+        {
+            if (bits & static_cast<int>(entry.first))
+            {
+                text += (text.empty() ? "" : " ") + std::string("'") + entry.second + "'";
+            }
+        }
+
+        return text;
+    }
+
+    // Per-joint motor current and the joint error bits, both of which arrive in
+    // every CRI status message and were previously only logged (the errors) or
+    // dropped entirely (the current).
+    //
+    // This is the signal a contact guard needs. The Rebel's joint modules run
+    // their own closed loop: a jog they cannot follow makes their internal
+    // setpoint run away from the real position until the module trips on
+    // 'Position lag' or 'Overcurrent' and disables the motors. Current rises
+    // well before that point, so anything watching this topic can back off
+    // first -- which is the whole difference between "the arm stopped" and
+    // "the arm tripped".
+    void Rebel::PublishLoad(const CriMessages::Status &status)
+    {
+        if (joint_current_pub_)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            const double since = std::chrono::duration<double>(
+                now - last_current_publish_).count();
+
+            // Status arrives far faster than anyone needs to watch a contact
+            // force, and this topic crosses the field link.
+            if (since >= current_publish_period_)
+            {
+                last_current_publish_ = now;
+
+                std_msgs::msg::Float64MultiArray currents;
+                currents.data.resize(6);
+                for (int i = 0; i < 6; ++i)
+                {
+                    currents.data[i] = static_cast<double>(status.currentjoints.at(i));
+                }
+                joint_current_pub_->publish(currents);
+            }
+        }
+
+        // A joint is faulted when any of its error bits is set. That includes
+        // 'Motor not enabled', which is exactly the state a trip leaves behind,
+        // so this stays true until something calls the reset service.
+        bool faulted = false;
+        std::string detail;
+        for (int i = 0; i < 6; ++i)
+        {
+            const int bits = status.errorJoints.at(i);
+            if (bits == 0)
+            {
+                continue;
+            }
+            faulted = true;
+            detail += (detail.empty() ? "" : ", ") + std::string("joint") +
+                      std::to_string(i + 1) + ": " + JointErrorText(bits);
+        }
+
+        if (fault_published_ && faulted == last_fault_)
+        {
+            return;
+        }
+        last_fault_ = faulted;
+        fault_published_ = true;
+
+        if (fault_pub_)
+        {
+            std_msgs::msg::Bool msg;
+            msg.data = faulted;
+            fault_pub_->publish(msg);
+        }
+        if (fault_detail_pub_)
+        {
+            std_msgs::msg::String msg;
+            msg.data = faulted ? detail : std::string("clear");
+            fault_detail_pub_->publish(msg);
+        }
+        if (faulted)
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("igus_rebel"),
+                         "Arm faulted [%s]; motors are disabled until "
+                         "/arm/reset is called (RT+Y on the pad)",
+                         detail.c_str());
+        }
+        else
+        {
+            RCLCPP_INFO(rclcpp::get_logger("igus_rebel"), "Arm fault cleared");
+        }
+    }
+
     void Rebel::ProcessStatus(const CriMessages::Status &status)
     {
         PublishEStop(status);
+        PublishLoad(status);
 
         CriMessages::Kinstate currentKinstate = status.kinstate;
         std::array<int, 16> currentErrorJoints = status.errorJoints;
@@ -494,57 +608,10 @@ namespace Igus
             for (unsigned int i = 0; i < 6; i++)
             {
                 int errorJoint = currentErrorJoints.at(i);
-                std::array<int, 8> errorJointBit;
 
                 if (errorJoint != lastErrorJoints.at(i))
                 {
-
-                    // extract bits from the error to analyze it
-                    for (unsigned j = 0; j < 8; j++)
-                    {
-                        errorJointBit[j] = errorJoint & (int)exp2(j);
-                    }
-
-                    std::string errorMsg = "";
-                    if (errorJointBit.at(0) == static_cast<int>(CriMessages::ErrorJoint::TEMP))
-                    {
-                        errorMsg += "'Overtemperature' ";
-                    }
-
-                    if (errorJointBit.at(1) == static_cast<int>(CriMessages::ErrorJoint::ESTOP_LOWV))
-                    {
-                        errorMsg += "'Supply too low: Is emergency button pressed?' ";
-                    }
-
-                    if (errorJointBit.at(2) == static_cast<int>(CriMessages::ErrorJoint::MNE))
-                    {
-                        errorMsg += "'Motor not enabled' ";
-                    }
-
-                    if (errorJointBit.at(3) == static_cast<int>(CriMessages::ErrorJoint::COM))
-                    {
-                        errorMsg += "'Communication watch dog' ";
-                    }
-
-                    if (errorJointBit.at(4) == static_cast<int>(CriMessages::ErrorJoint::POS))
-                    {
-                        errorMsg += "'Position lag' ";
-                    }
-
-                    if (errorJointBit.at(5) == static_cast<int>(CriMessages::ErrorJoint::ENC))
-                    {
-                        errorMsg += "'Encoder Error' ";
-                    }
-
-                    if (errorJointBit.at(6) == static_cast<int>(CriMessages::ErrorJoint::OC))
-                    {
-                        errorMsg += "'Overcurrent' ";
-                    }
-
-                    if (errorJointBit.at(7) == static_cast<int>(CriMessages::ErrorJoint::DRV))
-                    {
-                        errorMsg += "'DriveError/SVM' ";
-                    }
+                    std::string errorMsg = JointErrorText(errorJoint);
 
                     if (errorMsg != "")
                     {
@@ -669,6 +736,34 @@ namespace Igus
             : node_->declare_parameter<int>("estop_pressed_value", 0);
         estop_published_ = false;
         last_estop_raw_ = 0;
+
+        // How hard the arm is pushing, and whether a joint module has tripped.
+        // The fault is a condition, not an event, so it is latched the same way
+        // the e-stop is: a teleop node that starts later still learns the arm
+        // is sitting disabled.
+        auto fault_qos = rclcpp::QoS(1).reliable().transient_local();
+        joint_current_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+            "/arm/joint_currents", rclcpp::QoS(10));
+        fault_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
+            "/arm/fault", fault_qos);
+        fault_detail_pub_ = node_->create_publisher<std_msgs::msg::String>(
+            "/arm/fault_detail", fault_qos);
+        const double current_rate = node_->has_parameter("current_publish_rate")
+            ? node_->get_parameter("current_publish_rate").as_double()
+            : node_->declare_parameter<double>("current_publish_rate", 20.0);
+        current_publish_period_ = 1.0 / std::max(1.0, current_rate);
+        last_current_publish_ = std::chrono::steady_clock::now();
+        fault_published_ = false;
+        last_fault_ = false;
+        for (double &value : eff)
+        {
+            value = 0.0;
+        }
+
+        reset_srv_ = node_->create_service<std_srvs::srv::Trigger>(
+            "/arm/reset",
+            std::bind(&Rebel::reset_callback, this, std::placeholders::_1, std::placeholders::_2));
+
         digital_output_srv_ = node_->create_service<igus_rebel_msgs::srv::SetDigitalOutput>(
             "set_digital_output", std::bind(&Rebel::dio_callback, this, std::placeholders::_1, std::placeholders::_2));
         hand_guiding_srv_ = node_->create_service<std_srvs::srv::SetBool>(
@@ -707,6 +802,12 @@ namespace Igus
                 JOINT_NAME[i], hardware_interface::HW_IF_POSITION, &pos[i]));
             state_interfaces.emplace_back(StateInterface(
                 JOINT_NAME[i], hardware_interface::HW_IF_VELOCITY, &vel[i]));
+            // Motor current in raw CRI units, NOT newton-metres. Exported as
+            // effort so it lands in /joint_states next to the positions it has
+            // to be read against -- a current reading only means something once
+            // you know whether the joint was moving at the time.
+            state_interfaces.emplace_back(StateInterface(
+                JOINT_NAME[i], hardware_interface::HW_IF_EFFORT, &eff[i]));
         }
 
         return state_interfaces;
@@ -753,6 +854,11 @@ namespace Igus
         pos[3] = currentStatus.posJointCurrent.at(3) * degToRad;
         pos[4] = currentStatus.posJointCurrent.at(4) * degToRad;
         pos[5] = currentStatus.posJointCurrent.at(5) * degToRad;
+
+        for (int i = 0; i < 6; ++i)
+        {
+            eff[i] = static_cast<double>(currentStatus.currentjoints.at(i));
+        }
     }
 
     return_type Rebel::write(const rclcpp::Time &, const rclcpp::Duration &)
@@ -888,6 +994,45 @@ namespace Igus
 
         response->success = true;
         response->message = "Hand guiding stopped and Rebel motors re-enabled";
+    }
+
+    // Recover from a tripped joint module. CRI leaves the motors disabled after
+    // an overcurrent or position-lag fault and silently ignores every jog from
+    // then on, so without this the only way back is restarting the stack --
+    // which on the rover means losing the whole arm session mid-task.
+    //
+    // Jog is zeroed BEFORE re-enabling. The controller may still be holding a
+    // stale velocity command from the moment of the trip, and re-enabling into
+    // that would drive the arm straight back into whatever it stalled against.
+    void Rebel::reset_callback(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        if (handGuiding.load())
+        {
+            response->success = false;
+            response->message = "Refusing to reset while hand guiding is active";
+            return;
+        }
+
+        for (double &command : vel_cmd)
+        {
+            command = 0.0;
+        }
+        {
+            std::lock_guard<std::mutex> lockGuard(aliveLock);
+            j1 = j2 = j3 = j4 = j5 = j6 = 0.0f;
+        }
+
+        Command(CriKeywords::COMMAND_RESET);
+        Command(CriKeywords::COMMAND_ENABLE);
+        Command(CriKeywords::COMMAND_MOTIONTYPEJOINT);
+
+        RCLCPP_WARN(rclcpp::get_logger("igus_rebel"),
+                    "Reset requested: jog zeroed, motors re-enabled");
+
+        response->success = true;
+        response->message = "Reset and Enable sent; motors re-enabled";
     }
 
     void Rebel::GetReferenceInfo()

@@ -120,7 +120,24 @@ rover_cmd_vel_joystick:
     # Scaled with the speeds so the ramp to top speed still takes ~0.55 s.
     accel_limit: 1.25
     angular_accel_limit: 2.45
-    publish_rate_hz: 30.0
+    # Jerk limits, added 2026-08-27 for the lurch at the start of every move.
+    # accel_limit alone bounds the velocity slope, not how abruptly that slope
+    # appears: the old trapezoid went from standstill to the full 1.25 m/s^2
+    # in one tick. Raising the speeds on 2026-08-25 made it 56% worse, because
+    # the ramp TIME was held at ~0.55 s while the top speed went 0.45 -> 0.70,
+    # so the acceleration had to rise with it.
+    #
+    # 8.0 builds the full acceleration over ~0.17 s. It costs ~0.15 s on the
+    # ramp to top speed (0.57 -> 0.72 s) and nothing at all on the top speed
+    # itself. Ratio kept on the angular pair so a turn eases in the same way.
+    jerk_limit: 8.0
+    angular_jerk_limit: 16.0
+    # 60, not 30, so this rate is an exact multiple of the ODrive bridge's
+    # 20 Hz. At 30 Hz the bridge saw two teleop steps on one tick and one on
+    # the next, delivering 1.67 and 0.83 m/s^2 alternately -- a 10 Hz beat
+    # whose peak sits 33% above the accel_limit configured here, and whose
+    # first tick landed on the high side, right at the start of the move.
+    publish_rate_hz: 60.0
 
     # See rover_joystick_controller above. This node relays the last joystick
     # state on a timer, which keeps cmd_vel_odrive_bridge's own

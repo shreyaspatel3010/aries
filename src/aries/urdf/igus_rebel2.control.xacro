@@ -15,6 +15,13 @@
                 </xacro:if>
                 <state_interface name="position" />
                 <state_interface name="velocity" />
+                <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+                    <!-- Per-joint motor current out of the CRI status message,
+                         in raw CRI units (mA), not newton-metres. Declared only
+                         for the real arm: it is a measurement, and mock/Gazebo
+                         would publish a convincing zero instead. -->
+                    <state_interface name="effort" />
+                </xacro:if>
             </joint>
         </xacro:macro>
 

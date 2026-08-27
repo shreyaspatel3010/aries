@@ -2,6 +2,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -13,7 +14,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joy.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 
@@ -65,6 +69,19 @@ public:
     joint_state_sub_ = nh_->create_subscription<sensor_msgs::msg::JointState>(
       joint_state_topic_, ROS_QUEUE_SIZE,
       std::bind(&RebelSmoothSafeJoystick::jointStateCallback, this, std::placeholders::_1));
+
+    // Published by the igus_rebel hardware plugin out of the CRI status.
+    // Absent under mock/Gazebo, where the stall half of the contact guard still
+    // works on its own.
+    arm_current_sub_ = nh_->create_subscription<std_msgs::msg::Float64MultiArray>(
+      arm_current_topic_, ROS_QUEUE_SIZE,
+      std::bind(&RebelSmoothSafeJoystick::armCurrentCallback, this, std::placeholders::_1));
+
+    reset_client_ = nh_->create_client<std_srvs::srv::Trigger>(arm_reset_service_);
+
+    arm_fault_sub_ = nh_->create_subscription<std_msgs::msg::Bool>(
+      arm_fault_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(&RebelSmoothSafeJoystick::armFaultCallback, this, std::placeholders::_1));
 
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / std::max(1.0, command_rate_hz_)));
@@ -181,6 +198,28 @@ private:
     collision_escape_min_improvement_ =
       declareGet<double>("collision_escape_min_improvement", 0.0005);
 
+    // --- Contact guard -----------------------------------------------------
+    // Stops the arm when it is pushing into something instead of moving. The
+    // Rebel's joint modules run their own closed loop, so a jog they cannot
+    // follow makes their internal setpoint run away from the real position
+    // until the module trips on 'Position lag' or 'Overcurrent' and disables
+    // the motors -- which is what pressing a panel MCB by hand does to it.
+    //
+    // The primary test is unit-free and needs no hardware calibration: compare
+    // how far the joints were TOLD to travel over a window against how far they
+    // actually did. Anything blocked fails that ratio long before the firmware
+    // gives up. Motor current is the second, sharper test, but its threshold
+    // has to be measured on the real arm first (see contact_current_limit).
+    contact_guard_enabled_ = declareGet<bool>("contact_guard_enabled", true);
+    contact_stall_window_sec_ = declareGet<double>("contact_stall_window_sec", 0.30);
+    contact_stall_ratio_ = declareGet<double>("contact_stall_ratio", 0.30);
+    contact_min_commanded_travel_ =
+      declareGet<double>("contact_min_commanded_travel_rad", 0.010);
+    contact_current_limit_ = declareGet<double>("contact_current_limit", 0.0);
+    contact_current_stale_sec_ = declareGet<double>("contact_current_stale_sec", 0.50);
+    arm_current_topic_ = declareGet<std::string>("arm_current_topic", "/arm/joint_currents");
+    arm_fault_topic_ = declareGet<std::string>("arm_fault_topic", "/arm/fault");
+
     velocity_point_1_sec_ = declareGet<double>("velocity_point_1_sec", 0.040);
     velocity_point_2_sec_ = declareGet<double>("velocity_point_2_sec", 0.080);
     stop_zero_cycles_total_ = declareGet<int>("stop_zero_cycles", 4);
@@ -199,6 +238,13 @@ private:
     axis_joint_enable_ = declareGet<int>("axis_joint_enable", 5);            // RT
     joint_enable_threshold_ = declareGet<double>("axis_joint_enable_threshold", 0.5);
     joint_enable_release_ = declareGet<double>("axis_joint_enable_release", 0.35);
+
+    // RT + Y clears a tripped joint module. RT rather than RB because RB + Y is
+    // already hand guiding, and Y alone belongs to the rover (LB + Y re-arms the
+    // ODrives). It only fires when /arm/fault says the arm really is tripped,
+    // so a stray press during normal driving does nothing.
+    button_arm_reset_ = declareGet<int>("button_arm_reset", 3);
+    arm_reset_service_ = declareGet<std::string>("arm_reset_service", "/arm/reset");
 
     button_gripper_open_ = declareGet<int>("button_gripper_open", 2);
     button_gripper_close_ = declareGet<int>("button_gripper_close", 1);
@@ -241,6 +287,14 @@ private:
     collision_preview_sec_ = std::clamp(collision_preview_sec_, 0.04, 0.40);
     collision_escape_min_improvement_ =
       std::clamp(collision_escape_min_improvement_, 0.0001, 0.010);
+    // Below ~0.15 s the window is shorter than the arm's own 85 ms tracking lag
+    // plus the acceleration ramp, so normal motion onset would read as a stall.
+    contact_stall_window_sec_ = std::clamp(contact_stall_window_sec_, 0.15, 1.50);
+    contact_stall_ratio_ = std::clamp(contact_stall_ratio_, 0.05, 0.90);
+    contact_min_commanded_travel_ = std::clamp(contact_min_commanded_travel_, 0.002, 0.20);
+    contact_current_limit_ = std::max(0.0, contact_current_limit_);
+    contact_current_stale_sec_ = std::clamp(contact_current_stale_sec_, 0.05, 5.0);
+
     velocity_point_1_sec_ = std::clamp(velocity_point_1_sec_, 0.015, 0.10);
     velocity_point_2_sec_ = std::clamp(velocity_point_2_sec_, velocity_point_1_sec_ + 0.01, 0.20);
 
@@ -353,6 +407,7 @@ private:
       previous_rb_toggle_pressed_ = rb_toggle_pressed;
       previous_gripper_toggle_pressed_ = false;
       hardZeroStop();
+      clearContactLatch();
       publishStatus("LB rover mode active: arm blocked");
       return;
     }
@@ -364,6 +419,17 @@ private:
 
     previous_rb_toggle_pressed_ = rb_toggle_pressed;
 
+    const bool reset_pressed = buttonPressed(msg, button_arm_reset_);
+    const bool reset_rising = reset_pressed && !previous_reset_pressed_;
+    previous_reset_pressed_ = reset_pressed;
+
+    // RT + Y, not RB + Y: that combination is hand guiding.
+    if (reset_rising && rt_pressed && !rb_pressed)
+    {
+      requestArmReset();
+      return;
+    }
+
     // Hold-to-select: RB drives Cartesian, RT drives direct joint jog, and
     // either one on its own is the enable gate. RB wins when both are held so
     // that brushing the trigger part way through a Cartesian move cannot
@@ -374,6 +440,7 @@ private:
     {
       previous_gripper_toggle_pressed_ = false;
       hardZeroStop();
+      clearContactLatch();
       return;
     }
 
@@ -404,6 +471,9 @@ private:
     if (!have_command || allZero(qdot))
     {
       hardZeroStop();
+      // Sticks centred is the operator's own "stop" -- the same gesture that
+      // re-arms the contact guard.
+      clearContactLatch();
       return;
     }
 
@@ -426,6 +496,34 @@ private:
     {
       hardZeroStop();
       return;
+    }
+
+    if (contact_guard_enabled_)
+    {
+      if (contactBlocks(qdot))
+      {
+        hardZeroStop();
+        publishStatus("CONTACT GUARD: still blocked in that direction; "
+                      "back off or move sideways");
+        return;
+      }
+
+      // A command away from the obstruction clears the latch, so the guard can
+      // catch the next push rather than staying armed against a stale direction.
+      if (contact_latched_)
+      {
+        clearContactLatch();
+      }
+
+      recordMotion(qdot);
+
+      std::string reason;
+      if (contactDetected(reason))
+      {
+        hardZeroStop();
+        latchContact(qdot, reason);
+        return;
+      }
     }
 
     active_motion_ = true;
@@ -811,6 +909,266 @@ private:
     return false;
   }
 
+  // ------------------------------------------------------------------ contact
+  //
+  // The self-collision guard above only knows about the robot's own model. It
+  // has nothing to say about the world -- a maintenance panel, an MCB toggle,
+  // the ground -- so pushing the tool into any of those runs the arm straight
+  // into a firmware trip: the module's internal setpoint keeps advancing at the
+  // commanded jog while the joint cannot follow, and at some lag it raises
+  // 'Position lag'/'Overcurrent' and disables the motors. Recovering from that
+  // needs /arm/reset (or, before this existed, a stack restart).
+  //
+  // This guard catches the same condition from the outside and stops first.
+
+  void armCurrentCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(contact_mutex_);
+
+    for (size_t i = 0; i < 6 && i < msg->data.size(); ++i)
+    {
+      joint_current_[i] = msg->data[i];
+    }
+
+    have_current_ = msg->data.size() >= 6;
+    last_current_time_ = nh_->now();
+  }
+
+  void armFaultCallback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    const bool faulted = msg->data;
+
+    if (faulted == arm_faulted_)
+    {
+      return;
+    }
+
+    arm_faulted_ = faulted;
+
+    if (faulted)
+    {
+      publishStatus(
+        "ARM FAULTED: a joint module tripped and the motors are disabled. "
+        "Call /arm/reset (ros2 service call /arm/reset std_srvs/srv/Trigger) "
+        "to re-enable.");
+    }
+    else
+    {
+      publishStatus("Arm fault cleared; motors enabled");
+    }
+  }
+
+  // Clear a tripped joint module from the pad. The trip itself leaves the arm
+  // disabled and silently ignoring every command, so without this the operator
+  // has to leave the controls and find a terminal.
+  void requestArmReset()
+  {
+    if (!arm_faulted_)
+    {
+      publishStatus("RT+Y: arm is not faulted, nothing to reset");
+      return;
+    }
+
+    if (reset_in_flight_)
+    {
+      return;
+    }
+
+    if (!reset_client_ || !reset_client_->service_is_ready())
+    {
+      publishStatus("RT+Y: " + arm_reset_service_ +
+                    " is not available (is the real arm driver running?)");
+      return;
+    }
+
+    // Never re-enable the motors into a live command.
+    hardZeroStop();
+    clearContactLatch();
+
+    reset_in_flight_ = true;
+    publishStatus("RT+Y: resetting the arm and re-enabling the motors");
+
+    reset_client_->async_send_request(
+      std::make_shared<std_srvs::srv::Trigger::Request>(),
+      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future)
+      {
+        reset_in_flight_ = false;
+
+        const auto response = future.get();
+        publishStatus(std::string("Arm reset: ") +
+                      (response->success ? "OK - " : "FAILED - ") + response->message);
+      });
+  }
+
+  // One control cycle of "what we asked for" against "where the arm was".
+  void recordMotion(const std::array<double, 6> &qdot)
+  {
+    MotionSample sample;
+    sample.stamp = nh_->now();
+    sample.command = qdot;
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+
+      if (!have_joint_state_)
+      {
+        return;
+      }
+
+      sample.position = joint_pos_;
+    }
+
+    motion_history_.push_back(sample);
+
+    // Keep the oldest sample that is still a full window old, rather than
+    // dropping it the moment it ages past the window. Dropping it leaves the
+    // buffer spanning slightly LESS than the window, which the full-window
+    // check below then rejects, and at lower command rates that skips every
+    // other evaluation.
+    while (motion_history_.size() > 2 &&
+           (sample.stamp - motion_history_[1].stamp).seconds() >= contact_stall_window_sec_)
+    {
+      motion_history_.pop_front();
+    }
+  }
+
+  void clearContactHistory()
+  {
+    motion_history_.clear();
+  }
+
+  // True when the arm is loaded up against something instead of moving.
+  bool contactDetected(std::string &reason)
+  {
+    // --- motor current -----------------------------------------------------
+    // Off until contact_current_limit is measured on the real arm: the CRI
+    // units are raw counts (mA), and a guessed threshold either never fires or
+    // makes the arm unusable. Watch /arm/joint_currents while pushing, then set
+    // it a comfortable margin under what the push produced.
+    if (contact_current_limit_ > 0.0)
+    {
+      std::lock_guard<std::mutex> lock(contact_mutex_);
+
+      if (have_current_ &&
+          (nh_->now() - last_current_time_).seconds() < contact_current_stale_sec_)
+      {
+        for (size_t i = 0; i < 6; ++i)
+        {
+          if (std::abs(joint_current_[i]) > contact_current_limit_)
+          {
+            reason = "joint" + std::to_string(i + 1) + " current " +
+                     std::to_string(static_cast<int>(joint_current_[i])) + " over limit";
+            return true;
+          }
+        }
+      }
+    }
+
+    // --- commanded travel vs achieved travel --------------------------------
+    // Deliberately NOT the velocity state: the Rebel driver fills it with a
+    // first difference of a quantised position read at the controller rate, and
+    // it reads exactly zero on more than half of all samples. Position
+    // displacement across the whole window has none of that problem.
+    if (motion_history_.size() < 2)
+    {
+      return false;
+    }
+
+    const MotionSample &oldest = motion_history_.front();
+    const MotionSample &newest = motion_history_.back();
+    const double span = (newest.stamp - oldest.stamp).seconds();
+
+    // Judge only on a full window. A shorter one is the start of a motion,
+    // where the arm is legitimately behind its command.
+    if (span < contact_stall_window_sec_ * 0.95)
+    {
+      return false;
+    }
+
+    size_t worst = 0;
+    double worst_commanded = 0.0;
+    double worst_measured = 0.0;
+
+    for (size_t j = 0; j < 6; ++j)
+    {
+      double commanded = 0.0;
+
+      for (size_t k = 1; k < motion_history_.size(); ++k)
+      {
+        const double dt =
+          (motion_history_[k].stamp - motion_history_[k - 1].stamp).seconds();
+        commanded += std::abs(motion_history_[k - 1].command[j]) * dt;
+      }
+
+      if (commanded > worst_commanded)
+      {
+        worst = j;
+        worst_commanded = commanded;
+        worst_measured = std::abs(newest.position[j] - oldest.position[j]);
+      }
+    }
+
+    // Too small an ask to tell blocked from noise, or the joint is keeping up.
+    if (worst_commanded < contact_min_commanded_travel_)
+    {
+      return false;
+    }
+
+    if (worst_measured >= worst_commanded * contact_stall_ratio_)
+    {
+      return false;
+    }
+
+    reason = "joint" + std::to_string(worst + 1) + " moved " +
+             std::to_string(static_cast<int>(worst_measured * 1000.0)) + " mrad of " +
+             std::to_string(static_cast<int>(worst_commanded * 1000.0)) + " commanded";
+    return true;
+  }
+
+  // Once latched, only motion that is not pushing further into the obstruction
+  // is allowed. Backing off and moving sideways stay available -- trapping the
+  // operator with a guard they can only clear from RViz would be worse than the
+  // trip it prevents.
+  bool contactBlocks(const std::array<double, 6> &qdot) const
+  {
+    if (!contact_latched_)
+    {
+      return false;
+    }
+
+    double alignment = 0.0;
+
+    for (size_t i = 0; i < 6; ++i)
+    {
+      alignment += qdot[i] * contact_blocked_command_[i];
+    }
+
+    return alignment > 0.0;
+  }
+
+  void latchContact(const std::array<double, 6> &qdot, const std::string &reason)
+  {
+    contact_latched_ = true;
+    contact_blocked_command_ = qdot;
+    clearContactHistory();
+
+    publishStatus("CONTACT GUARD: arm is loaded and not moving (" + reason +
+                  "). Motion into it is blocked; back off or move sideways. "
+                  "Release the stick to re-arm.");
+  }
+
+  void clearContactLatch()
+  {
+    if (contact_latched_)
+    {
+      contact_latched_ = false;
+      contact_blocked_command_.fill(0.0);
+      publishStatus("Contact guard re-armed");
+    }
+
+    clearContactHistory();
+  }
+
   void publishVelocityOnlyTrajectory(const std::array<double, 6> &vel, bool force)
   {
     if (!force && !publishGateReady())
@@ -1173,6 +1531,8 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr arm_current_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr arm_fault_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::unique_ptr<robot_model_loader::RobotModelLoader> robot_model_loader_;
@@ -1191,6 +1551,41 @@ private:
   std::array<double, 6> joint_pos_{};
   std::array<double, 6> joint_vel_{};
   bool have_joint_state_ = false;
+
+  // Contact guard state. One cycle of what the arm was told to do and where it
+  // was when it was told, kept for contact_stall_window_sec_ so the two can be
+  // compared over a window rather than a single noisy sample.
+  struct MotionSample
+  {
+    rclcpp::Time stamp;
+    std::array<double, 6> position{};
+    std::array<double, 6> command{};
+  };
+
+  std::deque<MotionSample> motion_history_;
+  bool contact_latched_ = false;
+  std::array<double, 6> contact_blocked_command_{};
+
+  std::mutex contact_mutex_;
+  std::array<double, 6> joint_current_{};
+  bool have_current_ = false;
+  rclcpp::Time last_current_time_{0, 0, RCL_ROS_TIME};
+  bool arm_faulted_ = false;
+
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_client_;
+  bool reset_in_flight_ = false;
+  bool previous_reset_pressed_ = false;
+  int button_arm_reset_ = 3;
+  std::string arm_reset_service_ = "/arm/reset";
+
+  bool contact_guard_enabled_ = true;
+  double contact_stall_window_sec_ = 0.30;
+  double contact_stall_ratio_ = 0.30;
+  double contact_min_commanded_travel_ = 0.010;
+  double contact_current_limit_ = 0.0;
+  double contact_current_stale_sec_ = 0.50;
+  std::string arm_current_topic_ = "/arm/joint_currents";
+  std::string arm_fault_topic_ = "/arm/fault";
 
   // Every joint_states entry the robot model knows about, arm joints included.
   // The collision guard needs the gripper and rover joints too: with them left

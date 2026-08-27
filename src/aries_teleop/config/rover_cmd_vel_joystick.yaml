@@ -20,6 +20,11 @@ rover_cmd_vel_joystick:
     max_angular: 1.40
     accel_limit: 0.80
     angular_accel_limit: 2.00
+    # Same jerk-to-acceleration ratio as the real rover in joystick.yaml, so
+    # the ease-in feels the same in simulation. Left at 30 Hz: there is no
+    # ODrive bridge here, so nothing downstream to be an exact multiple of.
+    jerk_limit: 5.0
+    angular_jerk_limit: 13.0
     publish_rate_hz: 30.0
 
     # Stop if /joy goes quiet. Kept identical to the real-rover config in

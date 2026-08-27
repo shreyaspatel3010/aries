@@ -30,6 +30,21 @@ class RoverCmdVelJoystick(Node):
         self.declare_parameter("max_angular", 1.70)
         self.declare_parameter("accel_limit", 1.20)
         self.declare_parameter("angular_accel_limit", 3.00)
+        # Acceleration is rate-limited above, but nothing limited how fast the
+        # acceleration itself could change: the moment the stick crossed the
+        # deadzone the command jumped from zero to the full accel_limit in a
+        # single tick. A rate limiter bounds the velocity slope, not the
+        # lurch, and the lurch is what the operator feels -- unbounded jerk at
+        # the start of every move. On a 90 kg six-wheeler that is worse than
+        # it sounds: the wheels sit stuck in stiction while the setpoint
+        # climbs, then break away into a command already well up the ramp.
+        #
+        # These bound the jerk, so the ramp eases in as an S-curve instead.
+        # 8.0 builds the full 1.25 m/s^2 over ~0.17 s whatever the tick rate,
+        # and costs ~0.15 s on the ramp to top speed. Set to 0 for the plain
+        # trapezoid this replaced.
+        self.declare_parameter("jerk_limit", 8.0)
+        self.declare_parameter("angular_jerk_limit", 16.0)
         self.declare_parameter("publish_rate_hz", 30.0)
 
         # Stop when /joy goes quiet. This is a relay: it publishes the LAST
@@ -92,6 +107,10 @@ class RoverCmdVelJoystick(Node):
         self.max_angular = float(self.get_parameter("max_angular").value)
         self.accel_limit = float(self.get_parameter("accel_limit").value)
         self.angular_accel_limit = float(self.get_parameter("angular_accel_limit").value)
+        self.jerk_limit = max(0.0, float(self.get_parameter("jerk_limit").value))
+        self.angular_jerk_limit = max(
+            0.0, float(self.get_parameter("angular_jerk_limit").value)
+        )
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.joy_timeout_sec = max(
             0.0, float(self.get_parameter("joy_timeout_sec").value)
@@ -112,6 +131,11 @@ class RoverCmdVelJoystick(Node):
         self.target_angular = 0.0
         self.current_linear = 0.0
         self.current_angular = 0.0
+        # The acceleration currently being commanded. Carried between ticks
+        # because the jerk limit bounds how far it may move in one, and zeroed
+        # everywhere the velocities are.
+        self.current_linear_accel = 0.0
+        self.current_angular_accel = 0.0
 
         self.was_enabled = False
 
@@ -171,12 +195,56 @@ class RoverCmdVelJoystick(Node):
         sign = 1.0 if value >= 0.0 else -1.0
         return sign * (abs(value) - self.deadzone) / max(1e-6, 1.0 - self.deadzone)
 
-    def _ramp(self, current, target, limit, dt):
-        step = abs(limit) * dt
-        diff = target - current
-        if abs(diff) <= step:
-            return target
-        return current + math.copysign(step, diff)
+    def _ramp(self, current, accel, target, accel_limit, jerk_limit, dt):
+        """Approach target under both an acceleration and a jerk limit.
+
+        Returns the new (velocity, acceleration). With jerk_limit at 0 this is
+        the plain trapezoidal rate limiter it replaced.
+
+        The acceleration is held below the value from which the jerk limit can
+        still bleed it to zero exactly as the target arrives. That is what
+        keeps the curve from sailing past: it begins easing off early enough to
+        land on the target rather than overshooting and coming back.
+
+        Rising, the jerk is exactly jerk_limit. Landing, the final tick can
+        discard up to about twice that in one step -- discretisation residue,
+        and a DROP in acceleration as the rover settles into cruise, which is
+        the opposite of the lurch this exists to remove.
+        """
+        if jerk_limit <= 0.0:
+            step = abs(accel_limit) * dt
+            diff = target - current
+            if abs(diff) <= step:
+                return target, 0.0
+            return current + math.copysign(step, diff), 0.0
+
+        # Close enough that another tick would only chase rounding.
+        if abs(target - current) <= jerk_limit * dt * dt:
+            return target, 0.0
+
+        # The acceleration the jerk limit can still bleed away to exactly zero
+        # as the target arrives: integrating a = sqrt(2 * jerk * error) back
+        # gives error = a^2 / (2 * jerk). Half a jerk step comes off it because
+        # a discrete tick would otherwise start easing half a step late and
+        # arrive with acceleration still on, which is the very step this is
+        # here to remove. The third term never asks for more acceleration than
+        # lands the target within this tick, so nothing overshoots.
+        brake = max(
+            0.0, math.sqrt(2.0 * jerk_limit * abs(target - current)) - 0.5 * jerk_limit * dt
+        )
+        desired_accel = math.copysign(
+            min(abs(accel_limit), brake, abs(target - current) / dt), target - current
+        )
+
+        jerk_step = abs(jerk_limit) * dt
+        accel = min(max(desired_accel, accel - jerk_step), accel + jerk_step)
+        accel = min(max(accel, -abs(accel_limit)), abs(accel_limit))
+
+        nxt = current + accel * dt
+        # Belt and braces: one tick of quantisation must not carry it over.
+        if (target - current) * (target - nxt) < 0.0:
+            return target, 0.0
+        return nxt, accel
 
     def _joy_cb(self, msg):
         self._last_joy_at = time.monotonic()
@@ -245,6 +313,8 @@ class RoverCmdVelJoystick(Node):
         self.target_angular = 0.0
         self.current_linear = 0.0
         self.current_angular = 0.0
+        self.current_linear_accel = 0.0
+        self.current_angular_accel = 0.0
         now = time.monotonic()
         self._reinit_hold_until = now + self.reinit_hold_sec
         self._reinit_deadline = now + self.reinit_hold_max_sec
@@ -298,6 +368,8 @@ class RoverCmdVelJoystick(Node):
             self.target_angular = 0.0
             self.current_linear = 0.0
             self.current_angular = 0.0
+            self.current_linear_accel = 0.0
+            self.current_angular_accel = 0.0
             self.pub.publish(Twist())
             return
 
@@ -314,19 +386,25 @@ class RoverCmdVelJoystick(Node):
             self.target_angular = 0.0
             self.current_linear = 0.0
             self.current_angular = 0.0
+            self.current_linear_accel = 0.0
+            self.current_angular_accel = 0.0
             self.pub.publish(Twist())
             return
 
-        self.current_linear = self._ramp(
+        self.current_linear, self.current_linear_accel = self._ramp(
             self.current_linear,
+            self.current_linear_accel,
             self.target_linear,
             self.accel_limit,
+            self.jerk_limit,
             dt,
         )
-        self.current_angular = self._ramp(
+        self.current_angular, self.current_angular_accel = self._ramp(
             self.current_angular,
+            self.current_angular_accel,
             self.target_angular,
             self.angular_accel_limit,
+            self.angular_jerk_limit,
             dt,
         )
 

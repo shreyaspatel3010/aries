@@ -35,6 +35,14 @@ if(BUILD_TESTING)
     test/test_joy_watchdog.py
     TIMEOUT 120
   )
+  # The rover must ease into a move. accel_limit bounds the velocity slope but
+  # not how abruptly it appears, so the ramp used to go from standstill to the
+  # full acceleration in one tick -- the lurch the operator feels.
+  ament_add_pytest_test(
+    start_ramp
+    test/test_start_ramp.py
+    TIMEOUT 120
+  )
   # The drill must not move unless a button is asking it to: LT alone commands
   # zero on every axis, and each limit switch cuts its motor in one direction
   # while leaving the way back open.
