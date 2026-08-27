@@ -252,19 +252,35 @@ static uint64_t pin_scan_state()
 // So it is no longer assumed. Seeded from the convention, then corrected from
 // what the mechanism actually does:
 //
-//   EDGE   a switch that closes while the motor runs was closed BY the sign
-//          that was running. Learned on the closing edge, which blocks that
-//          sign in the same pass -- so even the very first arrival stops.
-//   HELD   a switch that STAYS closed while one sign is driven for kSettleMs
-//          is being driven into: moving away would have opened it. This is the
-//          case the edge rule cannot see -- the carriage already sitting on a
-//          stop at power-up, where there is no edge to learn from.
+// A switch learns ONCE PER CLOSURE, on the edge, from the sign that was
+// driving when it closed. That sign is then blocked for as long as the switch
+// stays closed, and the opposite sign is ALWAYS free -- hit the top switch and
+// down still works; hit the bottom switch and up still works. Escape is never
+// gated on anything the firmware had to infer.
 //
-// This cannot trap the carriage. Only one switch is closed at a time, and a
-// closed switch blocks exactly one sign, so the other is always free.
+// LEARNING ONCE PER CLOSURE IS THE WHOLE POINT, and an earlier version of this
+// got it wrong in a way worth recording. It also re-learned from a switch that
+// merely STAYED closed while a sign was driven, meaning to catch a carriage
+// sitting on a stop at power-up. But leaving a switch is not instant: drive
+// down off the top switch and it is still closed for the first few
+// millimetres. That rule would then conclude "down drives INTO the top switch",
+// block the escape, and re-open the path back into the stop -- trapping the
+// carriage against the very switch that was protecting it, and doing it
+// worse than no gate at all.
+//
+// The closure EPISODE is what makes once-per-closure safe against contact
+// bounce. is_at_stop() is a raw digitalRead with no debounce (the 50 ms
+// debounce in LimitSwitch belongs to the interrupt, which nothing reads), so a
+// bouncing contact on release would otherwise re-learn from the escape sign and
+// cause the identical trap. An episode ends only after the switch has been
+// continuously open for kReleaseMs, by which time the carriage has cleared it.
+static const uint32_t kReleaseMs = 100;
+
+// Seeded from the documented convention -- positive PWM raises the carriage,
+// so positive runs into the TOP switch -- and corrected by the rule above the
+// first time each switch is actually seen closing.
 static int8_t sign_into_top = +1;
 static int8_t sign_into_bottom = -1;
-static const uint32_t kSettleMs = 500;
 
 static inline int8_t sign_of(int v) { return v > 0 ? +1 : (v < 0 ? -1 : 0); }
 
@@ -550,29 +566,56 @@ static void apply_motor_commands(bool force)
   // feed_applied is still the PREVIOUS pass's value here, which is exactly
   // what is wanted: the sign that was actually driving when the switch closed.
   const int8_t driving = sign_of(feed_applied);
-
-  static bool was_top = false;
-  static bool was_bottom = false;
-  static int8_t held_sign = 0;
-  static uint32_t held_since = 0;
-
   const uint32_t now_ms = millis();
-  if (driving != held_sign)
+
+  static bool top_episode = false;
+  static bool bottom_episode = false;
+  static uint32_t top_open_since = 0;
+  static uint32_t bottom_open_since = 0;
+
+  if (top_closed)
   {
-    held_sign = driving;
-    held_since = now_ms;
+    if (!top_episode)
+    {
+      top_episode = true;
+      if (driving != 0)
+        sign_into_top = driving;
+    }
+  }
+  else
+  {
+    if (top_episode)
+    {
+      if (top_open_since == 0)
+        top_open_since = now_ms;
+      else if (now_ms - top_open_since >= kReleaseMs)
+        top_episode = false;
+    }
+    if (!top_episode)
+      top_open_since = 0;
   }
 
-  if (driving != 0)
+  if (bottom_closed)
   {
-    const bool settled = (now_ms - held_since) >= kSettleMs;
-    if (top_closed && (!was_top || settled))
-      sign_into_top = driving;
-    if (bottom_closed && (!was_bottom || settled))
-      sign_into_bottom = driving;
+    if (!bottom_episode)
+    {
+      bottom_episode = true;
+      if (driving != 0)
+        sign_into_bottom = driving;
+    }
   }
-  was_top = top_closed;
-  was_bottom = bottom_closed;
+  else
+  {
+    if (bottom_episode)
+    {
+      if (bottom_open_since == 0)
+        bottom_open_since = now_ms;
+      else if (now_ms - bottom_open_since >= kReleaseMs)
+        bottom_episode = false;
+    }
+    if (!bottom_episode)
+      bottom_open_since = 0;
+  }
 
   int feed_pwm = feed_cmd_signed;
   const int8_t want = sign_of(feed_pwm);
