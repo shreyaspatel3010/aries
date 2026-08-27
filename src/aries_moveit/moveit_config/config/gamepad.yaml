@@ -76,22 +76,8 @@
     # Hold LT + press Y/button 3 = planned move to pick_home
     # Hold LT + press A/button 0 = planned move to probe_drop
     # Hold LT + press B/button 1 = planned move to soil_drop
-    # Hold RT + press Y/button 3 = clear a tripped arm (see button_arm_reset)
     button_enable: 5
     button_rover_enable: 4
-
-    # Recovery from a joint-module trip. When the arm pushes into something it
-    # cannot move, the Rebel firmware raises 'Position lag'/'Overcurrent' and
-    # DISABLES THE MOTORS; from then on it ignores every command in silence,
-    # which reads as the arm having died. This calls the driver's Reset+Enable
-    # (zeroing jog first, so it cannot re-enable into a stale command).
-    #
-    # RT + Y, because RB + Y is hand guiding and LB + Y is the rover's ODrive
-    # re-arm. It refuses unless /arm/fault says the arm is actually tripped, so
-    # a stray press does nothing. Real arm only — /arm/reset does not exist
-    # under mock or Gazebo.
-    button_arm_reset: 3
-    arm_reset_service: "/arm/reset"
 
     # RT is an analog axis on every driver here — no gamepad in this stack
     # reports a trigger as a button — so it needs a press threshold.

@@ -38,7 +38,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC)
 
 # Add library dependencies
 ament_target_dependencies(${PROJECT_NAME}
-  pluginlib hardware_interface igus_rebel_msgs std_srvs std_msgs
+  pluginlib hardware_interface igus_rebel_msgs std_srvs
 )
 
 install(PROGRAMS

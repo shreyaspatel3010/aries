@@ -19,7 +19,7 @@
 #     Gripper block                both — the two nodes share it
 #
 #   Clamp ranges below are enforced in C++ at
-#   src/rebel_servo_teleop_gamepad.cpp:273-306. A value outside the range is
+#   src/rebel_servo_teleop_gamepad.cpp:200-215. A value outside the range is
 #   silently pulled back to the edge, not rejected, so it will look like the
 #   parameter was ignored.
 #
@@ -123,52 +123,6 @@
     #   max_joint_decel (above) sets how fast the command winds down on
     #   release. 16 rad/s^2 brings 0.48 rad/s to rest in ~30 ms / 3 cycles.
     #   Raise it for a crisper stop, lower it for a softer one.
-
-    # --- Contact guard -------------------------------------------------------
-    # Stops the arm when it is pushing into something instead of moving.
-    #
-    # The self-collision guard below only knows the robot's own model, so it has
-    # nothing to say about a maintenance panel, an MCB toggle or the ground.
-    # Driving the tool into any of those used to end in a firmware trip: the
-    # Rebel's joint modules run their own closed loop, and a jog they cannot
-    # follow makes their internal setpoint run away from the real position until
-    # the module raises 'Position lag'/'Overcurrent' and DISABLES THE MOTORS.
-    # From there the arm ignores everything until /arm/reset is called (RT+Y on
-    # the pad).
-    #
-    # Primary test, needs no calibration: over contact_stall_window_sec, compare
-    # how far the busiest joint was TOLD to travel against how far it actually
-    # moved. A blocked arm fails that ratio long before the firmware gives up.
-    # Measured from POSITION displacement, never from the velocity state — the
-    # driver fills that with a first difference of a quantised position and it
-    # reads exactly 0 on more than half of all samples.
-    #
-    # When it fires the arm stops and the direction that caused it is blocked.
-    # Backing off and moving sideways stay available; centring the sticks
-    # re-arms the guard.
-    contact_guard_enabled: true
-    contact_stall_window_sec: 0.30   # [clamp 0.15 - 1.50] must stay above the
-                                     # arm's 85 ms tracking lag + accel ramp or
-                                     # normal motion onset reads as a stall
-    contact_stall_ratio: 0.30        # [clamp 0.05 - 0.90] achieved/commanded
-                                     # travel below this = blocked. Raise for a
-                                     # more eager guard, lower if it fires while
-                                     # the arm is genuinely moving slowly
-    contact_min_commanded_travel_rad: 0.010  # [clamp 0.002 - 0.20] below this
-                                     # the ask is too small to tell a stall from
-                                     # encoder quantisation, so it is ignored
-
-    # Second, sharper test: per-joint motor current from /arm/joint_currents
-    # (published by the igus_rebel plugin out of the CRI status). OFF at 0.0
-    # because the threshold has to be MEASURED — the units are raw CRI counts
-    # (mA), and a guessed value either never fires or makes the arm unusable:
-    #
-    #   ros2 topic echo /arm/joint_currents
-    #
-    # Watch it while making the push that trips the arm, then set this a
-    # comfortable margin under the value the push reached.
-    contact_current_limit: 0.0       # 0 = disabled
-    contact_current_stale_sec: 0.50  # ignore currents older than this
 
     # --- Solver / lookahead --------------------------------------------------
     # Damping is now ramped in only as the arm approaches a singularity, rather
