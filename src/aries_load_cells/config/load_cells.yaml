@@ -33,19 +33,33 @@
 # falling silent, because a topic that stops looks like a node that died. It
 # does NOT mean zero: zero is what an empty box reads.
 #
-# THE FIRMWARE HAS NOT BEEN WRITTEN YET. The sketch is expected to publish
+# THE FIRMWARE PUBLISHES
 #
 #     load_cells/raw   std_msgs/Int32MultiArray, three elements, in the order
-#                      of `cells` below
+#                      of `cells` below, at 10 Hz
 #
 # declared with no leading slash under an empty namespace, exactly as
 # stacklight_subscription is, which resolves to /load_cells/raw. RAW COUNTS,
 # not kilograms: the calibration below is then a YAML edit and a relaunch
 # rather than a reflash, and the Teensy stays a thing that reads ADCs.
 #
-# One publisher and not three - micro_ros_arduino's precompiled library has a
-# fixed entity budget and that sketch already spends three. If it ends up with
-# three separate std_msgs/Int32 publishers, list them in `raw_topics`.
+# RELIABLE on both ends. The subscription here uses default rclpy QoS, which is
+# reliable, and the firmware publisher matches it. A best-effort publisher
+# against a reliable subscriber is an incompatible pair: DDS makes no match,
+# both sides list the topic and nothing is ever delivered.
+#
+# A CELL THAT IS NOT REPORTING SENDS raw_min, NOT ZERO. An amplifier that is
+# unplugged, dead, or whose last conversion is over 500 ms old arrives as
+# -8388608 and falls into the rail fault below. Zero is what an EMPTY BOX
+# reads, so the firmware never uses it to mean "no reading".
+#
+# The topic stays silent until at least one amplifier answers, so a rover with
+# no cells fitted gets the "no counts yet" message rather than three standing
+# faults.
+#
+# One publisher and not three: the three cells are polled on one pass of the
+# firmware's loop and belong in one message. If it ever ends up with three
+# separate std_msgs/Int32 publishers, list them in `raw_topics`.
 #
 # To see the topics with no Teensy attached:
 #     ros2 launch aries_load_cells load_cells.launch.py load_cell_source:=mock

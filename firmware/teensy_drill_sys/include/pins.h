@@ -187,9 +187,11 @@
 // RAW COUNTS, not kilograms. Scale and offset live in that package's YAML so a
 // recalibration is an edit and a relaunch, not a reflash with the rover open.
 //
-// NOTHING DRIVES THESE YET. The LoadCell class in lib/drill/drill.h is still a
-// stub with no definition and nothing constructs one -- the pins are known now,
-// the firmware half is not written. See PINOUT.md.
+// DRIVEN. main.cpp constructs one LoadCell per amplifier, in the order above,
+// and publishes their counts on load_cells/raw at 10 Hz. A cell with no
+// amplifier on its pins never blocks the board and never reports zero -- zero
+// is what an empty box reads -- it reports the converter's negative rail, which
+// the host already knows how to call a fault. See PINOUT.md.
 #define HX711_SAND_BOX_DT 17          // front-left deck box, the sand sample
 #define HX711_SAND_BOX_SCK 16
 #define HX711_STONE_BOX_DT 34         // the box behind it, also on the left

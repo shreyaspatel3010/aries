@@ -280,12 +280,21 @@ and one dead amplifier cannot stall the others. Six pins, not four. Anything
 written against a shared clock (including an earlier draft of this file) is
 wrong.
 
-**Nothing drives them yet.** `LoadCell` in `lib/drill/drill.h` is still a stub
-with no definition and nothing constructs one. The pins are known now; the
-firmware half is not written. The host half is already written and waiting on
+**Driven.** `main.cpp` constructs one `LoadCell` per amplifier and publishes
 `load_cells/raw` (`std_msgs/Int32MultiArray`, three elements, **raw converter
-counts** — scale and offset live in that package's YAML so a recalibration is an
-edit and a relaunch, not a reflash with the rover open).
+counts**) at 10 Hz, RELIABLE. Scale, offset and tare live in `aries_load_cells`'
+YAML, so a recalibration is an edit and a relaunch, not a reflash with the rover
+open — and taring is `ros2 service call /load_cells/<cell>/tare`, not something
+this board does.
+
+**A cell that is not answering reports the converter's negative rail
+(`-8388608`), never zero** — zero is what an empty box reads, so a dead
+amplifier would otherwise look exactly like a box somebody had emptied. Reading
+one is also strictly non-blocking: `HX711::read()` opens with `wait_ready()`,
+which spins forever on an amplifier holding DOUT high, and this loop is also the
+auger's watchdog. The topic stays silent until at least one cell has ever
+answered, so a rover with no cells fitted is quiet rather than permanently
+faulted.
 
 ---
 

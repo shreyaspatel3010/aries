@@ -25,6 +25,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -428,3 +429,147 @@ def test_shipped_config_lists_the_cells_the_boxes_are():
     # And nothing may quietly ship as calibrated when it is not.
     assert params["source"] == "auto", "the rover must not default to mock counts"
 
+
+
+def _config():
+    """The node's parameters, straight out of load_cells.yaml."""
+    return yaml.safe_load(CONFIG.read_text())["load_cells"]["ros__parameters"]
+
+
+# --- the firmware contract --------------------------------------------------
+#
+# The element order of load_cells/raw is the wire format, and the firmware sends
+# no names to check itself against. Swap two entries at either end and the sand
+# box reports the stone, both numbers stay entirely plausible, and nothing
+# anywhere logs a word about it -- there is no runtime check that can catch
+# this, on either side, which is why it is caught here.
+#
+# Source-level, deliberately: the firmware is not importable and flashing a
+# board is not a unit test. These read the two files and assert they agree.
+
+FIRMWARE = REPO / "firmware" / "teensy_drill_sys"
+FIRMWARE_MAIN = FIRMWARE / "src" / "main.cpp"
+FIRMWARE_PINS = FIRMWARE / "include" / "pins.h"
+FIRMWARE_META = FIRMWARE / "colcon.meta"
+
+
+def _skip_without_firmware():
+    if not FIRMWARE_MAIN.is_file():
+        pytest.skip(f"firmware not present at {FIRMWARE}")
+
+
+def test_firmware_cell_order_matches_the_yaml():
+    """The order the firmware constructs its cells in IS `cells` in the YAML."""
+    _skip_without_firmware()
+    src = FIRMWARE_MAIN.read_text()
+
+    body = src.split("LoadCell load_cells[LOAD_CELL_COUNT] = {", 1)[1].split("};", 1)[0]
+    constructed = re.findall(r"LoadCell\(HX711_([A-Z0-9_]+?)_DT,", body)
+
+    expected = [name.upper() for name in _config()["cells"]]
+    assert constructed == expected, (
+        f"firmware constructs {constructed}, load_cells.yaml says {expected}. "
+        "This is the wire format: swapped, the sand box reports the stone and "
+        "nothing anywhere notices."
+    )
+
+
+def test_firmware_publishes_the_topic_the_node_subscribes_to():
+    _skip_without_firmware()
+    src = FIRMWARE_MAIN.read_text()
+
+    assert 'ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray),\n' \
+           '                        "load_cells/raw"' in src, \
+        "the firmware must publish load_cells/raw as Int32MultiArray"
+
+    # No leading slash under an empty namespace, so it resolves to the absolute
+    # name the node's raw_topic parameter carries.
+    assert _config()["raw_topic"] == "/load_cells/raw"
+
+    # RELIABLE. rclc_publisher_init_best_effort here against the node's
+    # default-QoS (reliable) subscription is an incompatible pair: DDS makes no
+    # match, both sides list the topic, and nothing is ever delivered.
+    pub = src.split("&load_cells_raw_pub", 1)[0]
+    assert pub.rstrip().endswith("rclc_publisher_init_default("), \
+        "load_cells/raw must be RELIABLE to match the node's subscription"
+
+
+def test_firmware_sequence_is_actually_allocated():
+    """Int32MultiArray is a dynamic array and micro-ROS allocates nothing.
+
+    Left unassigned the message publishes a zero-length array in complete
+    silence, and the node reports "carried 0 counts for 3 cells" forever while
+    every entity looks healthy on both ends.
+    """
+    _skip_without_firmware()
+    src = FIRMWARE_MAIN.read_text()
+    for field in ("data.data = load_cells_raw_buf",
+                  "data.size = LOAD_CELL_COUNT",
+                  "data.capacity = LOAD_CELL_COUNT"):
+        assert field in src, f"load_cells_raw_msg.{field} is missing"
+
+    count = int(re.search(r"#define LOAD_CELL_COUNT (\d+)", src).group(1))
+    assert count == len(_config()["cells"])
+
+
+def test_firmware_rail_sentinel_matches_the_yaml():
+    """A cell with nothing to say sends raw_min, and the two must agree.
+
+    The firmware reports the converter's negative rail for an amplifier that is
+    unplugged or stale. If that value does not land on or below raw_min here,
+    it is converted into a confident enormous weight instead of a fault.
+    """
+    _skip_without_firmware()
+    header = (FIRMWARE / "lib" / "drill" / "drill.h").read_text()
+    rail = int(re.search(r"kRail = (-?\d+)L?;", header).group(1))
+
+    cfg = _config()
+    for name in cfg["cells"]:
+        raw_min = cfg["cell"][name]["raw_min"]
+        assert rail <= raw_min, (
+            f"firmware rail {rail} is above {name}'s raw_min {raw_min}, so a "
+            "dead cell would be weighed rather than faulted"
+        )
+
+
+def test_firmware_entity_budget_covers_its_publishers():
+    """rmw_microxrcedds sizes its tables at compile time.
+
+    Over the ceiling, rclc_publisher_init fails, create_entities() bails, and
+    the board sits in WAITING_AGENT with USB enumerated -- which looks exactly
+    like an unflashed Teensy, not like a full table.
+    """
+    _skip_without_firmware()
+    src = FIRMWARE_MAIN.read_text()
+    meta = json.loads(FIRMWARE_META.read_text())
+    args = meta["names"]["rmw_microxrcedds"]["cmake-args"]
+
+    def ceiling(key):
+        for arg in args:
+            if arg.startswith(f"-D{key}="):
+                return int(arg.split("=", 1)[1])
+        raise AssertionError(f"{key} is not set in colcon.meta")
+
+    publishers = len(re.findall(r"rclc_publisher_init_\w+\(", src))
+    subscriptions = len(re.findall(r"rclc_subscription_init_\w+\(", src))
+    assert publishers <= ceiling("RMW_UXRCE_MAX_PUBLISHERS")
+    assert subscriptions <= ceiling("RMW_UXRCE_MAX_SUBSCRIPTIONS")
+
+
+def test_firmware_pins_give_every_cell_its_own_clock():
+    """Not the usual shared-SCK chain: six pins, and all six distinct.
+
+    A shared clock pin here would be a silent wiring assumption -- the reads
+    would still return numbers.
+    """
+    _skip_without_firmware()
+    pins = FIRMWARE_PINS.read_text()
+    found = dict(re.findall(r"#define (HX711_\w+) (\d+)", pins))
+
+    expected = []
+    for name in _config()["cells"]:
+        expected += [f"HX711_{name.upper()}_DT", f"HX711_{name.upper()}_SCK"]
+    assert sorted(found) == sorted(expected), \
+        f"pins.h defines {sorted(found)}, expected {sorted(expected)}"
+    assert len(set(found.values())) == len(expected), \
+        f"two HX711 signals share a pin: {found}"

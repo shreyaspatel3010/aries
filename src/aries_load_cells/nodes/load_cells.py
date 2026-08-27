@@ -19,20 +19,33 @@ Kept in load_cells.yaml they are edited and reloaded on the next launch, with
 no rebuild (the workspace is --symlink-install) and no reflash. Kept in the
 sketch, every recalibration is a trip to the Arduino IDE with the rover open.
 
-THE FIRMWARE CONTRACT, which is not written yet -- one publisher:
+THE FIRMWARE CONTRACT -- one publisher:
 
     load_cells/raw   std_msgs/Int32MultiArray, one element per cell, in the
                      order given by `cells` below. Declared with no leading
                      slash under an empty namespace, as the stack light's
                      subscription is, so it resolves to /load_cells/raw.
 
-ONE publisher and not three. micro_ros_arduino ships libmicroros.a precompiled
-with a fixed entity budget, and this sketch already spends one publisher and
-two subscriptions; three more publishers is the kind of thing that fails at
-rclc_publisher_init and takes the gripper down with it. Three cells read in
-sequence off one HX711 chain also belong in one message, because they were
-sampled together. If the firmware ends up with three separate std_msgs/Int32
-publishers anyway, set `raw_topics` and this node reads those instead.
+ONE publisher and not three. The firmware polls all three amplifiers on one
+pass of its loop and they go out as one set; splitting them across three topics
+would make this node re-pair samples that arrived together, and get it wrong at
+exactly the moment the link is slow. The entity budget agrees -- that board is
+at four publishers against the five its colcon.meta allows. If the firmware
+ever ends up with three separate std_msgs/Int32 publishers anyway, set
+`raw_topics` and this node reads those instead.
+
+RELIABLE, BOTH ENDS. The raw subscription below is created with default rclpy
+QoS, which is reliable, and the firmware publisher is reliable to match. A
+best-effort publisher against a reliable subscriber is an incompatible pair:
+DDS makes no match at all, both sides list the topic, `ros2 topic info` shows
+one of each, and not one message is delivered. Change one end only with the
+other.
+
+A CELL THAT IS NOT REPORTING ARRIVES AS raw_min, NOT AS ZERO. The firmware
+sends -8388608 for an amplifier that is unplugged, dead, or whose last
+conversion is over 500 ms old, so it lands on the rail fault below and comes
+out as NaN. It never sends zero to mean "no reading", because zero is what an
+empty box reads.
 
 Nothing is faked. With `source: auto` and no firmware talking, the topics are
 all advertised and simply carry nothing, and the node says so once a second in

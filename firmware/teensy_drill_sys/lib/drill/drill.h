@@ -212,23 +212,90 @@ private:
 };
 
 // Load Cell Class ====================================================================================================
-// STUB -- nothing here is implemented, and nothing constructs one.
+// ONE HX711 AMPLIFIER. Three of these are constructed in main.cpp -- sand box,
+// stone box, drill bin -- and their counts go out together on load_cells/raw.
 //
-// The host half is already written and waiting: aries_load_cells expects ONE
-// topic, `load_cells/raw` (std_msgs/Int32MultiArray, three elements, in the
-// order of `cells` in load_cells.yaml), carrying RAW CONVERTER COUNTS. Scale
-// and offset live in that package's YAML on purpose, so a recalibration is an
-// edit and a relaunch rather than a reflash with the rover open.
+// RAW CONVERTER COUNTS, AND NOTHING ELSE. No tare, no scale, no grams. The
+// host half (aries_load_cells) owns the calibration, in that package's YAML, on
+// purpose: a recalibration is then an edit and a relaunch rather than a reflash
+// with the rover open. That is also why there is no tare_*() here -- taring is
+// `ros2 service call /load_cells/<cell>/tare`, and a second tare living in the
+// firmware would silently fight it.
 //
-// Pins are reserved in pins.h but unassigned. See PINOUT.md.
+// EACH CELL HAS ITS OWN CLOCK. Not the usual one-shared-SCK chain: every
+// amplifier gets a private DT/SCK pair, so this class owns its HX711 outright
+// and one dead amplifier cannot stall the others. See pins.h.
+//
+// NON-BLOCKING, WHICH IS THE WHOLE REASON THIS IS NOT JUST HX711::read().
+// HX711::read() opens with wait_ready(), which spins until DOUT falls -- and an
+// amplifier that is unplugged, unpowered or dead holds DOUT HIGH FOREVER. On a
+// board whose main loop is also the auger's watchdog and the limit switches'
+// motion gate, that is not a stalled sensor, it is a cutting tool that nothing
+// can stop any more. update() polls is_ready() and returns without touching the
+// bus when the answer is no, so a missing cell costs one digitalRead.
 class LoadCell
 {
 public:
-  explicit LoadCell(HX711 &load_cell);
+  LoadCell(uint8_t pin_dout, uint8_t pin_sck);
+
   void init();
 
+  // Call every loop. True when a fresh conversion was collected on THIS call,
+  // which is roughly 10 times a second -- the HX711's own rate at its default
+  // 10 SPS strapping. Costs one digitalRead the rest of the time.
+  //
+  // Interrupts are off inside HX711::read() for about 60 us on this part: a
+  // clock pulse stretched past 60 us puts the converter into power-down mid
+  // word and every subsequent bit reads back as 1. The limit-switch ISR can
+  // therefore be delayed by that much, which is harmless here -- it only sets
+  // a flag nothing reads, and the motion gate is a raw level read.
+  bool update();
+
+  // False when either pin is PIN_UNASSIGNED, exactly as the motor drivers use
+  // it. An unusable cell never touches a pin and always reports the rail.
+  bool usable() const { return m_usable; }
+
+  // True once this amplifier has ever produced a conversion -- i.e. there is
+  // really an HX711 on those two pins. main.cpp does not publish the array at
+  // all until at least one cell can say yes, so a rover with no cells fitted
+  // stays quiet instead of reporting three permanent faults.
+  bool has_reading() const { return m_has_reading; }
+
+  // The last conversion, in raw 24-bit signed counts.
+  long raw() const { return m_raw; }
+
+  // WHAT TO PUT ON THE WIRE for this cell, which is not always raw().
+  //
+  // A cell that has stopped converting must not keep publishing its last
+  // number, and it must not publish zero either: zero is what an EMPTY BOX
+  // reads, so a silently dead amplifier would look exactly like a box somebody
+  // had emptied. It reports the converter's negative rail instead, which
+  // aries_load_cells already treats as "unplugged, wired backwards or crushed"
+  // (raw_min in load_cells.yaml) and turns into a NaN weight plus a named
+  // fault, rather than a confident wrong kilogram.
+  int32_t reported(uint32_t now_ms) const;
+
+  // -(1 << 23). The HX711 is a 24-bit signed converter and this is the bottom
+  // of its range; it is `raw_min` in aries_load_cells/config/load_cells.yaml
+  // and the two have to agree for the fault path above to fire.
+  static constexpr int32_t kRail = -8388608L;
+
 private:
-  HX711 &m_load_cell;
+  uint8_t m_pin_dout;
+  uint8_t m_pin_sck;
+  bool m_usable;
+
+  HX711 m_hx711;
+
+  long m_raw;
+  bool m_has_reading;
+  uint32_t m_last_read_ms;
+
+  // How long a latched count stays believable. Five missed conversions at
+  // 10 SPS -- long enough that ordinary jitter never trips it, short enough
+  // that a cable pulled mid-task shows up within half a second. The host's own
+  // timeout_s of 2.0 s is the coarser backstop for the whole board going away.
+  static constexpr uint32_t kStaleMs = 500;
 };
 
 #endif

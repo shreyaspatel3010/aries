@@ -27,6 +27,9 @@
 //   linact/state               UInt8    1=extend 2=retract 3/4=home    bin_actuator
 //   linact/cext                Float32  signed mm, sample bin fore/aft bin_actuator
 //   sand_box/lid/cmd           Float32  0=closed 1=open                lid_servo
+//   load_cells/raw             Int32MultiArray  three RAW converter    load_cell_*
+//                                       counts, 10 Hz, in the order
+//                                       sand box / stone box / bin
 //
 // THE TOPIC NAMES AND THE C++ NAMES DELIBERATELY DIFFER for the drill's three
 // axes. The topics are the wire contract with aries_bringup's drill_driver
@@ -68,6 +71,7 @@
 
 #include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/int32_multi_array.h>
 #include <std_msgs/msg/u_int32.h>
 #include <std_msgs/msg/u_int64.h>
 #include <std_msgs/msg/u_int8.h>
@@ -94,6 +98,12 @@ static const uint32_t MOTOR_COMMAND_TIMEOUT_MS = 500;
 // /gripper/state publish period. 100 Hz matches the ros2_control loop the
 // gripper hardware interface runs at.
 static const uint32_t GRIPPER_STATE_PERIOD_MS = 10;
+
+// load_cells/raw publish period. 10 Hz, matching publish_rate_hz in
+// aries_load_cells/config/load_cells.yaml and the HX711's own 10 SPS: faster
+// here would republish the same conversion under a new timestamp, which reads
+// as a live sensor and is not one.
+static const uint32_t LOAD_CELL_PERIOD_MS = 100;
 
 // THE ROS DOMAIN. MUST MATCH network.domain_id IN
 // src/aries_common/config/devices.yaml.
@@ -195,6 +205,61 @@ LimitSwitch switch_feed_top(LIMIT_SWITCH2, 50);
 // event, it is rare, and a dropped edge is exactly the sample that matters.
 rcl_publisher_t drill_limits_pub;
 std_msgs__msg__UInt8 drill_limits_msg;
+
+// --- Load cells -------------------------------------------------------------
+//
+// Three HX711 amplifiers, each with its own private DT/SCK pair -- NOT the
+// usual shared-clock chain. Six pins. See pins.h and PINOUT.md.
+//
+// THE CONSTRUCTION ORDER BELOW IS THE WIRE FORMAT. load_cells/raw carries one
+// element per cell in the order of `cells` in
+// aries_load_cells/config/load_cells.yaml:
+//
+//     ["sand_box", "stone_box", "drill_container"]
+//
+// The firmware sends no names, so there is nothing anywhere to catch a swap:
+// exchange two entries here and the sand box reports the stone, both numbers
+// stay entirely plausible, and no log line anywhere says a word.
+//
+// RAW COUNTS, NOT KILOGRAMS. Scale, offset and tare live in that package's
+// YAML so a recalibration is an edit and a relaunch rather than a reflash with
+// the rover open, and this board stays a thing that reads ADCs.
+#define LOAD_CELL_COUNT 3
+LoadCell load_cells[LOAD_CELL_COUNT] = {
+    LoadCell(HX711_SAND_BOX_DT, HX711_SAND_BOX_SCK),
+    LoadCell(HX711_STONE_BOX_DT, HX711_STONE_BOX_SCK),
+    LoadCell(HX711_DRILL_CONTAINER_DT, HX711_DRILL_CONTAINER_SCK),
+};
+
+rcl_publisher_t load_cells_raw_pub;
+std_msgs__msg__Int32MultiArray load_cells_raw_msg;
+
+// THE MESSAGE BODY, AND IT HAS TO BE HANDED TO THE MESSAGE BY HAND.
+//
+// Int32MultiArray is the first message on this board with a DYNAMIC ARRAY in
+// it, and micro-ROS does not allocate one for you. The message is a zero-filled
+// global, so `data.data` is NULL and `data.capacity` is 0 until something
+// assigns them -- and rcl_publish on that does not fail loudly, it serialises a
+// zero-length array. The host then reports "load_cells/raw carried 0 counts for
+// 3 cells; ignoring the message" forever while every entity looks perfectly
+// healthy on both ends.
+//
+// Static, not malloc'd: the size is fixed at three and the board has no
+// business taking a heap allocation on a path this hot.
+static int32_t load_cells_raw_buf[LOAD_CELL_COUNT];
+
+// Whether any amplifier has ever answered. Until one has, the array is NOT
+// published at all.
+//
+// The alternative -- publish three rails from the first second -- is worse in
+// the case that is true today: no cells fitted, and the host would show three
+// standing faults that mean nothing more than "there is no hardware here". A
+// silent topic is exactly what aries_load_cells' own "no counts yet - is the
+// Teensy's firmware publishing?" message is for. Once ONE cell is alive the
+// array goes out complete every cycle, rails included, so a single unplugged
+// amplifier among three working ones is loud rather than reported as an empty
+// box.
+static bool load_cells_present = false;
 
 // --- Pin scan: WHERE IS THE SWITCH ACTUALLY WIRED? --------------------------
 //
@@ -476,9 +541,34 @@ static bool create_entities()
     return false;
   entities_stage = 12;
 
-  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 7, &allocator))
+  // RELIABLE, AND THAT IS NOT A PREFERENCE. The rate argues for best effort --
+  // 10 Hz, newest supersedes -- but aries_load_cells subscribes with
+  // `create_subscription(Int32MultiArray, ..., 10)`, which is rclpy's DEFAULT
+  // QoS, which is RELIABLE. A BEST_EFFORT publisher and a RELIABLE subscriber
+  // are an incompatible pair and DDS makes no match at all: both sides list the
+  // topic, `ros2 topic info` shows a publisher and a subscriber, and not one
+  // message is ever delivered. That is the same trap /gripper/state documents
+  // above, from the other direction. Change this only together with the QoS on
+  // the host subscription.
+  //
+  // FOURTH PUBLISHER. RMW_UXRCE_MAX_PUBLISHERS is 4 by default in
+  // micro_ros_platformio and colcon.meta at the project root raises it to 5 --
+  // without that, this init fails, create_entities() bails, and the board sits
+  // in WAITING_AGENT with USB enumerated, looking exactly like an unflashed
+  // Teensy. Check that file before adding a fifth.
+  //
+  // No leading slash under an empty namespace, as stacklight_subscription is,
+  // which resolves to /load_cells/raw -- the name load_cells.yaml names.
+  if (RCL_RET_OK != rclc_publisher_init_default(
+                        &load_cells_raw_pub, &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray),
+                        "load_cells/raw"))
     return false;
   entities_stage = 13;
+
+  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 7, &allocator))
+    return false;
+  entities_stage = 14;
 
   rclc_executor_add_subscription(&executor, &gservo_cmd_sub, &gservo_cmd_msg,
                                  &gservo_cmd_callback, ON_NEW_DATA);
@@ -506,8 +596,10 @@ static void destroy_entities()
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
   // Reverse creation order.
-  if (entities_stage >= 13)
+  if (entities_stage >= 14)
     rclc_executor_fini(&executor);
+  if (entities_stage >= 13)
+    IGNORE_RC(rcl_publisher_fini(&load_cells_raw_pub, &node));
   if (entities_stage >= 12)
     IGNORE_RC(rcl_publisher_fini(&pin_scan_pub, &node));
   if (entities_stage >= 11)
@@ -711,6 +803,28 @@ void setup()
   gservo.init();
   lid_servo.init();
 
+  for (uint8_t i = 0; i < LOAD_CELL_COUNT; ++i)
+    load_cells[i].init();
+
+  // Point the message at its buffer ONCE, here, rather than inside
+  // create_entities(). The message and the buffer are both globals that
+  // outlive every agent session, and create_entities() runs again on every
+  // reconnect -- so doing it here means a reconnect cannot leave the message
+  // pointing at nothing. See the note on load_cells_raw_buf for what an
+  // unassigned sequence actually does (it publishes, emptily, in silence).
+  load_cells_raw_msg.data.data = load_cells_raw_buf;
+  load_cells_raw_msg.data.size = LOAD_CELL_COUNT;
+  load_cells_raw_msg.data.capacity = LOAD_CELL_COUNT;
+  // No dimensions. The layout block is optional in Int32MultiArray and
+  // aries_load_cells reads msg.data alone, so an empty dim sequence keeps three
+  // rosidl strings off a board that would have to allocate them. It still has
+  // to be explicitly empty rather than merely zeroed by accident, because
+  // serialisation walks it.
+  load_cells_raw_msg.layout.dim.data = NULL;
+  load_cells_raw_msg.layout.dim.size = 0;
+  load_cells_raw_msg.layout.dim.capacity = 0;
+  load_cells_raw_msg.layout.data_offset = 0;
+
   set_microros_serial_transports(Serial);
 
   // No blocking handshake here either. The loop's state machine does the
@@ -731,6 +845,20 @@ void loop()
   // agent ever connected it still slews to, and holds, CLOSED.
   gservo.update();
   lid_servo.update();
+
+  // Also regardless of agent state, for two reasons. The counts are wanted the
+  // instant the link comes up rather than 100 ms later, and -- the one that
+  // matters -- polling is how a cell ever gets to say it exists at all. Gate
+  // this on the agent and a board that has been sitting unconnected reports
+  // three rails for its first cycle after every reconnect.
+  //
+  // Each call is one digitalRead per cell unless a conversion is actually
+  // waiting, which is 10 times a second per cell.
+  for (uint8_t i = 0; i < LOAD_CELL_COUNT; ++i)
+  {
+    if (load_cells[i].update())
+      load_cells_present = true;
+  }
 
   // Watchdog. Also covers the disconnected case: no commands can arrive, so
   // this is what actually stops a motor that was running when the link died.
@@ -806,6 +934,24 @@ void loop()
         last_limits_pub_ms = millis();
         drill_limits_msg.data = bits;
         IGNORE_RC(rcl_publish(&drill_limits_pub, &drill_limits_msg, NULL));
+      }
+    }
+
+    // Every cycle, unconditionally -- no publish-on-change and no dead band.
+    // This is a continuous measurement of a mass being poured, and the host is
+    // averaging it (filter_samples in load_cells.yaml) and timing it
+    // (timeout_s), both of which need the samples to keep arriving. `valid` on
+    // the bin's number is the host's job and it never withholds the number.
+    if (load_cells_present)
+    {
+      static uint32_t last_cells_pub_ms = 0;
+      const uint32_t cells_now = millis();
+      if (cells_now - last_cells_pub_ms >= LOAD_CELL_PERIOD_MS)
+      {
+        last_cells_pub_ms = cells_now;
+        for (uint8_t i = 0; i < LOAD_CELL_COUNT; ++i)
+          load_cells_raw_buf[i] = load_cells[i].reported(cells_now);
+        IGNORE_RC(rcl_publish(&load_cells_raw_pub, &load_cells_raw_msg, NULL));
       }
     }
 

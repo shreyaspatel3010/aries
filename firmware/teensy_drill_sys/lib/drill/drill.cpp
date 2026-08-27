@@ -377,9 +377,64 @@ bool LimitSwitch::is_at_stop() const
   return digitalRead(m_pin_switch) == LOW;
 }
 
-LoadCell::LoadCell(HX711 &load_cell)
-    : m_load_cell(load_cell) {
-        /*TODO: Definition -- see the class comment in drill.h*/
-      };
+LoadCell::LoadCell(uint8_t pin_dout, uint8_t pin_sck)
+    : m_pin_dout(pin_dout),
+      m_pin_sck(pin_sck),
+      m_usable(PIN_IS_ASSIGNED(pin_dout) && PIN_IS_ASSIGNED(pin_sck)),
+      m_raw(0),
+      m_has_reading(false),
+      m_last_read_ms(0) {};
 
-void LoadCell::init() { /*TODO: Definition*/ };
+void LoadCell::init()
+{
+  if (!m_usable)
+    return;
+
+  // Gain 128, channel A -- the input the amplifier boards wire the bridge to,
+  // and the part's power-up default, so this is stating the existing state
+  // rather than changing it. Channel B exists at gain 32 and nothing here uses
+  // it; selecting it costs an extra clock pulse per read and halves the
+  // effective rate, because the channel only changes on the NEXT conversion.
+  m_hx711.begin(m_pin_dout, m_pin_sck, 128);
+
+  // NO PRIMING READ HERE, deliberately. begin() ends with a read() in some
+  // versions of this library and the obvious next step is to take one more to
+  // have a number in hand -- but setup() runs before the agent connects and
+  // before the motors are known to be stopped, and read() blocks forever on an
+  // amplifier that is not there. The first count arrives from update(), on the
+  // loop, where waiting for it costs nothing.
+}
+
+bool LoadCell::update()
+{
+  if (!m_usable)
+    return false;
+
+  // is_ready() is a single digitalRead of DOUT: LOW means a conversion is
+  // waiting. Everything about not blocking this board hangs off asking that
+  // question first -- see the class comment in drill.h.
+  if (!m_hx711.is_ready())
+    return false;
+
+  m_raw = m_hx711.read();
+  m_has_reading = true;
+  m_last_read_ms = millis();
+  return true;
+}
+
+int32_t LoadCell::reported(uint32_t now_ms) const
+{
+  if (!m_usable || !m_has_reading)
+    return kRail;
+  if (now_ms - m_last_read_ms > kStaleMs)
+    return kRail;
+
+  // The HX711 cannot produce anything outside its 24-bit signed range, so this
+  // clamp is not about the converter. It is about the sentinel: a genuine
+  // reading that happened to land exactly on kRail would be read by the host as
+  // a dead cell. Pushing it one count off is a lie of 1/8388608 of full scale,
+  // and it keeps "reported the rail" meaning exactly one thing.
+  if (m_raw <= kRail)
+    return kRail + 1;
+  return (int32_t)m_raw;
+}

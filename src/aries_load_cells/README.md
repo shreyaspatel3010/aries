@@ -97,14 +97,14 @@ Dead reckoning drifts. Two things bound it, and one retires it:
   it in `parked_switch_topic`. It then overrides the dead reckoning completely
   and re-datums it on every trip to the park end. Nothing publishes one yet.
 
-## The firmware contract — not written yet
+## The firmware contract
 
-The firmware is `firmware/teensy_drill_sys`. Its `LoadCell` class
-(`lib/drill/drill.h`) is a stub with no definition and nothing constructs one,
-so nothing publishes this topic yet; the HX711 pins are reserved but unassigned
-in `include/pins.h`. See that project's `PINOUT.md`.
+The firmware is `firmware/teensy_drill_sys`. `LoadCell` (`lib/drill/drill.h`) is
+implemented, `main.cpp` constructs one per amplifier, and the HX711 pins are
+assigned in `include/pins.h` — DT/SCK 17/16, 34/33, 32/31, **a private pair per
+cell, not a shared clock**. See that project's `PINOUT.md`.
 
-It is expected to publish **one** topic:
+It publishes **one** topic:
 
 ```
 load_cells/raw    std_msgs/Int32MultiArray, three elements,
@@ -113,6 +113,26 @@ load_cells/raw    std_msgs/Int32MultiArray, three elements,
 
 declared with no leading slash under an empty namespace, exactly as
 `stacklight_subscription` is, which resolves to `/load_cells/raw`.
+
+**RELIABLE, on both ends.** The subscription in `load_cells.py` is created with
+default rclpy QoS, which is reliable, so the firmware publisher is
+`rclc_publisher_init_default` and not the best-effort one its 10 Hz rate would
+otherwise argue for. A best-effort publisher against a reliable subscriber is an
+incompatible pair: DDS makes no match, `ros2 topic info` shows one of each, and
+nothing is ever delivered. Change one end only with the other.
+
+**A cell that is not reporting sends the rail, not zero.** An amplifier that is
+unplugged, unpowered or dead — and one whose last conversion is more than 500 ms
+old — is published as `raw_min` (`-8388608`), which lands on the fault path
+below and comes out as a NaN weight. It is deliberately not zero: zero is what
+an *empty box* reads, so a dead cell would otherwise be indistinguishable from
+one somebody had just emptied.
+
+**The topic stays silent until at least one amplifier answers.** With no cells
+fitted the board publishes nothing at all rather than three standing faults, and
+`load_cells.py` says "no counts yet — is the Teensy's firmware publishing?".
+Once any one cell is alive the full array goes out every cycle, rails included,
+so one unplugged amplifier among three working ones is loud.
 
 **Raw counts, not kilograms.** A cell's scale and zero are properties of the
 cell, its amplifier and whatever it is bolted to; they are found by hanging
@@ -127,14 +147,18 @@ sketch, every recalibration is a trip to the Arduino IDE with the rover open.
 rather than something baked into a precompiled `libmicroros.a` the way
 `micro_ros_arduino` shipped it. Raising it is an edit.
 
-It is still one publisher, for the better reason: three cells read in sequence
-off one HX711 chain were **sampled together**, and splitting them across three
-topics throws that away -- the subscriber then has to re-pair samples that
-arrived as a set, and gets it wrong at exactly the moment the link is slow.
+It is still one publisher, for the better reason: the three cells are polled
+together on one pass of the firmware's loop and go out as one set, and splitting
+them across three topics throws that away -- the subscriber then has to re-pair
+samples that arrived together, and gets it wrong at exactly the moment the link
+is slow.
 
-Do note that the firmware already spends six subscriptions and one publisher,
-against a `colcon.meta` that allows eight and four. Adding to it means checking
-that file, not just adding the entity.
+Do note that the firmware spends seven subscriptions and four publishers
+(`/gripper/state`, `drill/limits`, `drill/pin_scan`, and this one) against a
+`colcon.meta` that allows eight and five. Adding to it means checking that file,
+not just adding the entity — and after editing it, `./flash.sh --clean`, because
+the micro-ROS library is cached and a config change to a cached library silently
+does nothing.
 
 If the firmware ends up with three separate `std_msgs/Int32` publishers anyway,
 list them in `raw_topics` and this node reads those instead.
