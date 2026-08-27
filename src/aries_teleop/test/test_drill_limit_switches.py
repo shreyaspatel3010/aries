@@ -11,10 +11,19 @@ an untouched d-pad has to publish exactly zero, however far the measurement has
 drifted from anything.
 
 LIMIT SWITCHES. drill_motor has one at the bottom of its travel and one at the
-top, and the bin's actuator has one at each end of its stroke. A switch cuts
-the motor in ONE direction: sitting on the bottom switch must still leave the
-carriage free to come back up, or the drill parks itself at the bottom of the
-mast for good.
+top. A switch cuts the motor in ONE direction: sitting on the bottom switch
+must still leave the carriage free to come back up, or the drill parks itself
+at the bottom of the mast for good.
+
+THE BIN HAS NONE THAT ANYTHING CAN READ, and this file used to claim it did.
+firmware/teensy_drill_sys/include/pins.h maps exactly two switches, both on the
+feed carriage, and says the bin's pair is not in the map. The bin has no
+encoder either, so its `position` here is dead reckoning from an ASSUMED q = 0
+start -- and container_upper IS 0.0, so that assumed start sat exactly on the
+top stop and the first press toward it was cut every time. On 2026-08-27 that
+put "drill_container_joint: top limit switch, motor cut" on repeat while the
+actuator never moved. An axis is gated only when container_has_limits /
+motor_has_limits says it really has switches.
 
 Callbacks are driven by hand against a faked clock. No ROS graph, no
 middleware, no simulator.
@@ -231,8 +240,33 @@ class TestFeedLimitSwitches:
         _hold(instance, clock, trigger=1.0, dpad_v=-1.0)
         assert set(sent["motor"]) == {0.0}
 
-    def test_container_stops_at_both_ends_of_the_stroke(self, drill):
+    def test_the_bin_is_not_gated_because_it_has_no_switches(self, drill):
+        """The regression of 2026-08-27, in the state the rover boots in.
+
+        Nothing measures the bin, so it dead-reckons from q = 0 -- which IS
+        container_upper. Gated, the very first press toward the park end was
+        cut and the actuator never moved once.
+        """
         instance, clock, sent = drill
+        assert not instance.container.has_limits
+        assert not instance.container.measured
+        assert instance.container.position == instance.container.upper
+
+        _hold(instance, clock, trigger=1.0, dpad_h=-1.0)   # RIGHT = park = +X
+        assert sent["container"][-1] > 0.0, "the bin must move off its assumed start"
+        assert 0.0 not in set(sent["container"]), "no phantom switch may cut it"
+
+        sent["container"].clear()
+        _hold(instance, clock, trigger=1.0, dpad_h=1.0)    # LEFT = under the bit
+        assert sent["container"][-1] < 0.0
+
+    def test_the_bin_gates_once_its_switches_are_declared(self, drill):
+        """The gating itself still works -- it is the bin's `has_limits` that
+        is false, not the mechanism that is gone. When the bin's pair is wired
+        and added to pins.h, container_has_limits: true restores this."""
+        instance, clock, sent = drill
+        instance.container.has_limits = True
+
         # Parked (q = 0, the upper end): further +X is blocked, -X is free.
         _measure(instance, container=instance.container.upper)
         _hold(instance, clock, trigger=1.0, dpad_h=-1.0)   # RIGHT = park = +X

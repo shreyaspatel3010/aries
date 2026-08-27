@@ -222,6 +222,23 @@ drill_joystick:
     # Where each limit switch trips, measured back from the stop.
     limit_margin: 0.002
 
+    # WHICH AXES HAVE SWITCHES AT ALL.
+    #
+    # The feed carriage has two, bottom and top -- firmware/teensy_drill_sys/
+    # include/pins.h maps them as LIMIT_SWITCH1/2 (pins 4 and 5 since
+    # 2026-08-27).
+    #
+    # The sample bin has NONE that anything can read. The mechanism has a pair,
+    # but they are not in the loom or the firmware pin map, and the bin has no
+    # encoder either -- so `position` for that axis is dead reckoning from an
+    # ASSUMED q = 0 start. container_upper IS 0.0, so that assumed start sat
+    # exactly on the top stop and the first press toward it was cut every time:
+    # the "drill_container_joint: top limit switch, motor cut" flood of
+    # 2026-08-27, with the actuator never moving. Gating on an invented
+    # position protects nothing; it only refuses to move.
+    motor_has_limits: true
+    container_has_limits: false
+
     # drill_bit_joint's URDF velocity limit is 60 rad/s. Half of it (~285 rpm)
     # is the manual ceiling.
     bit_max_speed: 30.0

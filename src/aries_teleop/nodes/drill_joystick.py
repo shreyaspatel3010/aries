@@ -76,15 +76,28 @@ class LimitSwitchedAxis:
     `lower`/`upper` are the URDF joint limits - the mechanical stops. The
     switches sit `margin` inside them, and only ever block the direction that
     runs further into the stop.
+
+    `has_limits` is whether this axis HAS switches at all. Only the feed
+    carriage does: firmware/teensy_drill_sys/include/pins.h maps exactly two,
+    both on the feed, and says so - "BOTH SWITCHES ARE ON THE FEED CARRIAGE"
+    and "the BIN's two switches are not in this map ... until then the bin is
+    dead-reckoned". With no switch and no encoder the bin's `position` here is
+    pure dead reckoning from an ASSUMED q = 0 start, and gating on an invented
+    number does not protect anything - it just refuses to move. Because the
+    bin's `upper` IS 0.0, that assumed start sat exactly on the top stop and
+    every command toward it was cut on the first press, which is what the
+    "drill_container_joint: top limit switch, motor cut" flood was on
+    2026-08-27. Off for the bin, on for the feed.
     """
 
-    def __init__(self, joint, lower, upper, speed, sign, margin):
+    def __init__(self, joint, lower, upper, speed, sign, margin, has_limits=True):
         self.joint = joint
         self.lower = float(lower)
         self.upper = float(upper)
         self.speed = float(speed)
         self.sign = float(sign)
         self.margin = float(margin)
+        self.has_limits = bool(has_limits)
         # Dead reckoning starts at the CAD home, which is q = 0 on both axes,
         # and is replaced by the first real measurement that arrives.
         self.position = 0.0
@@ -105,10 +118,14 @@ class LimitSwitchedAxis:
         rate = self.sign * float(command) * self.speed
 
         trip = 0
-        if rate > 0.0 and self.position >= self.upper - self.margin:
-            rate, trip = 0.0, 1
-        elif rate < 0.0 and self.position <= self.lower + self.margin:
-            rate, trip = 0.0, -1
+        # An axis with no switches is never cut here. See the class docstring:
+        # its position is dead reckoning, not a measurement, so a cut based on
+        # it stops a healthy motor and reports a switch that does not exist.
+        if self.has_limits:
+            if rate > 0.0 and self.position >= self.upper - self.margin:
+                rate, trip = 0.0, 1
+            elif rate < 0.0 and self.position <= self.lower + self.margin:
+                rate, trip = 0.0, -1
 
         if not self.measured:
             self.position = max(self.lower, min(self.upper,
@@ -179,6 +196,15 @@ class DrillJoystick(Node):
         # switch is placed to cut the motor before anything lands on anything.
         self.declare_parameter("limit_margin", 0.002)
 
+        # WHICH AXES ACTUALLY HAVE SWITCHES. The feed carriage does - two of
+        # them, bottom and top, on the pins pins.h calls LIMIT_SWITCH1/2. The
+        # sample bin does NOT: the mechanism has a pair for it but they are not
+        # in the loom or the firmware pin map, so nothing can read them. See
+        # LimitSwitchedAxis' docstring for why gating the bin on dead reckoning
+        # blocked it outright instead of protecting it.
+        self.declare_parameter("motor_has_limits", True)
+        self.declare_parameter("container_has_limits", False)
+
         # drill_bit_joint's URDF velocity limit is 60 rad/s; half of that is a
         # sane manual ceiling (~285 rpm). The auger is continuous - it has no
         # travel, so it has no limit switches either.
@@ -231,14 +257,16 @@ class DrillJoystick(Node):
             upper=float(g("motor_upper").value),
             speed=float(g("motor_speed").value),
             sign=-1.0 if bool(g("invert_motor").value) else 1.0,
-            margin=margin)
+            margin=margin,
+            has_limits=bool(g("motor_has_limits").value))
         self.container = LimitSwitchedAxis(
             joint=str(g("container_joint").value),
             lower=float(g("container_lower").value),
             upper=float(g("container_upper").value),
             speed=float(g("container_speed").value),
             sign=-1.0 if bool(g("invert_container").value) else 1.0,
-            margin=margin)
+            margin=margin,
+            has_limits=bool(g("container_has_limits").value))
         self.axes = {self.motor.joint: self.motor,
                      self.container.joint: self.container}
 
