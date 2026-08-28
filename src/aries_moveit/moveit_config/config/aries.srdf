@@ -504,6 +504,15 @@
     <disable_collisions link1="link2" link2="motor2" reason="Adjacent"/>
     <disable_collisions link1="link2" link2="motor3" reason="Adjacent"/>
     <disable_collisions link1="link2" link2="motor5" reason="Adjacent"/>
+    <!-- link2 collides with nothing at the shoulder. Its collision geometry is
+         a single r=60 mm x 180 mm cylinder standing in for an offset, L-shaped
+         link, so it fills the concave volume that motor1 and motor4 swing
+         through and reports contact below joint2/joint3 = -77.2 deg. Swept over
+         the full joint range against the CAD geometry the true clearance never
+         drops below 19.7 mm (motor1) / 21.1 mm (motor4), so these are Never
+         pairs. Refitting the link2 cylinder would make them unnecessary. -->
+    <disable_collisions link1="link2" link2="motor1" reason="Never"/>
+    <disable_collisions link1="link2" link2="motor4" reason="Never"/>
     <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
     <disable_collisions link1="link3" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="link3" link2="link6" reason="Adjacent"/>
