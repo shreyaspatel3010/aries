@@ -38,6 +38,7 @@ SUDOERS_FILE="$PREFIX/etc/sudoers.d/rover_can"
 UDEV_DIR="$PREFIX/etc/udev/rules.d"
 REALSENSE_RULES="$UDEV_DIR/99-aries-realsense.rules"
 TEENSY_RULES="$UDEV_DIR/99-aries-teensy.rules"
+SERVO_BUS_RULES="$UDEV_DIR/99-aries-servo-bus.rules"
 SYSCTL_FILE="$PREFIX/etc/sysctl.d/99-aries-dds.conf"
 REQUIRED_GROUPS=(dialout plugdev input video)
 
@@ -199,6 +200,43 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04[789ABCD]?", MO
 KERNEL=="ttyACM*", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04[789B]?", MODE:="0666"'
 install_file "$TEENSY_RULES" "$TEENSY_RULE" 0644
 
+# ST3215 bus-servo adapter: a stable name for bench gear that has none.
+#
+# The adapter is a generic USB-serial bridge, so it lands on /dev/ttyUSB* or
+# /dev/ttyACM* and the NUMBER MOVES with whatever else is plugged in. That is
+# not a hypothetical: `st3215_test.py --port /dev/ttyACM0` is the documented
+# invocation and it fails with ENOENT on any machine where the number came out
+# differently -- or where the adapter simply is not attached, which looks
+# identical from the error.
+#
+# by-id would normally be the answer (it is, for the Teensy) but it does not
+# work for this class of device: udev builds /dev/serial/by-id/ from ID_SERIAL,
+# and a CH340 has no iSerialNumber, so every CH340 ever made answers to
+# usb-1a86_USB_Serial-if00-port0. Stable, but not unique. Hence our own name.
+#
+# Matching the bridge chip cannot steal a symlink from another Aries device:
+# the Teensy is 16c0:04xx (native CDC) and the MicroStrain 199b:3065 / 0483:5740
+# ("Lord Microstrain"), none of which appear here. It CAN collide with an
+# unrelated generic adapter on the same machine, and these are the commonest
+# bridge chips there are -- so set servo_bus.serial in devices.yaml to pin one
+# unit, and this becomes a single serial-matched line instead.
+SERVO_BUS_SERIAL="$(read_device servo_bus serial "")"
+SERVO_BUS_HEAD='# Installed by aries/scripts/setup_system.sh — do not edit by hand.
+# Feetech ST3215 bus-servo adapter -> /dev/aries_servo_bus (scripts/st3215_test.py).
+# Regenerated from servo_bus.* in aries_common/config/devices.yaml.'
+if [ -n "$SERVO_BUS_SERIAL" ]; then
+    SERVO_BUS_RULE="$SERVO_BUS_HEAD
+# Pinned to one adapter by its USB serial.
+SUBSYSTEM==\"tty\", KERNEL==\"ttyUSB*|ttyACM*\", ATTRS{serial}==\"$SERVO_BUS_SERIAL\", GROUP=\"dialout\", MODE=\"0660\", SYMLINK+=\"aries_servo_bus\""
+else
+    SERVO_BUS_RULE="$SERVO_BUS_HEAD
+# Matched by bridge chip: WCH CH340/CH343, Silabs CP210x, FTDI FT232.
+SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"1a86\", GROUP=\"dialout\", MODE=\"0660\", SYMLINK+=\"aries_servo_bus\"
+SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"10c4\", ATTRS{idProduct}==\"ea60\", GROUP=\"dialout\", MODE=\"0660\", SYMLINK+=\"aries_servo_bus\"
+SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"0403\", ATTRS{idProduct}==\"6001\", GROUP=\"dialout\", MODE=\"0660\", SYMLINK+=\"aries_servo_bus\""
+fi
+install_file "$SERVO_BUS_RULES" "$SERVO_BUS_RULE" 0644
+
 if [ "$MODE" = install ] && [ "$CHANGED" -eq 1 ]; then
     if rehearsing; then
         warn "udev reload skipped (rehearsal)"
@@ -206,6 +244,37 @@ if [ "$MODE" = install ] && [ "$CHANGED" -eq 1 ]; then
         as_root udevadm control --reload-rules
         as_root udevadm trigger
         changed "udev rules reloaded"
+    fi
+fi
+
+# Report what the servo-bus rule actually resolved to. A udev rule for a device
+# that is not plugged in installs perfectly happily and tells you nothing, and
+# an absent adapter is indistinguishable from a wrong port number at the point
+# where the bench script fails -- so name which of the two it is here.
+if ! rehearsing; then
+    if [ -e /dev/aries_servo_bus ]; then
+        ok "/dev/aries_servo_bus -> $(readlink -f /dev/aries_servo_bus)"
+    else
+        servo_found=""
+        for servo_dev in /dev/ttyUSB[0-9]* /dev/ttyACM[0-9]*; do
+            [ -e "$servo_dev" ] || continue
+            servo_props="$(udevadm info -q property -n "$servo_dev" 2>/dev/null || true)"
+            case "$(printf '%s\n' "$servo_props" | sed -n 's/^ID_VENDOR_ID=//p')" in
+                1a86|10c4|0403)
+                    servo_found="$servo_dev"
+                    servo_serial="$(printf '%s\n' "$servo_props" | sed -n 's/^ID_SERIAL_SHORT=//p')"
+                    ;;
+            esac
+        done
+        if [ -n "$servo_found" ]; then
+            # The rule matched nothing but the chip is there: either udev has
+            # not re-triggered yet, or servo_bus.serial names a different unit.
+            warn "servo adapter at $servo_found but no /dev/aries_servo_bus yet — replug it, or run: sudo udevadm trigger"
+            [ -n "${servo_serial:-}" ] && \
+                warn "its USB serial is $servo_serial (put it in servo_bus.serial to pin this unit)"
+        else
+            ok "no ST3215 bus-servo adapter attached (bench gear; the rule is ready for when it is)"
+        fi
     fi
 fi
 
@@ -340,7 +409,7 @@ else
     [ "$MODE" = install ] && fail "$SUDOERS_FILE missing" || warn "$SUDOERS_FILE would be created"
 fi
 
-for f in "$REALSENSE_RULES" "$TEENSY_RULES" "$SYSCTL_FILE"; do
+for f in "$REALSENSE_RULES" "$TEENSY_RULES" "$SERVO_BUS_RULES" "$SYSCTL_FILE"; do
     if [ -f "$f" ]; then ok "$(basename "$f") installed"
     elif [ "$MODE" = install ]; then fail "$(basename "$f") missing"
     fi

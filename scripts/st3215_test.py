@@ -10,14 +10,22 @@ missing the script re-execs itself under /usr/bin/python3 (apt python3-serial).
     python3 scripts/st3215_test.py
     python3 scripts/st3215_test.py --deg 90 --speed 400 --repeat 3
     python3 scripts/st3215_test.py --scan
+    python3 scripts/st3215_test.py --where     # position + state, moves nothing
+    python3 scripts/st3215_test.py --goto 120 --dir ccw   # long way round
     python3 scripts/st3215_test.py --monitor    # torque off, back-drive by hand
+
+The port is found rather than assumed -- see resolve_port() below -- so none of
+these needs --port once the adapter is plugged in.
 
 Note: writing a goal position re-enables torque automatically, so "torque off"
 only sticks if no goal is written afterwards.
 """
 import argparse
+import glob
+import os
 import sys
 import time
+from pathlib import Path
 
 try:
     import serial
@@ -175,6 +183,29 @@ def wrap_delta(d):
     return d
 
 
+def plan_travel(start, target, turns=0, direction="short"):
+    """Signed encoder steps to move, honouring a forced direction.
+
+    "short" is the old behaviour: whichever way round is nearer, never more
+    than 180 deg. "cw"/"ccw" force the sign instead, so a target just BEHIND
+    the horn becomes a near-full revolution the long way rather than a small
+    step back -- which is the entire point of asking for a direction.
+
+    Direction is defined by the ENCODER: cw = counts increasing, ccw = counts
+    decreasing. Whether that looks clockwise to you depends on which end of the
+    output shaft you are looking at, so naming the servo's own convention is
+    the only description that cannot be wrong.
+
+    With a forced direction the sign of `turns` is redundant and would only
+    contradict it, so its magnitude is used and the direction argument wins.
+    """
+    if direction == "short":
+        return wrap_delta(target - start) + turns * STEPS_PER_REV
+    if direction == "cw":
+        return (target - start) % STEPS_PER_REV + abs(turns) * STEPS_PER_REV
+    return -((start - target) % STEPS_PER_REV) - abs(turns) * STEPS_PER_REV
+
+
 def set_mode(sv, mode):
     """Switch position(0) / wheel(1). This is an EPROM write: it persists across
     power cycles, so it is only ever done on an explicit --mode request."""
@@ -188,21 +219,22 @@ def set_mode(sv, mode):
 
 
 def rotate_to(sv, target_deg, turns=0, max_speed=1500, min_speed=80, tol=8,
-              timeout=40.0):
+              timeout=40.0, direction="short"):
     """Continuous-rotation move that still lands on a chosen angle.
 
     Wheel mode ignores goal positions, so the loop is closed here: unwrap the
     encoder across the 4095->0 seam to track true travel, drive speed
     proportional to the remaining error, and re-correct after the coast settles.
-    `turns` adds whole revolutions before settling (sign picks the direction).
+    `turns` adds whole revolutions before settling. `direction` forces which
+    way round to approach: "short" (default, <=180 deg), "cw" or "ccw". See
+    plan_travel().
     """
     target = int(round(target_deg * STEPS_PER_REV / 360.0)) % STEPS_PER_REV
     start = sv.r16(R_PRES_POS)
     if start is None:
         raise RuntimeError("no position feedback")
 
-    short = wrap_delta(target - start)
-    remaining = short + turns * STEPS_PER_REV
+    remaining = plan_travel(start, target, turns, direction)
     if remaining == 0:
         return start, 0
 
@@ -295,6 +327,192 @@ def monitor(sv, hz=10.0):
               f"({(t['pos']-base)*360/STEPS_PER_REV:+.2f} deg) by hand since start")
 
 
+# ── finding the adapter ──────────────────────────────────────────────────────
+#
+# --port used to default to /dev/ttyACM0, which is a guess twice over: the
+# adapter may enumerate as ttyUSB* (CH340, CP210x, FT232) rather than ttyACM*,
+# and either number moves with whatever else was plugged in first. When the
+# guess is wrong pyserial raises a bare ENOENT that reads exactly like "the
+# adapter is unplugged", so you cannot tell the two apart from the traceback.
+#
+# Resolution order: --port, then the devices.yaml path (normally the
+# /dev/aries_servo_bus symlink from 99-aries-servo-bus.rules, installed by
+# scripts/setup_system.sh), then whatever USB-serial bridge is actually
+# attached. Anything explicit still wins.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEVICES_YAML = REPO_ROOT / "src" / "aries_common" / "config" / "devices.yaml"
+
+# WCH CH340/CH343, Silabs CP210x, FTDI FT232 — the bridges these adapters ship
+# with, and the same list 99-aries-servo-bus.rules matches on. Kept in sync by
+# hand; they are chip IDs, so they change about never.
+BRIDGE_VIDS = ("1a86", "10c4", "0403")
+
+
+def devices_entry(key, default=None):
+    """servo_bus.<key> from devices.yaml, best-effort.
+
+    Deliberately NOT `from aries_common.devices import device`: this script
+    re-execs itself under /usr/bin/python3 to reach the apt pyserial, and that
+    interpreter has no ROS environment, so the import would fail exactly when
+    the script is being useful. A bench tool must not need a sourced workspace.
+    """
+    path = Path(os.environ.get("ARIES_DEVICES_FILE") or DEVICES_YAML)
+    try:
+        import yaml
+
+        entry = (yaml.safe_load(path.read_text()) or {}).get("servo_bus") or {}
+    except Exception:
+        return default
+    value = entry.get(key)
+    return default if value is None or value == "" else value
+
+
+def usb_ids(dev):
+    """(idVendor, idProduct) for a tty, or None if it is not on USB.
+
+    Walks up from the tty's device node rather than assuming a fixed depth:
+    a ttyUSB sits under usb-serial -> interface -> device, a ttyACM one level
+    higher, and hubs add more.
+    """
+    node = Path("/sys/class/tty") / Path(dev).name / "device"
+    try:
+        node = node.resolve(strict=True)
+    except OSError:
+        return None
+    for _ in range(8):
+        vid = node / "idVendor"
+        if vid.is_file():
+            try:
+                return vid.read_text().strip(), (node / "idProduct").read_text().strip()
+            except OSError:
+                return None
+        if node.parent == node:
+            break
+        node = node.parent
+    return None
+
+
+def serial_ports():
+    """Attached serial ttys, as (device, vendor_id, product_id)."""
+    found = []
+    for pattern in ("/dev/ttyUSB[0-9]*", "/dev/ttyACM[0-9]*"):
+        for dev in sorted(glob.glob(pattern)):
+            ids = usb_ids(dev)
+            found.append((dev, *(ids or (None, None))))
+    return found
+
+
+def resolve_port(explicit):
+    """The port to open, or a message explaining why there is not one."""
+    if explicit:
+        return explicit, None
+
+    configured = devices_entry("port")
+    if configured and os.path.exists(configured):
+        return configured, None
+
+    attached = serial_ports()
+    bridges = [dev for dev, vid, _ in attached if vid in BRIDGE_VIDS]
+    if len(bridges) == 1:
+        return bridges[0], None
+    if len(bridges) > 1:
+        return None, (
+            "More than one USB-serial adapter is attached and none of them is "
+            + f"{configured or 'the configured port'}:\n  " + "\n  ".join(bridges)
+            + "\nPass --port to choose, or set servo_bus.serial in "
+              "devices.yaml and re-run scripts/setup_system.sh to pin one."
+        )
+
+    if attached:
+        listed = "\n  ".join(f"{dev} (usb {vid}:{pid})" if vid else f"{dev} (not USB)"
+                             for dev, vid, pid in attached)
+        return None, (
+            "No USB-serial bridge that looks like a bus-servo adapter is "
+            f"attached. Serial ports that ARE here:\n  {listed}\n"
+            "Pass --port explicitly if one of these is the adapter."
+        )
+    return None, (
+        "No serial adapter is attached at all — /dev/ttyUSB* and /dev/ttyACM* "
+        "are both empty.\nPlug the ST3215 bus-servo adapter in (and power the "
+        "servo bus; the adapter enumerates on USB alone but the servo will not "
+        "answer without bus voltage).\nIf it IS plugged in, check it enumerated:"
+        "\n  journalctl -k -n 20 | grep -i tty"
+    )
+
+
+def read_state(sv, tries=3):
+    """Telemetry plus mode, retried field by field.
+
+    A single dropped reply is normal on this bus -- one in ~30 reads during
+    bench testing -- and a one-shot readout that prints "?" because of it is
+    worse than useless, because the next thing you do is doubt the servo.
+    Keep the first non-None answer for each field and re-ask for the rest.
+    """
+    state = dict(mode=None)
+    for _ in range(tries):
+        fresh = sv.telemetry()
+        fresh["mode"] = sv.r8(R_MODE)
+        for key, value in fresh.items():
+            if state.get(key) is None:
+                state[key] = value
+        if all(v is not None for v in state.values()):
+            break
+    return state
+
+
+def report(sv, port, baud):
+    """One-shot state readout. READS ONLY -- no goal position, no torque
+    change, no EPROM write -- so it is safe on a servo holding a load."""
+    s = read_state(sv)
+
+    def deg(steps):
+        return steps * 360 / STEPS_PER_REV
+
+    def line(label, value, unit="", extra=""):
+        print(f"  {label:<10} {value:>8}{unit}{extra}")
+
+    pos, mode = s["pos"], s["mode"]
+    print(f"ST3215 id={sv.sid} on {port} @ {baud}\n")
+    line("position", pos if pos is None else f"{pos}", " steps",
+         "" if pos is None else f"   {deg(pos):.1f} deg")
+    line("speed", "?" if s["speed"] is None else f"{s['speed']}", " steps/s",
+         "" if s["speed"] is None else f"   {deg(s['speed']):.1f} deg/s")
+    line("load", "?" if s["load"] is None else f"{s['load']}", "",
+         "" if s["load"] is None else f"         {abs(s['load'])/10:.1f}%")
+    line("current", "?" if s["ma"] is None else f"{s['ma']:.0f}", " mA")
+    line("voltage", "?" if s["volt"] is None else f"{s['volt']/10:.1f}", " V")
+    line("temp", "?" if s["temp"] is None else f"{s['temp']}", " C")
+    line("mode", "?" if mode is None else f"{mode}", "",
+         "" if mode is None else
+         f"         {'position' if mode == 0 else 'wheel' if mode == 1 else mode}")
+    line("torque", "?" if s["torque"] is None else
+         ("on" if s["torque"] else "off"))
+
+    if pos is None:
+        return 0
+
+    # The 50-4045 window only binds in POSITION mode. In wheel mode the horn
+    # turns continuously and the encoder just wraps, so printing a "largest
+    # --deg that fits" there would invent a limit that does not exist -- and
+    # --deg is refused in wheel mode anyway.
+    if mode != 0:
+        print("\n  wheel mode: rotation is continuous, no travel limit. "
+              "Use --goto/--spin;\n  --deg needs position mode.")
+        return 0
+
+    # The sweep runs out-and-back from wherever the horn is, so what you
+    # actually want to know before typing --deg is how much room is left on
+    # each side. Printing the position alone makes you work that out by hand.
+    up, down = POS_MAX - pos, pos - POS_MIN
+    print(f"\n  travel {POS_MIN}-{POS_MAX} steps ({deg(POS_MAX - POS_MIN):.0f} deg); "
+          f"room from here: +{deg(up):.0f} deg / -{deg(down):.0f} deg")
+    print(f"  largest --deg that fits from here: {deg(max(up, down)):.0f}")
+    if max(up, down) < POS_MAX - POS_MIN:
+        print(f"  mid-travel is {(POS_MIN + POS_MAX) // 2} "
+              f"({deg((POS_MIN + POS_MAX) // 2):.1f} deg)")
+    return 0
+
+
 def scan(port, baud, maxid=20):
     s = Servo(port, baud, 1, timeout=0.02)
     hits = [i for i in range(maxid + 1) if s.ping(i)]
@@ -304,8 +522,10 @@ def scan(port, baud, maxid=20):
 
 def main():
     ap = argparse.ArgumentParser(description="ST3215 bench sweep test")
-    ap.add_argument("--port", default="/dev/ttyACM0")
-    ap.add_argument("--baud", type=int, default=1000000)
+    ap.add_argument("--port", default=None,
+                    help="serial port. Default: servo_bus.port from "
+                         "devices.yaml, else the attached USB-serial adapter.")
+    ap.add_argument("--baud", type=int, default=devices_entry("baud", 1000000))
     ap.add_argument("--id", type=int, default=1)
     ap.add_argument("--deg", type=float, default=180.0, help="sweep angle each way")
     ap.add_argument("--speed", type=int, default=600,
@@ -318,6 +538,9 @@ def main():
                          "1950 at acc=10, and full ~2850 only at acc>=50.")
     ap.add_argument("--repeat", type=int, default=1, help="number of out-and-back cycles")
     ap.add_argument("--scan", action="store_true", help="just list responding IDs")
+    ap.add_argument("--where", action="store_true",
+                    help="print position and state, then exit. Reads only; "
+                         "moves nothing and changes no setting.")
     ap.add_argument("--monitor", action="store_true",
                     help="release torque and stream sensors; back-drive by hand")
     ap.add_argument("--mode", choices=("position", "wheel"),
@@ -327,14 +550,24 @@ def main():
                     help="continuous-rotation move to an absolute angle (needs "
                          "wheel mode). Software-closed loop, so it can cross the "
                          "0/360 seam freely.")
+    ap.add_argument("--dir", choices=("short", "cw", "ccw"), default="short",
+                    help="which way --goto approaches the target. short (default) "
+                         "takes the nearer way round, never more than 180 deg; "
+                         "cw drives the encoder count up, ccw drives it down, "
+                         "the long way round if that is what the target needs.")
     ap.add_argument("--turns", type=float, default=0,
-                    help="whole extra revolutions before settling on --goto; "
-                         "sign chooses direction")
+                    help="whole extra revolutions before settling on --goto. "
+                         "Sign chooses direction with --dir short; with --dir "
+                         "cw/ccw the direction wins and only the count is used.")
     ap.add_argument("--spin", type=int, metavar="STEPS_PER_S",
                     help="free continuous spin at this signed speed (wheel mode)")
     ap.add_argument("--seconds", type=float, default=3.0,
                     help="how long --spin runs")
     args = ap.parse_args()
+
+    args.port, why = resolve_port(args.port)
+    if args.port is None:
+        return why
 
     if args.scan:
         print(f"IDs responding on {args.port} @ {args.baud}: "
@@ -345,6 +578,11 @@ def main():
     if not sv.ping():
         sv.close()
         return f"No response from ID {args.id} on {args.port} @ {args.baud} baud."
+
+    if args.where:
+        rc = report(sv, args.port, args.baud)
+        sv.close()
+        return rc
 
     if args.monitor:
         monitor(sv)
@@ -377,10 +615,20 @@ def main():
                       f"({t*360/STEPS_PER_REV:+.0f} deg)")
             else:
                 p0 = sv.r16(R_PRES_POS)
-                print(f"at {p0*360/STEPS_PER_REV:.1f} deg -> "
-                      f"{args.goto:.1f} deg, {args.turns:+g} extra turns")
+                if p0 is None:
+                    raise RuntimeError("no position feedback")
+                # Print the resolved plan, not just the request: with a forced
+                # direction the travel can be a near-full turn for a target a
+                # few degrees away, and that is worth seeing BEFORE it moves.
+                target = int(round(args.goto * STEPS_PER_REV / 360.0)) % STEPS_PER_REV
+                travel = plan_travel(p0, target, int(args.turns), args.dir)
+                print(f"at {p0*360/STEPS_PER_REV:.1f} deg -> {args.goto:.1f} deg, "
+                      f"dir {args.dir}, {args.turns:+g} extra turns")
+                print(f"travel {travel*360/STEPS_PER_REV:+.1f} deg "
+                      f"({travel:+d} steps, {'up' if travel >= 0 else 'down'} "
+                      f"the encoder)")
                 end, err = rotate_to(sv, args.goto, int(args.turns),
-                                     max_speed=args.speed)
+                                     max_speed=args.speed, direction=args.dir)
                 print(f"landed {end*360/STEPS_PER_REV:.2f} deg "
                       f"(target {args.goto % 360:.2f}), error {err} steps "
                       f"= {abs(err)*360/STEPS_PER_REV:.2f} deg")

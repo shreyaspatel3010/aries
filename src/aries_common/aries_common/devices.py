@@ -28,6 +28,10 @@ DEFAULTS = {
     },
     "rover": {"can_interface": "can0", "can_bitrate": 250000},
     "imu": {"port": "/dev/microstrain_main"},
+    # Bench only: the ST3215 bus-servo adapter behind scripts/st3215_test.py.
+    # /dev/aries_servo_bus is our own udev symlink, not a by-id path -- a CH340
+    # bridge has no serial number to build one from. See devices.yaml.
+    "servo_bus": {"port": "/dev/aries_servo_bus", "baud": 1000000, "serial": ""},
     "cameras": {
         "gripper_serial": "216322070216",
         "front_serial": "207522077539",

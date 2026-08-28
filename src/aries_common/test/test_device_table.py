@@ -102,6 +102,49 @@ def test_builtin_defaults_match_the_yaml():
     assert int(DEFAULTS["arm"]["port"]) == int(device("arm.port"))
 
 
+def test_builtin_servo_bus_defaults_match_the_yaml():
+    """Bench gear, but the same trap: st3215_test.py reads servo_bus.port to
+    find the adapter, and an unreadable YAML drops it to this copy."""
+    for key in ("port", "baud"):
+        assert DEFAULTS["servo_bus"][key] == device(f"servo_bus.{key}"), (
+            f"servo_bus.{key} differs between devices.py DEFAULTS and devices.yaml"
+        )
+
+
+def test_servo_bus_bridge_ids_match_the_udev_rule():
+    """The chip IDs live in two places that cannot import each other.
+
+    setup_system.sh generates the udev rule that makes /dev/aries_servo_bus;
+    st3215_test.py falls back to scanning for the same chips when the symlink
+    is not there (no rule installed yet, or a machine that is not the rover).
+    Drift is silent in the worst direction: the scanner stops recognising an
+    adapter the rule happily names, and the bench script says "no adapter"
+    while /dev/aries_servo_bus is sitting right there.
+    """
+    setup_sh = (SRC.parent / "scripts" / "setup_system.sh").read_text()
+    st3215 = (SRC.parent / "scripts" / "st3215_test.py").read_text()
+
+    # The rule lines live inside a double-quoted bash string, so every
+    # quote in the file is backslash-escaped. Drop the backslashes first
+    # rather than trying to match through two layers of quoting.
+    # Both branches of the if/else, so the chip-matched one is included:
+    # split(maxsplit=1) or the second SERVO_BUS_RULE= assignment ends the slice.
+    rule_block = setup_sh.split("SERVO_BUS_RULE=", 1)[1].split(
+        'install_file "$SERVO_BUS_RULES"')[0]
+    rule_vids = set(re.findall(r'idVendor}=="([0-9a-f]{4})"',
+                               rule_block.replace("\\", "")))
+
+    scanner = re.search(r"BRIDGE_VIDS\s*=\s*\(([^)]*)\)", st3215)
+    assert scanner, "BRIDGE_VIDS not found in scripts/st3215_test.py"
+    scanner_vids = set(re.findall(r'"([0-9a-f]{4})"', scanner.group(1)))
+
+    assert rule_vids, "no idVendor matches found in the generated servo-bus rule"
+    assert rule_vids == scanner_vids, (
+        f"udev rule matches {sorted(rule_vids)} but st3215_test.py scans for "
+        f"{sorted(scanner_vids)}"
+    )
+
+
 def test_builtin_network_defaults_match_the_yaml():
     yaml_net = yaml.safe_load(DEVICES_YAML.read_text())["network"]
     for key in ("domain_id", "hosts"):

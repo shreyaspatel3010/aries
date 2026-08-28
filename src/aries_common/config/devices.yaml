@@ -42,9 +42,52 @@ rover:
   can_bitrate: 250000
 
 imu:
-  # Persistent symlink from aries_imu/setup/99-microstrain.rules to the
-  # MicroStrain 3DM-GX5-AHRS.
+  # Persistent symlink to the MicroStrain 3DM-GX5-AHRS.
+  #
+  # The rule that makes it comes from the DRIVER PACKAGE, not from this repo:
+  # /usr/lib/udev/rules.d/60-ros-jazzy-microstrain-inertial-driver.rules, shipped
+  # by ros-jazzy-microstrain-inertial-driver. It matches the sensor's own USB ID
+  # (199b:3065 or 0483:5740, manufacturer "Lord Microstrain") and derives the
+  # _main/_aux suffix from the serial. So there is nothing to install here --
+  # setup_system.sh only checks the package is present -- but equally, no
+  # microstrain driver means no /dev/microstrain_main at all.
   port: "/dev/microstrain_main"
+
+servo_bus:
+  # Feetech ST3215 bus-servo adapter (URT-1 or the Waveshare driver board),
+  # used by scripts/st3215_test.py. Bench gear, not part of the launched stack
+  # -- no ros2_control component talks to it -- but the port is device
+  # identity, and device identity lives in this file.
+  #
+  # /dev/aries_servo_bus is a symlink from 99-aries-servo-bus.rules, which
+  # scripts/setup_system.sh installs. Without it the adapter is /dev/ttyUSB0 or
+  # /dev/ttyACM0 depending on which bridge chip the board carries and on what
+  # else was plugged in first.
+  #
+  # NOT A by-id PATH, unlike the Teensy above, and the reason is worth keeping:
+  # udev's /dev/serial/by-id/ names are built from ID_SERIAL (60-serial.rules),
+  # which for a chip with no iSerialNumber is just vendor_model. A plain CH340
+  # -- the commonest bridge on these adapters -- has no serial number, so it
+  # gets usb-1a86_USB_Serial-if00-port0, a name every CH340 on earth shares.
+  # by-id would be stable but not unique. Hence our own rule and our own name.
+  port: "/dev/aries_servo_bus"
+  # 1 Mbaud is the ST3215 factory default.
+  baud: 1000000
+  # Set, so the rule is a single serial-matched line rather than a chip match.
+  # Empty it to fall back to matching any CH340/CH343/CP210x/FT232 bridge --
+  # unambiguous on Aries (the Teensy is 16c0:04xx and the IMU 199b/0483, so no
+  # Aries device can lose its symlink to this rule) but these ARE the commonest
+  # USB-serial chips there are, so a second generic adapter on the bench would
+  # collide. To read the serial off a different adapter:
+  #
+  #   udevadm info -a -n /dev/ttyACM0 | grep -m1 'ATTRS{serial}'
+  #
+  # OUR UNIT IS A CH343, NOT A CH340: 1a86:55d3, "USB Single Serial", and it
+  # binds cdc_acm -- so it appears as /dev/ttyACM*, NOT ttyUSB*, and unlike a
+  # CH340 it does report an iSerialNumber. Verified from the kernel log on
+  # 2026-08-28. A replacement adapter may well be a CH340 instead, which is why
+  # the chip-match fallback and the note above are still worth keeping.
+  serial: "5B3D050517"
 
 cameras:
   # D435i camera serials as librealsense reports them — what the driver matches
