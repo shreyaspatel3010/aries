@@ -16,11 +16,23 @@
 //   - Every digital pin on a Teensy 4.x is interrupt-capable, so the limit
 //     switches are not constrained to a special subset the way they would be
 //     on an AVR.
-//   - The PWM pins here (22, 15, 28) are all PWM-capable. analogWriteFrequency
+//   - The PWM pins here (25, 15, 22) are all PWM-capable. analogWriteFrequency
 //     sets the frequency of the whole timer submodule a pin belongs to, not the
 //     pin -- but all three drivers ask for the same 10 kHz in
 //     Driver::init_driver(), so a shared timer is harmless. It would NOT be if
-//     one of them ever wanted a different frequency.
+//     one of them ever wanted a different frequency. From pwm_pin_info[] in the
+//     core's cores/teensy4/pwm.c the three land on three different peripherals
+//     -- 25 = FlexPWM1_3_X, 15 = QuadTimer3_3, 22 = FlexPWM4_0_A -- so nothing
+//     shares a submodule today.
+//   - PIN 25 IS AN X CHANNEL, not the A or B the other PWM pins use. That is
+//     fine: flexpwmWrite() handles `case 0: // X` by writing VAL0, so
+//     analogWrite() drives it properly. Unlike pin 38, which has no PWM at all
+//     on a 4.1.
+//   - PINS 7, 8 AND 25 ARE ALL ON FLEXPWM1 SUBMODULE 3. Harmless as written --
+//     only 25 is driven as PWM, 8 is a plain digitalWrite direction pin and 7
+//     is an INPUT_PULLUP limit switch, and neither cares what frequency that
+//     submodule runs at. It stops being harmless if anything ever calls
+//     analogWrite() on 7 or 8, so do not put a second PWM function there.
 
 #ifndef PINS_H
 #define PINS_H
@@ -43,17 +55,25 @@
 //
 // THE AUGER -- the bit that spins and cuts. It does not travel.
 //
-// CONFIRMED from the bench, 2026-08-26: 22 / 19 / 18, which is exactly what
-// pin-def-ref.txt said all along.
+// MOVED TO 25 / 8 / 9 ON 2026-08-29, from 22 / 19 / 18. THE PROVENANCE OF THE
+// NEW NUMBERS IS NOT RECORDED -- they arrived as an edit to this file with no
+// bench note attached, so unlike the numbers they replaced there is nothing
+// here saying anybody metered them. PINOUT.md marks this row unconfirmed for
+// that reason. If they did come off the bench, say so there and here.
 //
-// This briefly looked stale. An interim bench report put the SAMPLE BIN's PWM
-// on 22, which collided with the auger, and the auger's PWM was set
-// PIN_UNASSIGNED while that was resolved. It resolved the other way: the bin is
-// on 28 and pin-def-ref.txt was right about the auger. The file's credibility
-// stands -- the collision was a reporting error, not a stale file.
-#define AUGER_PWM 22
-#define AUGER_INA 19
-#define AUGER_INB 18
+// The sample bin took the three pins this vacated; see BIN_* below.
+//
+// WHAT THE OLD NUMBERS HAD BEHIND THEM, kept because it is what this row has to
+// be re-confirmed against: 22 / 19 / 18 was confirmed from the bench on
+// 2026-08-26 and was exactly what pin-def-ref.txt said all along. That briefly
+// looked stale when an interim bench report put the SAMPLE BIN's PWM on 22,
+// colliding with the auger, and the auger's PWM was set PIN_UNASSIGNED while it
+// was resolved. It resolved the other way: the bin went to 28 and the file was
+// right about the auger. (The bin IS on 22 now -- but by this later change, not
+// by that report being right.)
+#define AUGER_PWM 25
+#define AUGER_INA 8
+#define AUGER_INB 9
 
 // THE FEED CARRIAGE -- the lead screw that moves the WHOLE DRILL up and down
 // (drill_motor_joint, prismatic on Z, -0.375 .. +0.185). This is the vertical
@@ -86,13 +106,19 @@
 // is at matters for reading the bin's own load cell, and the bin has no
 // position sensor -- see PINOUT.md.
 //
-// CONFIRMED from the bench, 2026-08-26: 28 / 30 / 29. 28 is PWM-capable.
+// MOVED TO 22 / 19 / 18 ON 2026-08-29, from 28 / 30 / 29 -- the three pins the
+// auger vacated in the same change. 22 is PWM-capable (FlexPWM4_0_A). AS WITH
+// THE AUGER, THE PROVENANCE OF THESE NUMBERS IS NOT RECORDED here, and PINOUT.md
+// marks the row unconfirmed.
 //
-// These were proposals (23/21/20, then 22/21/20) until the bench supplied them.
-// Nothing about the earlier numbers survives.
-#define BIN_PWM 28
-#define BIN_INA 30
-#define BIN_INB 29
+// 28, 29 and 30 are now free, and have been added to kScanPins in main.cpp.
+//
+// The numbers this replaced, 28 / 30 / 29, were confirmed from the bench on
+// 2026-08-26. Before that they were proposals (23/21/20, then 22/21/20);
+// nothing about those earlier ones survives.
+#define BIN_PWM 22
+#define BIN_INA 19
+#define BIN_INB 18
 
 // --- Limit switches ---------------------------------------------------------
 // Wired to GND through the switch and read INPUT_PULLUP, so CLOSED reads LOW
@@ -120,8 +146,11 @@
 // NORMALLY OPEN, switching to GND, exactly as described above -- confirmed by
 // the same test: both pins rest HIGH and go LOW while the switch is held. So
 // is_at_stop()'s digitalRead(pin) == LOW is the right sense, and the FALLING
-// interrupt edge is the closure. (Pins 9, 14, 21, 24 and 27 DO rest low on this
-// harness; they are something else's, and are not these switches.)
+// interrupt edge is the closure. (Pins 14, 21, 24 and 27 DO rest low on this
+// harness; they are something else's, and are not these switches. Pin 9 was on
+// that list too and is now AUGER_INB -- consistent with its having been an
+// H-bridge input on the loom all along, but that is an observation and NOT
+// confirmation of the 2026-08-29 auger map.)
 //
 // The BIN's two switches are not in this map. The mechanism has four switches
 // across two axes; the firmware has two instances (LIMIT_SWITCH_INSTANCES in
@@ -145,10 +174,12 @@
 // MOVED TO 23 on 2026-08-26. Was pin 9 in both retired sketches
 // (teensy_gripper.ino and legacy_controller.ino) and for the whole life of this
 // firmware before that, so a board wired to the old loom drives NOTHING on the
-// gripper and instead pulses the bin actuator's H-bridge. Check the servo lead
+// gripper and instead pulses whatever now sits on pin 9. Check the servo lead
 // before powering the drill.
 //
-// 23 was BIN_PWM until this change; the actuator took the vacated pin 9.
+// 23 had been the bin actuator's proposed PWM until this change. PIN 9 IS NOT A
+// SPARE ANY MORE: since 2026-08-29 it is AUGER_INB, so an old-loom gripper lead
+// now feeds a direction input on the auger's H-bridge.
 #define GRIPPER_SERVO 23
 
 // Lid of the FRONT-LEFT deck container -- the sand sample box, which the rest

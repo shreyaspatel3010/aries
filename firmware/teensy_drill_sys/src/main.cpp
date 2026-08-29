@@ -312,8 +312,20 @@ static bool load_cells_present = false;
 // INPUT_PULLUP, Servo::attach() would take it back as an OUTPUT, and the scan
 // would then report the servo's own 50 Hz pulse train as a switch closing and
 // opening forever. Keep this list and pins.h disjoint -- nothing checks it.
+//
+// 8, 9 AND 25 LEFT THIS LIST ON 2026-08-29, and 28, 29 and 30 joined it, when
+// the auger moved onto 25/8/9 and the sample bin onto the auger's old 22/19/18.
+// This is the same hazard as pin 38 above and it had already landed: the scan
+// loop in setup() runs BEFORE auger.init_motor(), so the auger still won the
+// pin mode and drove correctly, but pin_scan_state() went on reading its PWM
+// and direction lines and reporting them as three bits chattering on
+// drill/pin_scan whenever the auger turned -- blinding check_drill_limits.py,
+// which is the one tool that can find a mis-wired switch.
+//
+// ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE. Nothing checks this; the
+// static_assert in pins.h covers kMap only, not this list.
 static const uint8_t kScanPins[] = {
-    0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 20, 21, 24, 25, 26, 27, 39,
+    0, 1, 2, 3, 4, 5, 10, 11, 12, 14, 20, 21, 24, 26, 27, 28, 29, 30, 39,
     // The two the switches are SUPPOSED to be on, reported alongside for
     // comparison. Already INPUT_PULLUP via LimitSwitch::init().
     LIMIT_SWITCH1, LIMIT_SWITCH2,

@@ -16,8 +16,8 @@ not flashed.
 | Function | Code name | Pin | Direction | Confirmed? |
 |---|---|---|---|---|
 | **Feed carriage** — moves the whole drill **up/down** | `FEED_*` | 15 / 40 / 41 | out, PWM 10 kHz + 2 dir | ⚠️ |
-| **Auger** — spins the cutting head | `AUGER_*` | 22 / 19 / 18 | out, PWM 10 kHz + 2 dir | ✅ |
-| **Sample bin actuator** — slides bin fore/aft | `BIN_*` | 28 / 30 / 29 | out, PWM 10 kHz + 2 dir | ✅ |
+| **Auger** — spins the cutting head | `AUGER_*` | 25 / 8 / 9 | out, PWM 10 kHz + 2 dir | ⚠️ |
+| **Sample bin actuator** — slides bin fore/aft | `BIN_*` | 22 / 19 / 18 | out, PWM 10 kHz + 2 dir | ⚠️ |
 | **Gripper servo** | `GRIPPER_SERVO` | 23 | out, servo | ✅ |
 | **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 38 | out, servo — **continuous rotation** | ⚠️ |
 | **Stack light** green / yellow / red | `STALIG_*` | 37 / 36 / 35 | out, active **LOW** | ✅ |
@@ -30,7 +30,13 @@ not flashed.
 ✅ confirmed from the bench  ⚠️ proposed — **check before powering the drill**
 
 23 pins, all distinct, all within the Teensy 4.1 main header. The three motor
-PWM pins (22, 15, 28) are all PWM-capable.
+PWM pins (25, 15, 22) are all PWM-capable.
+
+> **Changed 2026-08-29.** The auger moved to 25 / 8 / 9 and the sample bin took
+> the auger's old 22 / 19 / 18; 28, 29 and 30 are now free. Both rows dropped
+> from ✅ to ⚠️ because no provenance was recorded for the new numbers — see
+> below, and see **the diagnostic scan list is not covered by that check**,
+> which this change has already broken.
 
 ### Which motor moves what
 
@@ -72,32 +78,52 @@ they move.
 
 ## What was confirmed, and from where
 
-**`pin-def-ref.txt` was right.** It shipped inside `erc_embedded-drill-sys.zip`
-and was never `#include`d by anything — `main.cpp` carried its own copy of the
-same `#define` names with **every value set to `0`**, so the firmware as
-delivered drove pin 0 for everything. Pin 0 is also `Serial1` RX. But the
-*numbers* in it check out: the bench confirmed the auger on 22/19/18 and the
-stack light on 37/36/35, exactly as that file says.
+**The auger and the sample bin were renumbered on 2026-08-29**, and the two
+swapped territory:
+
+```
+             before 2026-08-29    now
+auger        22 / 19 / 18         25 /  8 /  9
+sample bin   28 / 30 / 29         22 / 19 / 18
+```
+
+The bin has taken the auger's three old pins outright. **Where the new numbers
+came from is not recorded here** — the change arrived in `pins.h` with the
+surrounding comments left describing the old map, so neither row has provenance
+any more and both are ⚠️ above. What follows is how the *previous* numbers were
+established, kept because it is what those two rows now have to be re-confirmed
+against.
+
+**`pin-def-ref.txt` was right about the map as it stood.** It shipped inside
+`erc_embedded-drill-sys.zip` and was never `#include`d by anything — `main.cpp`
+carried its own copy of the same `#define` names with **every value set to
+`0`**, so the firmware as delivered drove pin 0 for everything. Pin 0 is also
+`Serial1` RX. The bench confirmed the numbers it gave for the auger (22/19/18)
+and the stack light (37/36/35) on 2026-08-26. The 2026-08-29 change supersedes
+its auger line; the stack light is untouched.
 
 There was an interim scare where a bench report put the **sample bin's** PWM on
-22, colliding with the auger. The auger's PWM was set `PIN_UNASSIGNED` while it
-was resolved, and this document briefly called the file stale. That was wrong —
-it resolved the other way: the bin is on **28**, and the file's auger line was
-correct all along.
+22, colliding with the then-auger. The auger's PWM was set `PIN_UNASSIGNED`
+while it was resolved, and this document briefly called the file stale. That was
+wrong *at the time* — it resolved the other way, onto 28. The bin **is** on 22
+now, but by a later and separate decision; that does not retroactively make the
+2026-08-26 report right, and it is worth being clear about which of the two
+reasons put it there.
 
-The one line still **not independently confirmed** is the feed carriage's
-15/41/40. It is the only motor whose pins nothing has checked against the loom,
-and it is the axis that drives the mast into the ground — so it is the one worth
-a meter before the first power-up.
+The feed carriage's 15/40/41 has **never** been independently confirmed. It is
+the only motor whose pins nothing has checked against the loom, and it is the
+axis that drives the mast into the ground — so it is the one worth a meter
+before the first power-up.
 
 **The gripper servo is pin 23** as of 2026-08-26, given from the bench. It was
 pin 9 in both `teensy_gripper.ino` and `legacy_controller.ino` and for the whole
 life of this firmware before that — so **a board wired to the old loom drives
-nothing on the gripper**, and instead pulses the bin actuator's H-bridge. Check
+nothing on the gripper**, and instead pulses whatever now sits on pin 9. Check
 the servo lead before powering the drill.
 
-23 had been the bin actuator's proposed PWM. The actuator has since been
-confirmed on **22** from the bench, so pin 9 is now free.
+Pin 9 was free for three days and is not free any more: **it is `AUGER_INB` as
+of 2026-08-29**. An old-loom gripper lead now feeds a direction input on the
+auger's H-bridge rather than a spare pin.
 
 The **lid** servo is a later addition and has no such provenance — see below. It
 moved from **10 to 38 on 2026-08-29**, and pin 10 is now free (and back in the
@@ -105,29 +131,38 @@ diagnostic scan list).
 
 ### The rewire that proves this is one board
 
-The retired sketch drove the stack light on **18, 19, 22**. Those are now,
-exactly and in order, the auger's three H-bridge pins:
+The retired sketch drove the stack light on **18, 19, 22**. Those three pads
+have belonged to an H-bridge ever since — the auger's until 2026-08-29, the
+sample bin's now:
 
 ```
 teensy_gripper.ino:   RED_PIN 18      YELLOW_PIN 19   GREEN_PIN 22
-now:                  AUGER_INB 18    AUGER_INA 19    AUGER_PWM 22
+until 2026-08-29:     AUGER_INB 18    AUGER_INA 19    AUGER_PWM 22
+now:                  BIN_INB 18      BIN_INA 19      BIN_PWM 22
 ```
 
 and the light moved to 37/36/35 to make room. A three-for-three reuse is not
 coincidence: it only makes sense as a rewire of the one existing board, rather
-than a second board being added alongside it.
+than a second board being added alongside it. The renumber does not weaken that
+argument — the same three pads simply changed which motor they drive.
 
 **A board wired for the old sketch and flashed with this firmware drives the
-stack light off the auger's H-bridge.** Check the loom before the first
-power-up.
+stack light off an H-bridge** — the sample bin's now, the auger's before.
+Check the loom before the first power-up.
 
 ---
 
 ## What is still proposed
 
 Everything is now assigned — no pin is `PIN_UNASSIGNED` and the status LED no
-longer fast-blinks. Two things are still **guesses**, both mine:
+longer fast-blinks. What is **not** established:
 
+* **The auger's 25 / 8 / 9 and the sample bin's 22 / 19 / 18**, changed
+  2026-08-29 with no provenance recorded. The map is at least electrically
+  valid — 25 and 22 are both PWM-capable, and the `static_assert` proves all six
+  are distinct — but nothing here says the **loom** agrees, and these are the
+  two axes whose direction pins were the reason this file exists. Meter them
+  before power-up, and read the `kScanPins` warning below first.
 * **The container lid servo, 38.** Unverified. Note it is **not** a PWM pin on
   a Teensy 4.1 — FlexPWM1_2 reaches pin 38 on a 4.0, but on the 4.1 that pad is
   46/47. This does not matter: the Teensy `Servo` library bit-bangs the pulses
@@ -155,8 +190,11 @@ reading, so three numbers were tried blind before the board was asked directly.
 `INPUT_PULLUP` and publishes them on `drill/pin_scan`; press a switch by hand and
 the pin that moves is the pin it is on. Both switches are **normally open to
 GND** — they rest HIGH and go LOW while held — so `is_at_stop()`'s `== LOW` and
-the `FALLING` interrupt edge are both the correct sense. Note that pins 9, 14,
-21, 24 and 27 *do* rest low on this harness; they belong to something else.
+the `FALLING` interrupt edge are both the correct sense. Note that pins 14, 21,
+24 and 27 *do* rest low on this harness; they belong to something else. Pin 9
+was on that list too and is now `AUGER_INB` — consistent with its having been an
+H-bridge input on the loom all along, though nothing has confirmed that and it
+should not be read as confirmation of the new auger map.
 
 **Confirm all of these against the harness before powering the drill.** A wrong
 direction pin runs an axis into its end stop at 100 % duty cycle.
@@ -178,6 +216,40 @@ the sample bin moved.
 **Add every new pin to `kMap` in `pins.h`.** A pin left out of that list is not
 checked. `PIN_UNASSIGNED` entries are exempt, since several are legitimately
 unassigned and all compare equal to each other.
+
+### The diagnostic scan list is *not* covered by that check
+
+The `static_assert` guards `kMap`. It does **not** guard `kScanPins` in
+`main.cpp` — the list of otherwise-unused pins the board holds `INPUT_PULLUP`
+and reports on `drill/pin_scan`. Those two lists have to stay disjoint and
+nothing anywhere checks that they are.
+
+**They are not disjoint right now.** The 2026-08-29 renumber put the auger on
+8, 9 and 25, and all three are still in the scan list:
+
+```
+static const uint8_t kScanPins[] = {
+    0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 20, 21, 24, 25, 26, 27, 39,
+                    ^  ^                          ^
+            AUGER_INA  AUGER_INB              AUGER_PWM
+```
+
+`setup()` runs the scan's `pinMode(..., INPUT_PULLUP)` loop *before*
+`auger.init_motor()`, so the auger still wins the pin mode and the motor drives
+correctly — this does not break the drill. What it breaks is the diagnostic:
+`pin_scan_state()` goes on reading those three pins every cycle and reports the
+auger's own PWM and direction levels as *something is pulling this pin low*,
+flickering three bits on `drill/pin_scan` whenever the auger turns. That is the
+same trap the lid servo hit on pin 38, and `check_drill_limits.py` reads exactly
+this topic — so the tool this file tells you to trust for finding a switch is
+the tool the collision blinds.
+
+**ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE.** Remove 8, 9 and 25;
+add 28, 29 and 30, which the bin's move has freed:
+
+```
+    0, 1, 2, 3, 4, 5, 10, 11, 12, 14, 20, 21, 24, 26, 27, 28, 29, 30, 39,
+```
 
 ### If a pin is genuinely not wired yet
 
@@ -297,6 +369,28 @@ three motor PWM pins. On a Teensy 4 that sets the frequency of the whole timer
 submodule the pin belongs to, not the pin — so if two of these share a submodule
 they share a frequency. Harmless here, because all three ask for the same
 10 kHz. It stops being harmless the moment one of them wants a different one.
+
+After the 2026-08-29 renumber the three still land on three different
+peripherals, from `pwm_pin_info[]` in the core's `cores/teensy4/pwm.c`:
+
+| Pin | Timer | Used by |
+|---|---|---|
+| 25 | `FlexPWM1_3_X` | `AUGER_PWM` |
+| 15 | `QuadTimer3_3` | `FEED_PWM` |
+| 22 | `FlexPWM4_0_A` | `BIN_PWM` |
+
+No two share a submodule, so the shared-frequency hazard is still only
+theoretical. Two things about that table are worth keeping:
+
+* **Pin 25 is an X channel**, not the usual A or B. `flexpwmWrite()` handles
+  `case 0: // X` by writing `VAL0`, so `analogWrite()` on it is fully
+  supported — this is not the pin-38 situation, where the pad has no PWM at all.
+* **Pins 7, 8 and 25 are all on FlexPWM1 submodule 3.** Only 25 is driven as
+  PWM; 8 is `AUGER_INA` (plain `digitalWrite`) and 7 is `LIMIT_SWITCH1`
+  (`INPUT_PULLUP`), and neither cares what frequency that submodule runs at. So
+  it is harmless — but the auger's own PWM and direction pins now sit on one
+  submodule with a limit switch, which is one `analogWrite()` away from
+  mattering. Do not put a second PWM function on 7 or 8.
 
 ### Load cells
 
