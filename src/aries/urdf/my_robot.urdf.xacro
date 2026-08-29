@@ -56,10 +56,14 @@
        They are launch args rather than devices.yaml entries because they are
        calibration, not device identity - devices.yaml says so in its header.
        See st3215_gripper_hardware's package header for how to measure them. -->
-  <xacro:arg name="gripper_closed_steps" default="3038"/>
+  <xacro:arg name="gripper_closed_steps" default="3307"/>
   <xacro:property name="gripper_closed_steps" value="$(arg gripper_closed_steps)"/>
   <xacro:arg name="gripper_servo_invert" default="false"/>
   <xacro:property name="gripper_servo_invert" value="$(arg gripper_servo_invert)"/>
+  <!-- Derived from the measured stops by aries_common.gripper_cal and passed in
+       by the launch files; the defaults here only serve a bare xacro run. -->
+  <xacro:arg name="gripper_command_open" default="-4.18"/>
+  <xacro:property name="gripper_command_open" value="$(arg gripper_command_open)"/>
   <xacro:include filename="common_properties.xacro"/>
   <xacro:include filename="aries_gazebo.xacro"/>
   <xacro:include filename="aries_base.xacro"/>
@@ -74,7 +78,7 @@
   <xacro:include filename="igus_rebel_robot2.urdf.xacro"/>
   <xacro:include filename="igus_rebel2.control.xacro"/>
   <!-- Instantiate the arm control macro -->
-  <xacro:igus_rebel_control arm_id="aries" hardware_protocol="${hardware_protocol}" arm_hardware_protocol="${arm_hardware_protocol}" gripper_hardware_protocol="${gripper_hardware_protocol}" serial_port="${serial_port}" gripper_type="${gripper_type}" servo_bus_port="${servo_bus_port}" servo_bus_baud="${servo_bus_baud}" servo_id="${servo_id}" gripper_closed_steps="${gripper_closed_steps}" gripper_servo_invert="${gripper_servo_invert}"/>
+  <xacro:igus_rebel_control arm_id="aries" hardware_protocol="${hardware_protocol}" arm_hardware_protocol="${arm_hardware_protocol}" gripper_hardware_protocol="${gripper_hardware_protocol}" serial_port="${serial_port}" gripper_type="${gripper_type}" servo_bus_port="${servo_bus_port}" servo_bus_baud="${servo_bus_baud}" servo_id="${servo_id}" gripper_closed_steps="${gripper_closed_steps}" gripper_servo_invert="${gripper_servo_invert}" gripper_command_open="${gripper_command_open}"/>
   <!-- An unknown gripper_type must fail loudly. Without this the include below
        simply does not fire and the arm comes up with no end effector at all,
        which reads in RViz as "the gripper meshes did not load" and sends you

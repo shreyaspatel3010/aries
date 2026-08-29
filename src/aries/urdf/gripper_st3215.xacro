@@ -54,12 +54,12 @@
 
             travel per radian = 21 * 3.0000 / (2 * pi) = 10.02676 mm
 
-        STROKE.  0 to 76.8 mm of jaw gap, against v2's 0 to 83 mm - comparable,
+        STROKE.  0 to 85.1 mm of jaw gap, against v2's 0 to 83 mm - comparable,
         over more than twice the joint travel for it.
 
           jaw gap [mm] against q [rad], exactly linear
-            q      +0.07   0.00  -0.50  -1.00  -2.00  -3.00  -3.76
-            gap      0.0    1.4   11.4   21.5   41.5   61.6   76.8
+            q      +0.07   0.00  -0.50  -1.00  -2.00  -3.00  -4.00  -4.18
+            gap      0.0    1.4   11.4   21.5   41.5   61.6   81.6   85.1
 
           jaw faces meet at z = 207.8 mm from arm_gripper_base_link (the lip);
           the flat shank faces run z = 115 to 155 mm.
@@ -69,7 +69,7 @@
         1. -1.57 IS NOT THE SAME POSE ON THE TWO GRIPPERS.  It is v2's hard
            stop and its full 83 mm; here it is a 32.9 mm gap with two thirds of
            the travel still left.  aries.srdf is xacro now and its `open` state
-           follows the fitted gripper (-1.57 on v2, -3.76 here), so MoveIt and
+           follows the fitted gripper (-1.57 on v2, -4.18 here), so MoveIt and
            the joystick agree - but a q value cached from a v2 session means a
            very different jaw gap on this gripper.
 
@@ -98,11 +98,15 @@
          recorded at 25 Hz with the position unwrapped across the encoder seam:
 
              full open              step  489
-             hand-forced close      step 3520
-             SERVO-REACHABLE close  step 3038   <- this is closed_steps
-             usable travel          2549 steps = 3.9101 rad
+             SERVO-REACHABLE close   step 3307   <- this is closed_steps
+             usable travel           2818 steps = 4.3228 rad
 
-         which is 39.2 mm of travel per jaw and a 78.4 mm gap.
+         which is 43.5 mm of travel per jaw and an 86.7 mm gap.
+
+         THESE LIVE IN aries_common/config/gripper_st3215.yaml, not here. That
+         file is the one place to change them; the launch files derive this
+         travel, the SRDF `open` state, the teleop open position and the
+         component's min_pos from it, so they cannot drift apart.
 
          CLOSED_STEPS IS THE SERVO-REACHABLE STOP, NOT THE HAND-FORCED ONE.  A
          hand can flex the jaws 482 steps (7.4 mm per jaw) past where the servo
@@ -141,14 +145,18 @@
              So the limit spans the full 3031-step stroke plus 25 steps.
 
            * What we COMMAND is clamped separately and tighter, by min_pos on
-             the hardware component in igus_rebel2.control.xacro (-3.76, i.e.
+             the hardware component in igus_rebel2.control.xacro (-4.18, i.e.
              50 steps off the stop).  The component clamps every write to it, so
              even a slider dragged to this limit cannot drive the servo into the
              stop.
 
          Keep it that way round: generous on what can be observed, tight on what
          can be commanded. -->
-    <xacro:property name="gripper_open_travel" value="0.038888"/>
+    <!-- Fed from aries_common/config/gripper_st3215.yaml via the launch files,
+         which DERIVE it from the measured stops. The default here is only for a
+         bare `xacro my_robot.urdf.xacro` with no launch behind it. -->
+    <xacro:arg name="gripper_open_travel" default="0.043026"/>
+    <xacro:property name="gripper_open_travel" value="$(arg gripper_open_travel)"/>
 
     <!-- Keep the nominal commands inside Gazebo's physics limits.  When a
          commanded endpoint equals a DART hard stop the mimic-constrained

@@ -16,6 +16,7 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 from aries_common.devices import device_str
+from aries_common.gripper_cal import cal_str
 
 
 def _serials_from_librealsense():
@@ -529,8 +530,8 @@ def generate_launch_description():
         DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
         DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud")),
         DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id")),
-        DeclareLaunchArgument("gripper_closed_steps", default_value="3038"),
-        DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"]),
+        DeclareLaunchArgument("gripper_closed_steps", default_value=cal_str("closed_steps")),
+        DeclareLaunchArgument("gripper_servo_invert", default_value=cal_str("invert"), choices=["true", "false"]),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="false"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false"),
         DeclareLaunchArgument(

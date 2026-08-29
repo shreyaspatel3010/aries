@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!-- igus_rebel.control.xacro -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:macro name="igus_rebel_control" params="arm_id hardware_protocol arm_hardware_protocol:='' gripper_hardware_protocol:='' serial_port:='/dev/ttyACM0' gripper_type:='v2' servo_bus_port:='/dev/aries_servo_bus' servo_bus_baud:='1000000' servo_id:='1' gripper_closed_steps:='3038' gripper_servo_invert:='false'">
+    <xacro:macro name="igus_rebel_control" params="arm_id hardware_protocol arm_hardware_protocol:='' gripper_hardware_protocol:='' serial_port:='/dev/ttyACM0' gripper_type:='v2' servo_bus_port:='/dev/aries_servo_bus' servo_bus_baud:='1000000' servo_id:='1' gripper_closed_steps:='3307' gripper_servo_invert:='false' gripper_command_open:='-4.18'">
         <xacro:macro name="joint_control" params="joint">
             <joint name="${joint}">
                 <xacro:if value="${arm_hardware_protocol == 'mock_hardware' or (arm_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
@@ -122,7 +122,7 @@
                      Clamping the ST3215 at -1.57 would quietly cap mock runs
                      at a 32.9 mm jaw gap against the real 82.9. -->
                 <xacro:property name="gripper_mock_min"
-                                value="${-3.76 if gripper_type == 'st3215' else -1.57}"/>
+                                value="${gripper_command_open if gripper_type == 'st3215' else -1.57}"/>
                 <joint name="gripper_gear_left_joint">
                     <command_interface name="position">
                         <param name="min">${gripper_mock_min}</param>
@@ -177,7 +177,7 @@
                          header for how to measure them. -->
                     <param name="closed_steps">${gripper_closed_steps}</param>
                     <param name="invert">${gripper_servo_invert}</param>
-                    <param name="min_pos">-3.76</param>
+                    <param name="min_pos">${gripper_command_open}</param>
                     <param name="max_pos">0.07</param>
                     <!-- 0 leaves the servo's stored acceleration alone. Do not
                          set this casually: on this servo the acceleration

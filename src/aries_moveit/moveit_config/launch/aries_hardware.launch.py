@@ -32,6 +32,7 @@ from launch_ros.substitutions import FindPackageShare
 
 from aries_common.comms import write_agent_dds_config
 from aries_common.devices import device, device_str
+from aries_common.gripper_cal import cal_str
 
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 GRIPPER_JOINTS = ["gripper_gear_left_joint"]
@@ -337,6 +338,17 @@ def launch_setup(context, *args, **kwargs):
     servo_id = LaunchConfiguration("servo_id").perform(context)
     gripper_closed_steps = LaunchConfiguration("gripper_closed_steps").perform(context)
     gripper_servo_invert = LaunchConfiguration("gripper_servo_invert").perform(context)
+    # Everything else about the stroke is DERIVED from those two plus the open
+    # stop, in aries_common.gripper_cal, so the joint limit, the SRDF `open`
+    # state, the teleop open position and the component's min_pos cannot drift
+    # apart. Recomputed here rather than read, so a gripper_closed_steps passed
+    # on the command line moves them all with it.
+    from aries_common.gripper_cal import gripper_cal, PITCH_RADIUS_M, STEPS_PER_RAD, Q_CLOSED
+    _cal = dict(gripper_cal())
+    _cal["closed_steps"] = int(gripper_closed_steps)
+    _stroke = abs(_cal["closed_steps"] - int(_cal["open_stop_steps"]))
+    gripper_command_open = Q_CLOSED - (_stroke - int(_cal["margin_steps"])) / STEPS_PER_RAD
+    gripper_open_travel = -(Q_CLOSED - (_stroke + int(_cal["limit_slack_steps"])) / STEPS_PER_RAD) * PITCH_RADIUS_M
 
     if gripper_type == "st3215":
         found_port, serial_note = resolve_servo_bus(servo_bus_port)
@@ -385,6 +397,8 @@ def launch_setup(context, *args, **kwargs):
             " servo_id:=", servo_id,
             " gripper_closed_steps:=", gripper_closed_steps,
             " gripper_servo_invert:=", gripper_servo_invert,
+            " gripper_command_open:=", f"{gripper_command_open:.4f}",
+            " gripper_open_travel:=", f"{gripper_open_travel:.6f}",
         ]
     ).perform(context)
     robot_description = ParameterValue(robot_description_raw, value_type=str)
@@ -396,7 +410,8 @@ def launch_setup(context, *args, **kwargs):
     # with the xacro tags left in as unknown elements.
     robot_description_semantic = ParameterValue(
         Command([FindExecutable(name="xacro"), " ", srdf_file,
-                 " gripper_type:=", gripper_type]),
+                 " gripper_type:=", gripper_type,
+                 " gripper_command_open:=", f"{gripper_command_open:.4f}"]),
         value_type=str)
 
     kinematics_file = PathJoinSubstitution([FindPackageShare("aries_moveit"), "config", "kinematics.yaml"])
@@ -743,6 +758,9 @@ def launch_setup(context, *args, **kwargs):
         teleop_gripper_files.append(os.path.join(
             get_package_share_directory("aries_moveit"), "config",
             "teleop_speeds_st3215.yaml"))
+        # The overlay file carries the speeds; the open POSITION is derived, so
+        # it is appended after the file and wins over it.
+        teleop_gripper_files.append({"gripper_open_position": gripper_command_open})
     gamepad_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
@@ -857,8 +875,8 @@ def generate_launch_description():
             DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port"), description="Serial port of the ST3215 bus-servo adapter (gripper_type:=st3215 only)"),
             DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud"), description="Baud rate for the ST3215 bus-servo adapter"),
             DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id"), description="Bus ID of the ST3215 driving the secondary gripper"),
-            DeclareLaunchArgument("gripper_closed_steps", default_value="3038", description="BENCH CALIBRATION: the step the SERVO parks at with the jaws closed - NOT the hand-forced stop at 572, which the servo cannot reach and which leaves it holding a permanent preload. See st3215_gripper_hardware's header."),
-            DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"], description="BENCH CALIBRATION: true if a rising ST3215 step count OPENS the jaws. It does on this gripper (575 closed -> 1720 open), confirmed by labelling both poses by hand with torque off."),
+            DeclareLaunchArgument("gripper_closed_steps", default_value=cal_str("closed_steps"), description="BENCH CALIBRATION: the step the SERVO parks at with the jaws closed - NOT the hand-forced stop at 572, which the servo cannot reach and which leaves it holding a permanent preload. See st3215_gripper_hardware's header."),
+            DeclareLaunchArgument("gripper_servo_invert", default_value=cal_str("invert"), choices=["true", "false"], description="BENCH CALIBRATION: true if a rising ST3215 step count OPENS the jaws. It does on this gripper (575 closed -> 1720 open), confirmed by labelling both poses by hand with torque off."),
             DeclareLaunchArgument("gripper_detect_timeout", default_value="8.0", description="Seconds to wait for the Teensy serial device before falling back to mock_hardware. Covers USB re-enumeration after a board reset."),
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),
