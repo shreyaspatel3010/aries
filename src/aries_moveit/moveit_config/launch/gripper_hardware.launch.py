@@ -39,11 +39,120 @@ def generate_launch_description():
 
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='st3215',
-        choices=['st3215'],
-        description='Gripper type. Only "st3215" exists - the ST3215 rack-and-pinion; '
-                    'v2 and the older four-bars are retired to aries/urdf/legacy/. '
-                    'Declared because launch files pass it down.',
+        default_value='v2',
+        choices=['v2'],
+        description='Which gripper URDF to load. Only "v2" exists; "new" and '
+                    '"old" are retired to aries/urdf/legacy/.'
+    )
+
+    finger_type_arg = DeclareLaunchArgument(
+        'finger_type',
+        default_value='bucket',
+        choices=['bucket', 'maintenance', 'probe'],
+        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
+    )
+    
+    use_gui_arg = DeclareLaunchArgument(
+        'use_gui', 
+        default_value='true', 
+        description='Launch RViz with MoveIt interface'
+    )
+
+    micro_ros_device_arg = DeclareLaunchArgument(
+        'micro_ros_device',
+        default_value=default_teensy_device(),
+        description='USB-serial device for the micro-ROS agent (Teensy)'
+    )
+    
+    # Get paths
+    current_file_dir = os.path.dirname(os.path.realpath(__file__))
+    aries_moveit_dir = os.path.dirname(current_file_dir)
+    moveit_config_dir = os.path.join(aries_moveit_dir, "config")
+    controller_config_path = os.path.join(moveit_config_dir, "ros2_controllers.yaml")
+    
+    # URDF files are in the aries package
+    aries_pkg = get_package_share_directory("aries")
+    arm_hardware_protocol = LaunchConfiguration('arm_hardware_protocol')
+    gripper_type = LaunchConfiguration('gripper_type')
+    finger_type = LaunchConfiguration('finger_type')
+    micro_ros_device = LaunchConfiguration('micro_ros_device')
+
+    robot_description_content = ParameterValue(
+        Command([
+            FindExecutable(name='xacro'), ' ',
+            PathJoinSubstitution([
+                FindPackageShare("aries"), "urdf", "my_robot.urdf.xacro"
+            ]),
+            ' ',
+            'hardware_protocol:=mock_hardware',
+            ' ',
+            'arm_hardware_protocol:=', arm_hardware_protocol,
+            ' ',
+            'gripper_hardware_protocol:=rebel',
+            ' ',
+            'gripper_type:=', gripper_type,
+            ' ',
+            'finger_type:=', finger_type,
+        ]),
+        value_type=str
+    )
+
+    robot_description = {'robot_description': robot_description_content}
+    
+    # Robot semantic description (SRDF)
+    # aries.srdf is XACRO, not plain text: it carries both grippers' link sets
+    # and gates them on gripper_type. `cat` here yields a semantic model with
+    # the other gripper's links in it, which srdfdom reports as Errors, and
+    # with the xacro tags left in as unknown elements.
+    robot_description_semantic_content = Command([
+        FindExecutable(name='xacro'), ' ',
+        os.path.join(moveit_config_dir, 'aries.srdf'),
+        ' gripper_type:=', gripper_type,
+    ])
+    robot_description_semantic = {
+        'robot_description_semantic': ParameterValue(robot_description_semantic_content, value_type=str)
+    }
+    
+    kinematics_yaml = {
+        'robot_description_kinematics': load_yaml(Path(os.path.join(moveit_config_dir, 'kinematics.yaml')))
+    }
+    
+    # OMPL Planning configuration - load as dict, not as params-file
+    import yaml as _yaml
+    with open(os.path.join(moveit_config_dir, 'ompl_planning.yaml')) as f:
+        ompl_config = _yaml.safe_load(f)
+    
+    # If the yaml has a 'move_group' top-level wrapper, unwrap it and merge with sibling keys
+    if 'move_group' in ompl_config:
+        move_group_block = ompl_config.pop('move_group')
+        ompl_config.update(move_group_block)
+
+    # MoveIt2 Jazzy expects: planning_pipelines=['ompl'], default_planning_pipeline='ompl',
+    # and pipeline config nested under 'ompl' key
+    ompl_planning_yaml = {
+        'planning_pipelines': ['ompl'],
+        'default_planning_pipeline': 'ompl',
+        'ompl': ompl_config,
+    }
+    
+    joint_limits_yaml = {
+        'robot_description_planning': load_yaml(Path(os.path.join(moveit_config_dir, 'joint_limits.yaml')))
+    }
+    
+    moveit_controllers = {
+        'moveit_controller_manager': 'moveit_simple_controller_manager/MoveItSimpleControllerManager',
+        'moveit_simple_controller_manager': load_yaml(Path(os.path.join(moveit_config_dir, 'moveit_controllers.yaml'))),
+    }
+
+    # ros2_control node
+    ros2_control_node = Node(
+        package="controller_manager",
+        executable="ros2_control_node",
+        parameters=[
+            robot_description,
+            controller_config_path
+        ],
+        output="both",
     )
     
     # Robot state publisher
