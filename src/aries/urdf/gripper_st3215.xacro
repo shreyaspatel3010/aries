@@ -81,14 +81,19 @@
            which is measured at the shank faces, and stop short of +0.07 on
            anything it actually means to hold.
 
-        3. THE SERVO ZERO STILL HAS TO BE SET, but it is no longer tight.  q
-           spans +0.07 to -1.805 = 1.875 rad = 107 deg = 1222 of the ST3215's
-           4096 steps, so almost any zero fits: closed_steps <= 2823 with
-           invert true, or >= 1272 with invert false.  On the built gripper it
-           is closed_steps 1844 with invert FALSE - opening decreases the step
-           count - which puts the open end at 622.  Unlike v2 this servo reports a real position, so a mis-set
-           zero shows up immediately in /joint_states rather than being echoed
-           back as if it were fine.
+        3. THE STROKE NEARLY FILLS THE SERVO'S SINGLE TURN.  q spans +0.07 to
+           -4.291 = 4.361 rad = 250 deg = 2843 of the ST3215's 4096 steps, out
+           of a usable 3995 (50..4045).  So the zero is NOT free to sit
+           anywhere: closed_steps must be at least 2893 with invert false.  On
+           the built gripper it is closed_steps 3307, invert FALSE - opening
+           DECREASES the count - putting the open end at 464 at the joint limit
+           and 539 as commanded, against a stop at 489.
+
+           That fit is only possible because the servo's position-correction
+           register is set; see the note on gripper_open_travel below.  Unlike
+           v2 this servo reports a real position, so a mis-set zero shows up
+           immediately in /joint_states rather than being echoed back as if it
+           were fine.
     -->
 
     <xacro:property name="rack_pitch_radius" value="0.01002676"/>
