@@ -291,6 +291,110 @@ int SlewServo::normalized_to_us(float t)
   return (int)(m_min_us + t * (m_max_us - m_min_us));
 }
 
+// LidServo ==========================================================================================================
+LidServo *LidServo::m_instance_lid = nullptr;
+
+LidServo::LidServo(uint8_t servo_pin, int neutral_us, int max_deviation_us)
+    : m_servo_pin(servo_pin),
+      m_neutral_us(neutral_us),
+      m_max_deviation_us(max_deviation_us),
+      m_current_speed(0.0f),
+      m_last_cmd_ms(0),
+      m_usable(PIN_IS_ASSIGNED(servo_pin))
+{
+  m_instance_lid = this;
+}
+
+void LidServo::init()
+{
+  if (!m_usable)
+    return;
+
+  m_servo.attach(m_servo_pin);
+
+  // Command the neutral pulse IMMEDIATELY. An unattached pin is idle, but an
+  // attached one with no pulse written yet is undefined, and on a
+  // continuous-rotation servo "undefined" is a lid that turns at power-up with
+  // nobody in the loop yet. stop() writes neutral before anything else can.
+  stop();
+  m_last_cmd_ms = millis();
+}
+
+void LidServo::set_speed(float speed)
+{
+  if (!m_usable)
+    return;
+
+  m_current_speed = constrain(speed, -1.0f, 1.0f);
+  m_last_cmd_ms = millis();
+
+  // A timed rotate_for() move is superseded by an explicit speed command --
+  // otherwise its timer would fire partway through the new move and stop a lid
+  // the operator is still driving.
+  m_timer.end();
+
+  const int us = m_neutral_us + (int)lroundf(m_current_speed * (float)m_max_deviation_us);
+  m_servo.writeMicroseconds(us);
+}
+
+void LidServo::stop()
+{
+  if (!m_usable)
+    return;
+
+  m_current_speed = 0.0f;
+  m_servo.writeMicroseconds(m_neutral_us);
+}
+
+void LidServo::rotate_for(float speed, float duration_s)
+{
+  if (!m_usable)
+    return;
+
+  // Guard the timer period for the same reason LinearActuator::move_duration_us
+  // does: IntervalTimer::begin() with a 0 us period never fires, so the servo
+  // that was just started would never be stopped.
+  if (!(duration_s > 0.0f))
+  {
+    stop();
+    return;
+  }
+
+  set_speed(speed);
+  m_timer.begin(isr_timer_router, (unsigned int)(duration_s * 1000.0f * 1000.0f));
+}
+
+void LidServo::isr_timer_router()
+{
+  if (m_instance_lid != nullptr)
+    m_instance_lid->handle_isr();
+}
+
+void LidServo::handle_isr()
+{
+  m_timer.end();
+  stop();
+}
+
+void LidServo::update(uint32_t command_timeout_ms)
+{
+  if (!m_usable)
+    return;
+
+  // Already stopped: nothing to time out, and re-writing neutral every loop
+  // would keep resetting nothing useful.
+  if (m_current_speed == 0.0f)
+    return;
+
+  if (millis() - m_last_cmd_ms > command_timeout_ms)
+  {
+    // The host has gone quiet with the lid still turning. It cannot be left
+    // turning: this servo has no stop of its own and no end of travel to reach.
+    m_timer.end();
+    stop();
+  }
+}
+
 LimitSwitch *LimitSwitch::m_instances_ls[LIMIT_SWITCH_INSTANCES] = {nullptr};
 uint8_t LimitSwitch::m_instance_count_ls = 0;
 
@@ -377,13 +481,25 @@ bool LimitSwitch::is_at_stop() const
   return digitalRead(m_pin_switch) == LOW;
 }
 
-LoadCell::LoadCell(uint8_t pin_dout, uint8_t pin_sck)
+LoadCell::LoadCell(uint8_t pin_dout, uint8_t pin_sck, float scale_factor)
     : m_pin_dout(pin_dout),
       m_pin_sck(pin_sck),
       m_usable(PIN_IS_ASSIGNED(pin_dout) && PIN_IS_ASSIGNED(pin_sck)),
+      m_scale_factor(scale_factor),
       m_raw(0),
       m_has_reading(false),
-      m_last_read_ms(0) {};
+      m_last_read_ms(0),
+      m_zero_counts(0.0f),
+      m_lid_counts(0.0f),
+      m_zeroed(false),
+      m_filtered_counts(0.0f),
+      m_buffer_idx(0),
+      m_buffer_fill(0),
+      m_is_stable(false)
+{
+  for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
+    m_recent[i] = 0.0f;
+}
 
 void LoadCell::init()
 {
@@ -397,12 +513,42 @@ void LoadCell::init()
   // effective rate, because the channel only changes on the NEXT conversion.
   m_hx711.begin(m_pin_dout, m_pin_sck, 128);
 
-  // NO PRIMING READ HERE, deliberately. begin() ends with a read() in some
-  // versions of this library and the obvious next step is to take one more to
-  // have a number in hand -- but setup() runs before the agent connects and
-  // before the motors are known to be stopped, and read() blocks forever on an
-  // amplifier that is not there. The first count arrives from update(), on the
-  // loop, where waiting for it costs nothing.
+  // BOUNDED BOOT ZERO. HX711::tare() would be the obvious call and it is the
+  // one thing this must not do: it averages ten conversions through
+  // wait_ready(), which has no timeout, so an amplifier that answers once and
+  // then stops takes setup() with it -- and setup() runs before the agent is
+  // up, so a board hung here is indistinguishable from one that was never
+  // flashed. Poll instead, take whatever arrives inside the window, and give
+  // up cleanly.
+  const uint32_t deadline = millis() + kInitTimeoutMs;
+  float sum = 0.0f;
+  uint8_t n = 0;
+  while (n < kInitSamples && (int32_t)(millis() - deadline) < 0)
+  {
+    if (m_hx711.is_ready())
+    {
+      const long v = m_hx711.read();
+      sum += (float)v;
+      ++n;
+      m_raw = v;
+      m_has_reading = true;
+      m_last_read_ms = millis();
+    }
+  }
+
+  if (n > 0)
+  {
+    m_filtered_counts = sum / (float)n;
+    m_zero_counts = m_filtered_counts;
+    m_zeroed = true;
+    for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
+      m_recent[i] = m_filtered_counts;
+    m_buffer_fill = kStabilityBufferSize;
+  }
+  // else: no amplifier answered. m_zeroed stays false and the first conversion
+  // update() collects becomes the zero, so a cell plugged in after boot still
+  // starts from a sensible reference instead of reading its whole standing
+  // offset as sample mass.
 }
 
 bool LoadCell::update()
@@ -417,24 +563,90 @@ bool LoadCell::update()
     return false;
 
   m_raw = m_hx711.read();
-  m_has_reading = true;
   m_last_read_ms = millis();
+
+  if (!m_has_reading)
+  {
+    // First conversion ever. Seed the filter with it rather than letting the
+    // EMA crawl up from 0 over the next second, which would otherwise read as
+    // a sample being poured in.
+    m_filtered_counts = (float)m_raw;
+    for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
+      m_recent[i] = m_filtered_counts;
+    m_buffer_fill = kStabilityBufferSize;
+    m_has_reading = true;
+  }
+  else
+  {
+    m_filtered_counts = kEmaAlpha * (float)m_raw + (1.0f - kEmaAlpha) * m_filtered_counts;
+  }
+
+  if (!m_zeroed)
+  {
+    m_zero_counts = m_filtered_counts;
+    m_zeroed = true;
+  }
+
+  m_recent[m_buffer_idx] = m_filtered_counts;
+  m_buffer_idx = (uint8_t)((m_buffer_idx + 1) % kStabilityBufferSize);
+  if (m_buffer_fill < kStabilityBufferSize)
+    ++m_buffer_fill;
+
+  // Peak-to-peak over the window, in WEIGHT units rather than counts: the band
+  // has to mean the same thing on all three cells, and their scale factors
+  // differ by a factor of 1.5 and one of them is negative.
+  float lo = m_recent[0];
+  float hi = m_recent[0];
+  for (uint8_t i = 1; i < m_buffer_fill; ++i)
+  {
+    if (m_recent[i] > hi)
+      hi = m_recent[i];
+    if (m_recent[i] < lo)
+      lo = m_recent[i];
+  }
+  const float span = (m_scale_factor != 0.0f) ? fabsf((hi - lo) / m_scale_factor) : 0.0f;
+  m_is_stable = (m_buffer_fill >= kStabilityBufferSize) && (span < kStableBand);
+
   return true;
 }
 
-int32_t LoadCell::reported(uint32_t now_ms) const
+void LoadCell::tare_empty()
 {
   if (!m_usable || !m_has_reading)
-    return kRail;
-  if (now_ms - m_last_read_ms > kStaleMs)
-    return kRail;
+    return;
 
-  // The HX711 cannot produce anything outside its 24-bit signed range, so this
-  // clamp is not about the converter. It is about the sentinel: a genuine
-  // reading that happened to land exactly on kRail would be read by the host as
-  // a dead cell. Pushing it one count off is a lie of 1/8388608 of full scale,
-  // and it keeps "reported the rail" meaning exactly one thing.
-  if (m_raw <= kRail)
-    return kRail + 1;
-  return (int32_t)m_raw;
+  m_zero_counts = m_filtered_counts;
+  m_zeroed = true;
+
+  // The lid zero was measured as a difference from the OLD empty zero, so it
+  // does not survive a new one. Upstream cleared it here for the same reason.
+  m_lid_counts = 0.0f;
+}
+
+void LoadCell::tare_with_lid()
+{
+  if (!m_usable || !m_has_reading)
+    return;
+
+  m_lid_counts = m_filtered_counts - m_zero_counts;
+}
+
+float LoadCell::get_soil_weight() const
+{
+  // A zero scale factor would be a divide by zero and a NaN or an infinity on
+  // the wire; report no reading instead, which is what it is.
+  if (m_scale_factor == 0.0f)
+    return NAN;
+
+  return (m_filtered_counts - m_zero_counts - m_lid_counts) / m_scale_factor;
+}
+
+float LoadCell::reported(uint32_t now_ms) const
+{
+  if (!m_usable || !m_has_reading)
+    return NAN;
+  if (now_ms - m_last_read_ms > kStaleMs)
+    return NAN;
+
+  return get_soil_weight();
 }

@@ -19,13 +19,15 @@
 #   Hold LT + Y/A/B      = planned move to a named arm preset
 #   Hold LT + D-pad      = drill feed (up/down) and sample bin (left/right)
 #   Hold LT + left stick = auger rotation, either direction
+#   Hold LT + right stick= sand box lid, either direction
 #                          (LB blocks the drill: LB + LT reaches nothing)
 #   Y alone      = sound
 #
 # The drill is on LT, not LB, because LB already means "rover drive" and its
 # left stick is the drive command - LB + left stick would spin the auger and
 # drive the rover at once. LT's only other binding is with the FACE buttons
-# (arm presets), so the d-pad and sticks are free under it.
+# (arm presets), so the d-pad and both sticks are free under it. All four are
+# now taken: feed, bin, auger, lid.
 #
 # Y is shared three ways, disambiguated by which shoulder button is held: bare
 # Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand
@@ -206,6 +208,23 @@ drill_joystick:
     bit_axis: 1
     bit_deadzone: 0.20
 
+    # THE SAND BOX LID -- right stick vertical, canonical axis 4. The last
+    # stick free under LT: 0/1 drives the auger, 2/5 are the triggers, 6/7 the
+    # d-pad, and LT + Y/A/B belongs to the arm presets.
+    #
+    # A SPEED, NOT A POSITION, and the topic goes STRAIGHT TO THE TEENSY as
+    # std_msgs/Float32 -- not through the gz bridge like the other three, and
+    # not simulated at all. The servo is continuous-rotation: it turns while the
+    # stick is pushed and stops when the zero arrives, which is exactly the
+    # hold-to-move feel every other drill axis already has.
+    lid_cmd_topic: "/sand_box/lid/cmd"
+    lid_axis: 4
+    lid_deadzone: 0.20
+
+    # Ceiling as a fraction of the servo's full speed. Drop it if the lid
+    # slams; the firmware clamps to -1..1 again regardless.
+    lid_max_speed: 1.0
+
     # MUST match drill.xacro's joint limits. Repeated here so the node can run
     # without a robot description; if the URDF stroke changes, change both.
     # These are the MECHANICAL stops - the limit switches sit limit_margin
@@ -225,8 +244,9 @@ drill_joystick:
     # WHICH AXES HAVE SWITCHES AT ALL.
     #
     # The feed carriage has two, bottom and top -- firmware/teensy_drill_sys/
-    # include/pins.h maps them as LIMIT_SWITCH1/2 (pins 4 and 5 since
-    # 2026-08-27).
+    # include/pins.h maps them as LIMIT_SWITCH1/2 (pin 7 bottom, pin 6 top,
+    # MEASURED with the board's own pin scan on 2026-08-27; 2/3 and then 4/5
+    # were both tried and both wrong).
     #
     # The sample bin has NONE that anything can read. The mechanism has a pair,
     # but they are not in the loom or the firmware pin map, and the bin has no
@@ -286,6 +306,16 @@ drill_joystick:
     invert_motor: false
     invert_container: false
     invert_bit: true
+
+    # WHICH WAY THE STICK OPENS THE LID. Unlike invert_bit and invert_motor
+    # this one has no correct answer to derive -- the lid servo has no position
+    # feedback, the firmware does not guess, and nothing in the URDF describes a
+    # lid. It is purely how the horn is fitted. Push the stick up on the bench;
+    # if the lid closes, set this true.
+    #
+    # Safe to flip here, unlike invert_motor: the lid has no limit switch and
+    # nothing downstream gates on its sign.
+    invert_lid: false
 
     # Zeros keep going out for this long after LT is released, so a single
     # dropped message cannot leave a motor running.

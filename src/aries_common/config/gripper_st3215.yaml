@@ -1,0 +1,87 @@
+# Bench calibration for the SECONDARY gripper (gripper_type:=st3215).
+#
+# These are the only numbers about that gripper that CANNOT be derived from the
+# CAD. Everything else - the 10.02676 mm of jaw travel per radian, the link
+# frames, the collision boxes - comes out of
+# scripts/build_gripper_st3215_meshes.py. These four come off the hardware, and
+# they change whenever the servo is unbolted or the pinion re-meshed.
+#
+# They are NOT in devices.yaml on purpose: that file is device identity (which
+# port, which serial, which address) and says so in its own header. This is
+# tuning, and it belongs with the thing it tunes.
+#
+# The workspace is built with --symlink-install, so an edit here takes effect on
+# the next launch with no rebuild. A launch argument still overrides the file:
+#
+#   ros2 launch aries_bringup full_hardware.launch.py gripper_type:=st3215 \
+#        gripper_closed_steps:=3300
+#
+# ---------------------------------------------------------------------------
+# HOW TO MEASURE EACH ONE
+# ---------------------------------------------------------------------------
+#
+# closed_steps
+#     DRIVE it closed and read where it STALLS. Do not push it closed by hand
+#     and read that: a hand flexes the jaws several hundred steps past where the
+#     servo can take them, and aiming q=+0.07 at the hand figure makes every
+#     close command push into a shortfall it can never deliver. That is audible
+#     as the motor straining, and it was measured once at 482 steps (7.4 mm per
+#     jaw) of difference between the two.
+#
+# open_stop_steps
+#     Torque off, back-drive to the open stop by hand, read it. The open end is
+#     a hard mechanical stop rather than jaws meeting, so the hand figure is the
+#     right one here.
+#
+# invert
+#     true if a RISING step count opens the jaws. On this gripper it does not -
+#     opening lowers the count - so false.
+#
+#     THE STEP NUMBERS ALONE CANNOT TELL YOU WHICH STOP IS WHICH. Both
+#     assignments are valid arithmetic and leave the same margins, so pair every
+#     reading with a look at the jaws. Getting it backwards yields a gripper
+#     that opens on the close command and closes on the open one, with nothing
+#     in any log to say so.
+#
+# Read them with:
+#     python3 scripts/st3215_test.py --monitor      # torque off, back-drive
+#     python3 scripts/st3215_test.py --where        # single reading
+
+# Servo step with the jaws closed. This is q = +0.07 rad, the angle this whole
+# stack calls "closed". Measured 2026-08-29.
+closed_steps: 3307
+
+# Servo step at the open mechanical stop. Commands stop margin_steps short of it.
+open_stop_steps: 489
+
+# Does a rising step count OPEN the jaws?
+invert: false
+
+# How far short of the open stop we are willing to command, and how far past it
+# the URDF joint limit is allowed to reach.
+#
+# THESE TWO ARE NOT THE SAME KIND OF NUMBER and conflating them broke arm
+# planning once. The joint LIMIT is what the joint may BE: it must cover every
+# pose the gripper can physically hold, or a parked gripper reports out of
+# bounds and MoveIt refuses to plan for the whole arm, not just the gripper.
+# The COMMAND margin is what we are willing to ask for: held short of the stop
+# so the servo never stalls against it. Generous on observation, tight on
+# command.
+margin_steps: 50
+limit_slack_steps: 25
+
+# ---------------------------------------------------------------------------
+# NOT A SETTING - A DEPENDENCY, recorded so it is not lost
+# ---------------------------------------------------------------------------
+# The servo's position-correction register (address 31) is set to 1232; it left
+# the factory at 85. Without that offset this gripper's stroke straddles the
+# 4095/0 encoder seam, and a single-turn servo in position mode CANNOT hold a
+# goal across it - told to cross, it takes the direct numeric path, which is the
+# long way round, backwards through the whole mechanism at full torque. No
+# value below fixes that.
+#
+# IF THE SERVO IS SWAPPED OR FACTORY-RESET, SET reg31 FIRST or every number here
+# is wrong. Torque must be off while writing it, and it is an EPROM write:
+#
+#   sv.w8(55, 0); sv.w16(31, 1232); sv.w8(55, 1)     # unlock, write, lock
+position_correction_reg31: 1232

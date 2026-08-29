@@ -26,10 +26,25 @@
 //   motor2/cmd_speed           Int32    -255..255  FEED, drill up/down feed_motor
 //   linact/state               UInt8    1=extend 2=retract 3/4=home    bin_actuator
 //   linact/cext                Float32  signed mm, sample bin fore/aft bin_actuator
-//   sand_box/lid/cmd           Float32  0=closed 1=open                lid_servo
-//   load_cells/raw             Int32MultiArray  three RAW converter    load_cell_*
-//                                       counts, 10 Hz, in the order
-//                                       sand box / stone box / bin
+//   sand_box/lid/cmd           Float32  lid SPEED, -1..1, 0=stop       lid_servo
+//   sand_box/weight            Float32  net sample weight, 5 Hz        load_cells[0]
+//   rock_box/weight            Float32     "   (stone box)             load_cells[1]
+//   drill_cont/weight          Float32     "   (drill bin)             load_cells[2]
+//   sand_box/tare              UInt8    1=zero empty 2=zero the lid    load_cells[0]
+//   rock_box/tare              UInt8       "                           load_cells[1]
+//   drill_cont/tare            UInt8       "                           load_cells[2]
+//
+// THE LOAD CELLS PUBLISH WEIGHTS NOW, NOT COUNTS, and the host package that
+// used to scale them (aries_load_cells) has been deleted. Calibration is
+// compiled in -- HX711_*_SCALE in pins.h -- and taring is the message above
+// rather than a ROS service. A cell that has stopped converting publishes NaN,
+// never 0.0, because 0.0 is exactly what an empty box reads.
+//
+// THE LID IS A CONTINUOUS-ROTATION SERVO and sand_box/lid/cmd is a SPEED, not
+// a position. It was a position until 2026-08-29 and driving this servo that
+// way does not park the lid anywhere. There is a 500 ms watchdog on it in
+// LidServo::update(): a speed command has no resting state, so a dropped link
+// with the lid turning would otherwise turn it forever.
 //
 // THE TOPIC NAMES AND THE C++ NAMES DELIBERATELY DIFFER for the drill's three
 // axes. The topics are the wire contract with aries_bringup's drill_driver
@@ -46,9 +61,11 @@
 // drill_bit_joint is the auger's rotation. Those are load-bearing across the
 // URDF, the gz bridge and the joystick, so they stay as they are.
 //
-// NOTHING ON THE HOST DRIVES THE LID YET -- deliberately. There is no joystick
-// binding and no node; it is reachable with `ros2 topic pub` and from a mission
-// script, and the operator surface comes later.
+// THE LID IS ON THE PAD as of 2026-08-29: LT + right stick up/down, published
+// by aries_teleop's drill_joystick at 30 Hz while the stick is held, with the
+// usual half-second burst of zeros on release. That burst and the watchdog here
+// are two independent ways for the lid to stop; it needs both, because it
+// cannot stop itself.
 //
 // The agent is started by aries_hardware.launch.py. By hand:
 //   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 115200
@@ -71,7 +88,6 @@
 
 #include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/int32.h>
-#include <std_msgs/msg/int32_multi_array.h>
 #include <std_msgs/msg/u_int32.h>
 #include <std_msgs/msg/u_int64.h>
 #include <std_msgs/msg/u_int8.h>
@@ -99,11 +115,18 @@ static const uint32_t MOTOR_COMMAND_TIMEOUT_MS = 500;
 // gripper hardware interface runs at.
 static const uint32_t GRIPPER_STATE_PERIOD_MS = 10;
 
-// load_cells/raw publish period. 10 Hz, matching publish_rate_hz in
-// aries_load_cells/config/load_cells.yaml and the HX711's own 10 SPS: faster
-// here would republish the same conversion under a new timestamp, which reads
-// as a live sensor and is not one.
+// Weight publish period, one publish per cell per tick. 10 Hz is the HX711's
+// own conversion rate at its default 10 SPS strapping, so anything faster
+// republishes the same conversion under a new timestamp -- which reads as a
+// live sensor and is not one.
 static const uint32_t LOAD_CELL_PERIOD_MS = 100;
+
+// How long the lid may keep turning after the last command. It is a
+// continuous-rotation servo with no end of travel and no stop of its own, so
+// this is the only thing that stops it if drill_joystick dies or the link drops
+// mid-move. 500 ms at the joystick's 30 Hz is fifteen missed messages -- far
+// past ordinary jitter, and a fraction of the lid's travel.
+static const uint32_t LID_COMMAND_TIMEOUT_MS = 500;
 
 // THE ROS DOMAIN. MUST MATCH network.domain_id IN
 // src/aries_common/config/devices.yaml.
@@ -172,18 +195,18 @@ rcl_publisher_t gservo_state_pub;
 std_msgs__msg__Float32 gservo_state_msg;
 SlewServo gservo(GRIPPER_SERVO);
 
-// Lid of the front-left deck container (the sand box). Same class, same 0..1
-// range and same slew rate as the gripper -- 0.0 is CLOSED, and it is also
-// where SlewServo starts, so the lid is commanded shut within microseconds of
-// reset rather than sitting wherever it was left.
+// Lid of the front-left deck container (the sand box). A CONTINUOUS-ROTATION
+// servo, so the command is a speed in -1..1 and NOT a position -- see LidServo
+// in drill.h for why that distinction is the whole class.
 //
-// That boot write is a JUMP, not a slew: init() writes the position directly,
-// before the slew clock starts. A lid left open therefore snaps shut on power
-// up. Correct for a sample container, but it is a real movement at power-up
-// and worth knowing about with fingers near the hinge.
+// It does not snap shut at power-up the way the old positional version did.
+// init() writes the neutral (stop) pulse and nothing else, so a lid left open
+// stays open until somebody drives it. That is the safer boot for a servo that
+// cannot tell where it is: the alternative would be turning at full speed
+// toward a closed position it has no way to detect reaching.
 rcl_subscription_t lid_cmd_sub;
 std_msgs__msg__Float32 lid_cmd_msg;
-SlewServo lid_servo(LID_SERVO_SAND_BOX);
+LidServo lid_servo(LID_SERVO_SAND_BOX, LID_SERVO_NEUTRAL_US, LID_SERVO_MAX_DEVIATION_US);
 
 // Both switches are on the FEED CARRIAGE, one at each end of its travel. The
 // auger is a spindle and has no end of travel; the delivered firmware stopped
@@ -211,54 +234,60 @@ std_msgs__msg__UInt8 drill_limits_msg;
 // Three HX711 amplifiers, each with its own private DT/SCK pair -- NOT the
 // usual shared-clock chain. Six pins. See pins.h and PINOUT.md.
 //
-// THE CONSTRUCTION ORDER BELOW IS THE WIRE FORMAT. load_cells/raw carries one
-// element per cell in the order of `cells` in
-// aries_load_cells/config/load_cells.yaml:
+// EACH CELL HAS ITS OWN TOPIC, so a swap is visible rather than silent. The old
+// wire format was one Int32MultiArray whose ELEMENT ORDER was the only thing
+// identifying which box was which: exchange two entries and the sand box
+// reported the stone, both numbers stayed entirely plausible, and no log line
+// anywhere said a word. Three named topics cannot be reordered.
 //
-//     ["sand_box", "stone_box", "drill_container"]
+// KILOGRAMS-OR-WHATEVER, NOT COUNTS. HX711_*_SCALE in pins.h turns counts into
+// weight, and the unit is whatever those factors were derived in -- which is
+// not recorded anywhere. See pins.h for how to re-derive one against a known
+// mass. The tare, the filtering and the scaling all now happen on this board;
+// aries_load_cells, which used to do all three from YAML, has been removed.
 //
-// The firmware sends no names, so there is nothing anywhere to catch a swap:
-// exchange two entries here and the sand box reports the stone, both numbers
-// stay entirely plausible, and no log line anywhere says a word.
-//
-// RAW COUNTS, NOT KILOGRAMS. Scale, offset and tare live in that package's
-// YAML so a recalibration is an edit and a relaunch rather than a reflash with
-// the rover open, and this board stays a thing that reads ADCs.
+// `rock_box` is what the embedded team's firmware calls the box this workspace
+// calls `stone_box`. The topic keeps the firmware's name; the C++ keeps ours.
 #define LOAD_CELL_COUNT 3
 LoadCell load_cells[LOAD_CELL_COUNT] = {
-    LoadCell(HX711_SAND_BOX_DT, HX711_SAND_BOX_SCK),
-    LoadCell(HX711_STONE_BOX_DT, HX711_STONE_BOX_SCK),
-    LoadCell(HX711_DRILL_CONTAINER_DT, HX711_DRILL_CONTAINER_SCK),
+    LoadCell(HX711_SAND_BOX_DT, HX711_SAND_BOX_SCK, HX711_SAND_BOX_SCALE),
+    LoadCell(HX711_STONE_BOX_DT, HX711_STONE_BOX_SCK, HX711_STONE_BOX_SCALE),
+    LoadCell(HX711_DRILL_CONTAINER_DT, HX711_DRILL_CONTAINER_SCK, HX711_DRILL_CONTAINER_SCALE),
 };
 
-rcl_publisher_t load_cells_raw_pub;
-std_msgs__msg__Int32MultiArray load_cells_raw_msg;
+// Indices into load_cells[], and into the two parallel arrays below. Named
+// because `load_cells[1]` in a callback is exactly the kind of thing that gets
+// mis-typed once and then reads the wrong box forever.
+enum LoadCellIndex : uint8_t
+{
+  CELL_SAND_BOX = 0,
+  CELL_STONE_BOX = 1,
+  CELL_DRILL_CONTAINER = 2,
+};
 
-// THE MESSAGE BODY, AND IT HAS TO BE HANDED TO THE MESSAGE BY HAND.
-//
-// Int32MultiArray is the first message on this board with a DYNAMIC ARRAY in
-// it, and micro-ROS does not allocate one for you. The message is a zero-filled
-// global, so `data.data` is NULL and `data.capacity` is 0 until something
-// assigns them -- and rcl_publish on that does not fail loudly, it serialises a
-// zero-length array. The host then reports "load_cells/raw carried 0 counts for
-// 3 cells; ignoring the message" forever while every entity looks perfectly
-// healthy on both ends.
-//
-// Static, not malloc'd: the size is fixed at three and the board has no
-// business taking a heap allocation on a path this hot.
-static int32_t load_cells_raw_buf[LOAD_CELL_COUNT];
+rcl_publisher_t load_cell_pubs[LOAD_CELL_COUNT];
+std_msgs__msg__Float32 load_cell_msgs[LOAD_CELL_COUNT];
 
-// Whether any amplifier has ever answered. Until one has, the array is NOT
-// published at all.
+// Zero the container / zero the lid, per cell. UInt8, 1 and 2, matching the
+// embedded team's own convention:
 //
-// The alternative -- publish three rails from the first second -- is worse in
-// the case that is true today: no cells fitted, and the host would show three
-// standing faults that mean nothing more than "there is no hardware here". A
-// silent topic is exactly what aries_load_cells' own "no counts yet - is the
-// Teensy's firmware publishing?" message is for. Once ONE cell is alive the
-// array goes out complete every cycle, rails included, so a single unplugged
-// amplifier among three working ones is loud rather than reported as an empty
-// box.
+//   1  tare_empty()     -- the box AS IT STANDS is zero. Empty it first.
+//   2  tare_with_lid()  -- whatever has been added since 1 is the lid.
+//
+// A service would be the natural ROS shape for a one-shot like this, and it is
+// deliberately not one: rmw_microxrcedds sizes its service table at compile
+// time as well, and three more services cost more of that fixed pool than three
+// subscriptions do. `ros2 topic pub --once` is the interface.
+rcl_subscription_t load_cell_tare_subs[LOAD_CELL_COUNT];
+std_msgs__msg__UInt8 load_cell_tare_msgs[LOAD_CELL_COUNT];
+
+// Whether any amplifier has ever answered. Until one has, NOTHING is published.
+//
+// The alternative -- three NaNs from the first second -- is worse in the case
+// that is true today: no cells fitted, and the operator would see three
+// standing faults that mean nothing more than "there is no hardware here". Once
+// ONE cell is alive all three go out every cycle, NaNs included, so a single
+// unplugged amplifier among three working ones is loud rather than absent.
 static bool load_cells_present = false;
 
 // --- Pin scan: WHERE IS THE SWITCH ACTUALLY WIRED? --------------------------
@@ -277,8 +306,14 @@ static bool load_cells_present = false;
 //
 // INPUT ONLY. Every pin here is configured INPUT_PULLUP and never driven, so
 // this cannot fight anything already on the harness.
+//
+// 38 IS DELIBERATELY NOT IN THIS LIST since the lid servo moved onto it. A pin
+// that is scanned AND driven is worse than either alone: setup() would make it
+// INPUT_PULLUP, Servo::attach() would take it back as an OUTPUT, and the scan
+// would then report the servo's own 50 Hz pulse train as a switch closing and
+// opening forever. Keep this list and pins.h disjoint -- nothing checks it.
 static const uint8_t kScanPins[] = {
-    0, 1, 2, 3, 4, 5, 8, 9, 11, 12, 14, 20, 21, 24, 25, 26, 27, 38, 39,
+    0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 20, 21, 24, 25, 26, 27, 39,
     // The two the switches are SUPPOSED to be on, reported alongside for
     // comparison. Already INPUT_PULLUP via LimitSwitch::init().
     LIMIT_SWITCH1, LIMIT_SWITCH2,
@@ -413,6 +448,14 @@ void bin_cext_cmd_callback(const void *msin);
 void stalig_state_cmd_callback(const void *msin);
 void gservo_cmd_callback(const void *msin);
 void lid_cmd_callback(const void *msin);
+void sand_box_tare_callback(const void *msin);
+void rock_box_tare_callback(const void *msin);
+void drill_cont_tare_callback(const void *msin);
+
+// One tare implementation, three thin callbacks. rclc hands a callback only the
+// message, with no way to pass the cell it belongs to, so the index has to come
+// from which function was registered.
+static void apply_tare(uint8_t cell, const void *msin);
 
 static bool create_entities()
 {
@@ -522,53 +565,87 @@ static bool create_entities()
     return false;
   entities_stage = 10;
 
-  // SEVEN subscriptions. RMW_UXRCE_MAX_SUBSCRIPTIONS defaults to 5 in
-  // micro_ros_platformio, so this needs the raised limit in colcon.meta at the
-  // project root (currently 8) -- without it the sixth init above fails and the
-  // board is dead. That file is part of the build, not a convenience, and it is
-  // the file to check before adding an eighth.
+  // RELIABLE, and one-shot in the strongest sense on this board: a tare that is
+  // dropped leaves the operator believing a box is zeroed when it is not, and
+  // every weight after it is wrong by a constant nobody can see.
+  //
+  // TEN SUBSCRIPTIONS NOW. RMW_UXRCE_MAX_SUBSCRIPTIONS defaults to 5 in
+  // micro_ros_platformio and colcon.meta at the project root raises it to 12.
+  // Without the raised limit the over-the-line init returns an error,
+  // create_entities() bails, and the board sits in WAITING_AGENT with USB
+  // enumerated -- which looks exactly like an unflashed Teensy. That file is
+  // part of the build, not a convenience.
+  if (RCL_RET_OK != rclc_subscription_init_default(
+                        &load_cell_tare_subs[CELL_SAND_BOX], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "sand_box/tare"))
+    return false;
+  entities_stage = 11;
+
+  if (RCL_RET_OK != rclc_subscription_init_default(
+                        &load_cell_tare_subs[CELL_STONE_BOX], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "rock_box/tare"))
+    return false;
+  entities_stage = 12;
+
+  if (RCL_RET_OK != rclc_subscription_init_default(
+                        &load_cell_tare_subs[CELL_DRILL_CONTAINER], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "drill_cont/tare"))
+    return false;
+  entities_stage = 13;
+
   // RELIABLE, unlike /gripper/state: this is an edge, not a stream. Losing the
   // sample where a switch closes is losing the whole message.
   if (RCL_RET_OK != rclc_publisher_init_default(
                         &drill_limits_pub, &node,
                         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "drill/limits"))
     return false;
-  entities_stage = 11;
+  entities_stage = 14;
 
   if (RCL_RET_OK != rclc_publisher_init_default(
                         &pin_scan_pub, &node,
                         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt64), "drill/pin_scan"))
     return false;
-  entities_stage = 12;
+  entities_stage = 15;
 
   // RELIABLE, AND THAT IS NOT A PREFERENCE. The rate argues for best effort --
-  // 10 Hz, newest supersedes -- but aries_load_cells subscribes with
-  // `create_subscription(Int32MultiArray, ..., 10)`, which is rclpy's DEFAULT
-  // QoS, which is RELIABLE. A BEST_EFFORT publisher and a RELIABLE subscriber
-  // are an incompatible pair and DDS makes no match at all: both sides list the
-  // topic, `ros2 topic info` shows a publisher and a subscriber, and not one
-  // message is ever delivered. That is the same trap /gripper/state documents
-  // above, from the other direction. Change this only together with the QoS on
-  // the host subscription.
+  // 10 Hz, newest supersedes -- but the natural consumers are `ros2 topic echo`
+  // and rclpy's `create_subscription(..., 10)`, which is RELIABLE. A BEST_EFFORT
+  // publisher and a RELIABLE subscriber are an incompatible pair and DDS makes
+  // NO match at all: both sides list the topic, `ros2 topic info` shows a
+  // publisher and a subscriber, and not one message is ever delivered. That is
+  // the same trap /gripper/state documents above, from the other direction.
   //
-  // FOURTH PUBLISHER. RMW_UXRCE_MAX_PUBLISHERS is 4 by default in
-  // micro_ros_platformio and colcon.meta at the project root raises it to 5 --
-  // without that, this init fails, create_entities() bails, and the board sits
-  // in WAITING_AGENT with USB enumerated, looking exactly like an unflashed
-  // Teensy. Check that file before adding a fifth.
+  // SIX PUBLISHERS. RMW_UXRCE_MAX_PUBLISHERS is 4 by default in
+  // micro_ros_platformio and colcon.meta raises it to 8. Check that file before
+  // adding a ninth.
   //
   // No leading slash under an empty namespace, as stacklight_subscription is,
-  // which resolves to /load_cells/raw -- the name load_cells.yaml names.
+  // so these resolve to /sand_box/weight and so on.
   if (RCL_RET_OK != rclc_publisher_init_default(
-                        &load_cells_raw_pub, &node,
-                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray),
-                        "load_cells/raw"))
+                        &load_cell_pubs[CELL_SAND_BOX], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "sand_box/weight"))
     return false;
-  entities_stage = 13;
+  entities_stage = 16;
 
-  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 7, &allocator))
+  if (RCL_RET_OK != rclc_publisher_init_default(
+                        &load_cell_pubs[CELL_STONE_BOX], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "rock_box/weight"))
     return false;
-  entities_stage = 14;
+  entities_stage = 17;
+
+  if (RCL_RET_OK != rclc_publisher_init_default(
+                        &load_cell_pubs[CELL_DRILL_CONTAINER], &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "drill_cont/weight"))
+    return false;
+  entities_stage = 18;
+
+  // TEN HANDLES, one per subscription. rclc_executor_init sizes a fixed array
+  // and rclc_executor_add_subscription past the end returns an error this code
+  // does not check -- the extra subscription is simply never spun, so its topic
+  // exists, matches, and silently delivers nothing.
+  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 10, &allocator))
+    return false;
+  entities_stage = 19;
 
   rclc_executor_add_subscription(&executor, &gservo_cmd_sub, &gservo_cmd_msg,
                                  &gservo_cmd_callback, ON_NEW_DATA);
@@ -584,6 +661,15 @@ static bool create_entities()
                                  &bin_cext_cmd_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &lid_cmd_sub, &lid_cmd_msg,
                                  &lid_cmd_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &load_cell_tare_subs[CELL_SAND_BOX],
+                                 &load_cell_tare_msgs[CELL_SAND_BOX],
+                                 &sand_box_tare_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &load_cell_tare_subs[CELL_STONE_BOX],
+                                 &load_cell_tare_msgs[CELL_STONE_BOX],
+                                 &rock_box_tare_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &load_cell_tare_subs[CELL_DRILL_CONTAINER],
+                                 &load_cell_tare_msgs[CELL_DRILL_CONTAINER],
+                                 &drill_cont_tare_callback, ON_NEW_DATA);
   return true;
 }
 
@@ -596,14 +682,24 @@ static void destroy_entities()
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
   // Reverse creation order.
-  if (entities_stage >= 14)
+  if (entities_stage >= 19)
     rclc_executor_fini(&executor);
-  if (entities_stage >= 13)
-    IGNORE_RC(rcl_publisher_fini(&load_cells_raw_pub, &node));
-  if (entities_stage >= 12)
+  if (entities_stage >= 18)
+    IGNORE_RC(rcl_publisher_fini(&load_cell_pubs[CELL_DRILL_CONTAINER], &node));
+  if (entities_stage >= 17)
+    IGNORE_RC(rcl_publisher_fini(&load_cell_pubs[CELL_STONE_BOX], &node));
+  if (entities_stage >= 16)
+    IGNORE_RC(rcl_publisher_fini(&load_cell_pubs[CELL_SAND_BOX], &node));
+  if (entities_stage >= 15)
     IGNORE_RC(rcl_publisher_fini(&pin_scan_pub, &node));
-  if (entities_stage >= 11)
+  if (entities_stage >= 14)
     IGNORE_RC(rcl_publisher_fini(&drill_limits_pub, &node));
+  if (entities_stage >= 13)
+    IGNORE_RC(rcl_subscription_fini(&load_cell_tare_subs[CELL_DRILL_CONTAINER], &node));
+  if (entities_stage >= 12)
+    IGNORE_RC(rcl_subscription_fini(&load_cell_tare_subs[CELL_STONE_BOX], &node));
+  if (entities_stage >= 11)
+    IGNORE_RC(rcl_subscription_fini(&load_cell_tare_subs[CELL_SAND_BOX], &node));
   if (entities_stage >= 10)
     IGNORE_RC(rcl_subscription_fini(&lid_cmd_sub, &node));
   if (entities_stage >= 9)
@@ -803,27 +899,19 @@ void setup()
   gservo.init();
   lid_servo.init();
 
+  // THE ONE BLOCKING CALL IN setup(), and it is bounded. Each cell polls for a
+  // boot zero for at most LoadCell::kInitTimeoutMs, so three unfitted cells
+  // cost about 1.2 s here. That is deliberately AFTER every output above is at
+  // a known safe level -- direction pins low, servos at their stop, light off
+  // -- so the board is never sitting in this loop with a bridge input floating.
+  //
+  // It is bounded rather than absent because a cell with no zero reference
+  // reports its entire standing offset as sample mass on the first reading. The
+  // alternative -- HX711::tare(), which is what this would obviously be -- has
+  // no timeout at all and takes setup() with it when an amplifier answers once
+  // and then stops.
   for (uint8_t i = 0; i < LOAD_CELL_COUNT; ++i)
     load_cells[i].init();
-
-  // Point the message at its buffer ONCE, here, rather than inside
-  // create_entities(). The message and the buffer are both globals that
-  // outlive every agent session, and create_entities() runs again on every
-  // reconnect -- so doing it here means a reconnect cannot leave the message
-  // pointing at nothing. See the note on load_cells_raw_buf for what an
-  // unassigned sequence actually does (it publishes, emptily, in silence).
-  load_cells_raw_msg.data.data = load_cells_raw_buf;
-  load_cells_raw_msg.data.size = LOAD_CELL_COUNT;
-  load_cells_raw_msg.data.capacity = LOAD_CELL_COUNT;
-  // No dimensions. The layout block is optional in Int32MultiArray and
-  // aries_load_cells reads msg.data alone, so an empty dim sequence keeps three
-  // rosidl strings off a board that would have to allocate them. It still has
-  // to be explicitly empty rather than merely zeroed by accident, because
-  // serialisation walks it.
-  load_cells_raw_msg.layout.dim.data = NULL;
-  load_cells_raw_msg.layout.dim.size = 0;
-  load_cells_raw_msg.layout.dim.capacity = 0;
-  load_cells_raw_msg.layout.data_offset = 0;
 
   set_microros_serial_transports(Serial);
 
@@ -840,11 +928,16 @@ void loop()
   const uint32_t now = millis();
   static uint32_t last_ping_ms = 0;
 
-  // Run regardless of agent state, so both servos always track their last
-  // commanded target smoothly. The lid is included for the boot case: with no
-  // agent ever connected it still slews to, and holds, CLOSED.
+  // Both regardless of agent state. gservo.update() is the slew step, and it
+  // has to keep running or the jaws stop partway through a move the instant the
+  // link hiccups.
+  //
+  // lid_servo.update() is a WATCHDOG, not a slew, and it matters most in
+  // exactly the states where the agent is gone: it is what stops a lid that was
+  // turning when the link dropped. Gate it on AGENT_CONNECTED and the one case
+  // it exists for is the one case it would not cover.
   gservo.update();
-  lid_servo.update();
+  lid_servo.update(LID_COMMAND_TIMEOUT_MS);
 
   // Also regardless of agent state, for two reasons. The counts are wanted the
   // instant the link comes up rather than 100 ms later, and -- the one that
@@ -938,10 +1031,14 @@ void loop()
     }
 
     // Every cycle, unconditionally -- no publish-on-change and no dead band.
-    // This is a continuous measurement of a mass being poured, and the host is
-    // averaging it (filter_samples in load_cells.yaml) and timing it
-    // (timeout_s), both of which need the samples to keep arriving. `valid` on
-    // the bin's number is the host's job and it never withholds the number.
+    // This is a continuous measurement of a mass being poured, and a topic that
+    // goes quiet while a number is not changing is indistinguishable from a
+    // board that has gone away.
+    //
+    // is_stable() is NOT consulted here, and that is deliberate: withholding
+    // the sample while soil is falling hides precisely the part of the pour the
+    // operator is watching. Stability is a property of the reading, not a
+    // licence to publish it.
     if (load_cells_present)
     {
       static uint32_t last_cells_pub_ms = 0;
@@ -950,8 +1047,10 @@ void loop()
       {
         last_cells_pub_ms = cells_now;
         for (uint8_t i = 0; i < LOAD_CELL_COUNT; ++i)
-          load_cells_raw_buf[i] = load_cells[i].reported(cells_now);
-        IGNORE_RC(rcl_publish(&load_cells_raw_pub, &load_cells_raw_msg, NULL));
+        {
+          load_cell_msgs[i].data = load_cells[i].reported(cells_now);
+          IGNORE_RC(rcl_publish(&load_cell_pubs[i], &load_cell_msgs[i], NULL));
+        }
       }
     }
 
@@ -973,8 +1072,11 @@ void loop()
   case AGENT_DISCONNECTED:
     // Everything off before the teardown. The link is gone, so no stop command
     // can arrive; leaving the auger turning until the watchdog notices would be
-    // half a second of a cutting tool nobody is talking to.
+    // half a second of a cutting tool nobody is talking to. The lid is stopped
+    // here for the same reason and ahead of its own 500 ms timeout -- a known
+    // disconnect is not something to wait out.
     stop_all_motors();
+    lid_servo.stop();
     destroy_entities();
     // Re-initialise the transport so the agent can reopen the port immediately
     // instead of waiting for USB re-enumeration.
@@ -1070,11 +1172,35 @@ void gservo_cmd_callback(const void *msin)
 
 void lid_cmd_callback(const void *msin)
 {
-  // 0.0 closed, 1.0 open, anything between held there. set_target clamps, so
-  // an out-of-range value is the nearer end rather than a servo driven past its
-  // stop. No watchdog: a lid is meant to stay where it was put, and closing it
-  // on a lost link would tip out a sample the operator was mid-way through
-  // collecting.
+  // A SPEED in -1..1, not a position. 0.0 stops; the sign is the direction, and
+  // which sign opens the lid is chosen on the host (invert_lid in
+  // joystick.yaml) because it is a fact about how the servo is mounted.
+  // set_speed clamps, so an out-of-range value is full speed rather than a
+  // pulse width outside what the servo will accept.
+  //
+  // Every message here also re-arms the watchdog in LidServo::update(). A host
+  // that stops publishing therefore stops the lid within
+  // LID_COMMAND_TIMEOUT_MS, whether it meant to or not.
   const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msin;
-  lid_servo.set_target(msg->data);
+  lid_servo.set_speed(msg->data);
 }
+
+// --- Taring -----------------------------------------------------------------
+//
+// 1 = zero the empty container, 2 = zero the lid on top of it. Anything else is
+// ignored rather than guessed at: there is no third sensible reading of this
+// message, and a mis-typed value that silently re-zeroed a box mid-task would
+// be invisible until the numbers stopped adding up.
+static void apply_tare(uint8_t cell, const void *msin)
+{
+  const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msin;
+
+  if (msg->data == 1)
+    load_cells[cell].tare_empty();
+  else if (msg->data == 2)
+    load_cells[cell].tare_with_lid();
+}
+
+void sand_box_tare_callback(const void *msin) { apply_tare(CELL_SAND_BOX, msin); }
+void rock_box_tare_callback(const void *msin) { apply_tare(CELL_STONE_BOX, msin); }
+void drill_cont_tare_callback(const void *msin) { apply_tare(CELL_DRILL_CONTAINER, msin); }

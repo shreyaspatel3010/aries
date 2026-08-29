@@ -82,8 +82,9 @@
 
 // --- Sample-bin linear actuator ---------------------------------------------
 // The bin rides its rails between q = 0 (parked forward of the mast) and
-// q = -0.1304 (back under the auger); see aries/urdf/drill.xacro and the
-// aries_load_cells README, which depends on knowing which end it is at.
+// q = -0.1304 (back under the auger); see aries/urdf/drill.xacro. Which end it
+// is at matters for reading the bin's own load cell, and the bin has no
+// position sensor -- see PINOUT.md.
 //
 // CONFIRMED from the bench, 2026-08-26: 28 / 30 / 29. 28 is PWM-capable.
 //
@@ -126,7 +127,7 @@
 // across two axes; the firmware has two instances (LIMIT_SWITCH_INSTANCES in
 // drill.h, which caps the ISR router table). Wiring the bin's pair needs that
 // constant raised to 4 and two more routers added. Until then the bin is
-// dead-reckoned, exactly as the aries_load_cells README describes.
+// dead-reckoned from the commanded rate, which drifts from the first slip.
 #define LIMIT_SWITCH1 7  // feed carriage, BOTTOM of travel
 #define LIMIT_SWITCH2 6  // feed carriage, TOP of travel
 
@@ -159,14 +160,50 @@
 // only two places to change. The identification came from the load-cell table,
 // not from the hardware.
 //
-// PROPOSED, NOT CONFIRMED. Pin 10 is free and PWM-capable. It is also SPI0 CS
-// -- harmless here, nothing on this board uses SPI, but worth knowing before
-// anything is added that does.
+// PIN 38 SINCE 2026-08-29. It was 10 for the whole life of this firmware, and
+// before that 9, next to the gripper servo.
 //
-// It used to sit next to the gripper servo on 9 so the two servo leads landed
-// together; the gripper moved to 23 on 2026-08-26 and they are no longer
-// adjacent.
-#define LID_SERVO_SAND_BOX 10
+// 38 IS NOT A PWM PIN ON A TEENSY 4.1, AND THAT DOES NOT MATTER. FlexPWM1_2
+// reaches pin 38 on a Teensy 4.0; on the 4.1 that pad is pins 46/47 instead
+// (see the table in the core's pwm.c). Nothing here needs it: the Teensy Servo
+// library does not use PWM hardware at all -- Servo::attach() does
+// pinMode(pin, OUTPUT) and the pulses are bit-banged with digitalWrite from a
+// timer ISR, so any digital pin works. analogWrite() on this pin would NOT
+// work, and nothing calls it here.
+//
+// 38 IS ALSO A PIN THE DIAGNOSTIC SCAN USED TO WATCH. It was in kScanPins in
+// main.cpp -- the list of otherwise-unused pins the board reports on
+// drill/pin_scan -- and it has been removed from it. Leaving it there would
+// have had setup() configure it INPUT_PULLUP, Servo::attach() then take it back
+// as an OUTPUT, and pin_scan_state() read the servo's own pulse train back as
+// "something is pulling this pin low", flickering a diagnostic bit at 50 Hz
+// forever. ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE: the two lists
+// have to stay disjoint and nothing checks that they are.
+//
+// A CONTINUOUS-ROTATION SERVO, NOT A POSITIONAL ONE, also since 2026-08-29. It
+// is driven by LidServo rather than SlewServo and takes a SPEED in -1..1, not
+// an angle. See the LidServo comment in drill.h, and LID_SERVO_NEUTRAL_US
+// below.
+#define LID_SERVO_SAND_BOX 38
+
+// THE PULSE WIDTH AT WHICH THE LID SERVO ACTUALLY HOLDS STILL, in microseconds.
+//
+// NOT A CONSTANT OF THE PART -- it is a property of THIS INDIVIDUAL SERVO, set
+// by how its centring potentiometer was trimmed on the line, and 1500 is only
+// where they cluster. It is the one number here that cannot be looked up, and
+// it is the first thing to check if the lid creeps with the stick released:
+// creep at rest is this number being wrong and is nothing else.
+//
+// To trim it: `ros2 topic pub --once /sand_box/lid/cmd std_msgs/Float32
+// "data: 0.0"`, watch the horn, and move this up or down 10 us at a time until
+// it is genuinely still. It needs a reflash each time -- see the note in
+// drill.h about what moving calibration into the firmware costs.
+#define LID_SERVO_NEUTRAL_US 1500
+
+// Offset from neutral that means full speed, in microseconds. 350-500 is the
+// usual range for a hobby servo; 400 is upstream's value and is a starting
+// point, not a measurement.
+#define LID_SERVO_MAX_DEVIATION_US 400
 
 // --- Load cells --------------------------------------------------------------
 // Three HX711 amplifiers, CONFIRMED from the bench 2026-08-26.
@@ -177,27 +214,45 @@
 // four. Anything written against a shared clock (including an earlier draft of
 // this file) is wrong.
 //
-// THE ORDER BELOW IS THE WIRE FORMAT. aries_load_cells expects one topic,
-// `load_cells/raw` (std_msgs/Int32MultiArray), three elements, in the order of
-// `cells` in aries_load_cells/config/load_cells.yaml:
-//     ["sand_box", "stone_box", "drill_container"]
-// The firmware sends no names to check itself against, so swapping two entries
-// makes the sand box report the stone and nothing anywhere notices.
+// CALIBRATED WEIGHTS, NOT RAW COUNTS, SINCE 2026-08-29 -- and this reverses the
+// decision that used to be recorded here. The board published raw converter
+// counts on one `load_cells/raw` array and a host package (aries_load_cells)
+// scaled them from YAML, so that a recalibration was an edit and a relaunch
+// rather than a reflash with the rover open. That package has been REMOVED. The
+// scale factors below are compiled in, the board publishes weights on three
+// separate topics, and taring is a message to the board rather than a ROS
+// service. The old argument still stands and is now simply a cost that has been
+// accepted: changing a number here means a reflash.
 //
-// RAW COUNTS, not kilograms. Scale and offset live in that package's YAML so a
-// recalibration is an edit and a relaunch, not a reflash with the rover open.
+// SCALE FACTOR IS COUNTS PER UNIT OF WEIGHT, the same sense as
+// HX711::set_scale() -- weight = (counts - zero) / scale. These three values
+// came with the embedded team's firmware; they have NOT been re-derived here,
+// and there is no note anywhere of which unit they are in. Treat the numbers on
+// the wire as provisional until one known mass has been put in each box.
 //
-// DRIVEN. main.cpp constructs one LoadCell per amplifier, in the order above,
-// and publishes their counts on load_cells/raw at 10 Hz. A cell with no
-// amplifier on its pins never blocks the board and never reports zero -- zero
-// is what an empty box reads -- it reports the converter's negative rail, which
-// the host already knows how to call a fault. See PINOUT.md.
+// TO RECALIBRATE a cell:
+//   1. Empty the box, then  ros2 topic pub --once /<cell>/tare std_msgs/UInt8 "data: 1"
+//   2. Put a KNOWN mass in and read /<cell>/weight
+//   3. new_scale = old_scale * (reading / true_mass)
+//   4. Edit the value here and reflash.
+//
+// THE SIGN IS WHICH WAY THE CELL IS BOLTED IN, not an error. The drill
+// container's factor is negative because that cell reads the opposite way for a
+// positive load; leaving it positive makes a filling bin report a lightening
+// one.
 #define HX711_SAND_BOX_DT 17          // front-left deck box, the sand sample
 #define HX711_SAND_BOX_SCK 16
+#define HX711_SAND_BOX_SCALE 20.0f
+
+// `stone_box` in this workspace, `rock_box` in the embedded team's firmware and
+// on the topic name. Same box.
 #define HX711_STONE_BOX_DT 34         // the box behind it, also on the left
 #define HX711_STONE_BOX_SCK 33
+#define HX711_STONE_BOX_SCALE 21.0f
+
 #define HX711_DRILL_CONTAINER_DT 32   // the drill's sample bin
 #define HX711_DRILL_CONTAINER_SCK 31
+#define HX711_DRILL_CONTAINER_SCALE -30.0f
 
 // --- COMPILE-TIME COLLISION CHECK -------------------------------------------
 //

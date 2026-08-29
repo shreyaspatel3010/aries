@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build and flash the drill / science firmware to the Teensy 4.1.
+# Wipe, rebuild and flash the drill / science firmware to the Teensy 4.1.
 #
-#   ./flash.sh                build and flash
-#   ./flash.sh --build-only   compile, do not touch the board
-#   ./flash.sh --clean        drop the cached micro-ROS library, then build+flash
+#   ./flash.sh                WIPE the build cache, rebuild from scratch, flash
+#   ./flash.sh --fast         keep the cache, incremental build, flash
+#   ./flash.sh --build-only   wipe and compile, do not touch the board
 #   ./flash.sh -v             show the full build output
 #   ./flash.sh --help
 #
@@ -33,7 +33,23 @@
 #
 # 3. THE MICRO-ROS LIBRARY IS CACHED AND IGNORES CONFIG CHANGES.
 #    Edit colcon.meta or build_flags in platformio.ini and the library is NOT
-#    rebuilt -- the change silently does nothing. Use --clean after either.
+#    rebuilt -- the change silently does nothing, and the board is flashed with
+#    the OLD entity limits and the OLD compiler flags while the build reports
+#    success. `pio run -t clean_microros` is meant to be the fix, but it only
+#    drops the micro-ROS archive; the stale object files and the resolved
+#    library dependencies under .pio/ survive it.
+#
+#    So this script does not try to be clever about which parts of the cache
+#    are stale. It DELETES .pio ENTIRELY on every run -- build tree, libdeps,
+#    and the compiled micro-ROS library with it -- and builds from nothing.
+#    That is the whole ~380 MB and it costs several minutes, because micro-ROS
+#    is compiled from source. --fast skips the wipe when you are only iterating
+#    on main.cpp and have changed no build configuration.
+#
+#    NOT touched: ~/.platformio itself, which holds the downloaded GCC
+#    toolchain and the Teensy loader. Those are inputs, not build output;
+#    removing them means re-downloading hundreds of megabytes to get back to
+#    where you were.
 #
 # 4. THE FIRST WRITE TO THE BOOTLOADER ALWAYS FAILS.
 #    Measured on this machine: after the board enters HalfKay, the first
@@ -54,6 +70,25 @@
 #    falls back to asking for the physical button. Opening the USB serial port
 #    at 134 baud is the documented Teensy reboot-to-bootloader trigger and
 #    works every time -- HalfKay appears in well under a second.
+#
+# 6. HOW MUCH OF THE BOARD A FLASH ACTUALLY WIPES.
+#    teensy_loader_cli has no erase flag -- `--help` lists -w -r -s -n -b -v
+#    and nothing else. It does not need one for the program: on Teensy 4.x the
+#    HalfKay bootloader erases the program flash as part of writing it, so what
+#    lands on the board after this script is only ever this hex. There is no
+#    "leftover old firmware" state to clear separately, and no combination of
+#    flags would clear more.
+#
+#    What a write does NOT clear is the emulated EEPROM, which lives in its own
+#    flash sectors and survives every upload by design. THAT DOES NOT MATTER
+#    HERE: this firmware never includes <EEPROM.h> and never reads or writes a
+#    byte of it, so there is no persistent state on this board at all. Every
+#    boot starts from the values compiled into the hex.
+#
+#    If you ever do need the chip itself back to factory -- a bricked board, or
+#    firmware that has started using EEPROM -- that is the 15-second press of
+#    the physical button, which is a bootloader feature and cannot be scripted
+#    over USB.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -65,13 +100,22 @@ HEX="$PROJECT_DIR/.pio/build/teensy41/firmware.hex"
 MCU="TEENSY41"
 WRITE_ATTEMPTS=5
 
-DO_CLEAN=0
+# WIPING IS THE DEFAULT, and --fast is the opt-out rather than --clean being
+# the opt-in. The two failure modes are not symmetric: a needless rebuild costs
+# minutes, while a build against a stale cached micro-ROS library flashes a
+# board that reports success and then fails in a way that looks like broken
+# firmware (see note 3). The expensive-but-correct one is the default.
+#
+# --clean is still accepted because it is in muscle memory and in the older
+# notes; it now means the same as the default.
+DO_WIPE=1
 DO_UPLOAD=1
 VERBOSE=0
 
 for arg in "$@"; do
   case "$arg" in
-    --clean)      DO_CLEAN=1 ;;
+    --fast|--no-wipe) DO_WIPE=0 ;;
+    --clean)      DO_WIPE=1 ;;
     --build-only) DO_UPLOAD=0 ;;
     -v|--verbose) VERBOSE=1 ;;
     -h|--help)    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -167,15 +211,39 @@ if [ "$DO_UPLOAD" = 1 ] && pgrep -f micro_ros_agent >/dev/null 2>&1; then
        healthy board look broken -- see the note above this check."
 fi
 
-# --- 3. clean the cached micro-ROS library ---------------------------------
-if [ "$DO_CLEAN" = 1 ]; then
-  say "Cleaning cached micro-ROS library"
-  run_pio_quiet run -e teensy41 -t clean_microros
+# --- 3. wipe the build cache -----------------------------------------------
+# rm -rf, not `pio run -t clean_microros`. That target drops the compiled
+# micro-ROS archive and leaves everything around it: .pio/libdeps (the resolved
+# lib_deps, including micro_ros_platformio's own checkout), the object files,
+# and scons's .sconsign312.dblite dependency database. Deleting the directory
+# is the only wipe with no "except" clause in it, and it needs no working pio
+# to run -- which matters, because a half-broken cache is exactly when you
+# reach for this.
+#
+# PATH GUARD. This is an rm -rf built from a variable, in a script that begins
+# with `cd "$(dirname "$0")"`. If PROJECT_DIR were ever empty or "/", the
+# expansion would be "/.pio" or ".pio" relative to whatever the caller's cwd
+# was. Refuse rather than delete something else.
+if [ "$DO_WIPE" = 1 ]; then
+  case "$PROJECT_DIR" in
+    /|"") die "refusing to wipe: PROJECT_DIR is '$PROJECT_DIR'" ;;
+  esac
+  [ -d "$PROJECT_DIR/.pio" ] || true
+  say "Wiping the build cache"
+  if [ -d "$PROJECT_DIR/.pio" ]; then
+    info "removing $PROJECT_DIR/.pio ($(du -sh "$PROJECT_DIR/.pio" 2>/dev/null | cut -f1))"
+    rm -rf "$PROJECT_DIR/.pio"
+  else
+    info "nothing cached (.pio does not exist)"
+  fi
 fi
 
 # --- build ------------------------------------------------------------------
 say "Building"
-[ "$DO_CLEAN" = 1 ] && info "First build after a clean takes several minutes: micro-ROS is compiled from source."
+if [ "$DO_WIPE" = 1 ]; then
+  info "From scratch: micro-ROS is compiled from source, so this takes several minutes."
+  info "(--fast keeps the cache when you have changed no build configuration.)"
+fi
 run_pio_quiet run -e teensy41
 [ -f "$HEX" ] || die "build reported success but $HEX is missing"
 info "$(basename "$HEX") — $(stat -c%s "$HEX") bytes"
@@ -191,6 +259,10 @@ LOADER="$HOME/.platformio/packages/tool-teensy/teensy_loader_cli"
 [ -x "$LOADER" ] || die "teensy_loader_cli not found at $LOADER"
 
 # --- 5. put the board into HalfKay -----------------------------------------
+# The write below is a FULL PROGRAM-FLASH REPLACEMENT, not a patch: HalfKay
+# erases the program flash as it programs, so nothing of the previous firmware
+# survives. See note 6 for the one thing a write does not reach, and why it
+# does not matter for this board.
 say "Flashing"
 if in_bootloader; then
   info "board is already in the HalfKay bootloader"

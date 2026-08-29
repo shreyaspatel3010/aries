@@ -19,7 +19,7 @@ not flashed.
 | **Auger** — spins the cutting head | `AUGER_*` | 22 / 19 / 18 | out, PWM 10 kHz + 2 dir | ✅ |
 | **Sample bin actuator** — slides bin fore/aft | `BIN_*` | 28 / 30 / 29 | out, PWM 10 kHz + 2 dir | ✅ |
 | **Gripper servo** | `GRIPPER_SERVO` | 23 | out, servo | ✅ |
-| **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 10 | out, servo | ⚠️ |
+| **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 38 | out, servo — **continuous rotation** | ⚠️ |
 | **Stack light** green / yellow / red | `STALIG_*` | 37 / 36 / 35 | out, active **LOW** | ✅ |
 | **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 7 / 6 | in, `INPUT_PULLUP` | ✅ |
 | Status LED | `LED_BUILTIN` | 13 | out | ✅ |
@@ -99,8 +99,9 @@ the servo lead before powering the drill.
 23 had been the bin actuator's proposed PWM. The actuator has since been
 confirmed on **22** from the bench, so pin 9 is now free.
 
-The **lid** servo on pin 10 is a later addition and has no such provenance — see
-below.
+The **lid** servo is a later addition and has no such provenance — see below. It
+moved from **10 to 38 on 2026-08-29**, and pin 10 is now free (and back in the
+diagnostic scan list).
 
 ### The rewire that proves this is one board
 
@@ -127,7 +128,12 @@ power-up.
 Everything is now assigned — no pin is `PIN_UNASSIGNED` and the status LED no
 longer fast-blinks. Two things are still **guesses**, both mine:
 
-* **The container lid servo, 10.** Free and PWM-capable, but unverified.
+* **The container lid servo, 38.** Unverified. Note it is **not** a PWM pin on
+  a Teensy 4.1 — FlexPWM1_2 reaches pin 38 on a 4.0, but on the 4.1 that pad is
+  46/47. This does not matter: the Teensy `Servo` library bit-bangs the pulses
+  with `digitalWrite` from a timer ISR and works on any digital pin. It does
+  mean `analogWrite()` on this pin would silently do nothing, so do not put a
+  motor driver here later without re-checking.
 * **The feed carriage's 15 / 40 / 41**, from `pin-def-ref.txt` and never checked
   against the loom. The two direction pins were **swapped from 41 / 40 on
   2026-08-27**: positive PWM drove the carriage *down*, and because
@@ -176,8 +182,8 @@ unassigned and all compare equal to each other.
 ### If a pin is genuinely not wired yet
 
 Set it to `PIN_UNASSIGNED` (255) rather than to a plausible-looking number.
-`Driver`, `LimitSwitch` and `SlewServo` all check, and refuse to configure or
-drive an unassigned pin. The status LED then blinks fast (100 ms) so the board
+`Driver`, `LimitSwitch`, `SlewServo` and `LidServo` all check, and refuse to
+configure or drive an unassigned pin. The status LED then blinks fast (100 ms) so the board
 says out loud that it is incomplete.
 
 `PIN_UNASSIGNED` is 255 and not 0 deliberately: 0 is a real pin, so a forgotten
@@ -213,40 +219,66 @@ along:
 two axes; the firmware has two instances, capped by `LIMIT_SWITCH_INSTANCES` in
 `lib/drill/drill.h`, which sizes the ISR router table. Wiring the bin's pair
 needs that constant raised to 4 and two more `isr_router_ls_*` functions added.
-Until then the bin is dead-reckoned — which is what
-`aries_load_cells/README.md` already describes, and it names the fix:
-
-> The honest fix: the bin's actuator has its own end switch at each end of its
-> stroke. Put the forward one on a GPIO, publish a `std_msgs/Bool`, and name it
-> in `parked_switch_topic`.
+Until then the bin's position is dead-reckoned from the commanded rate, which
+drifts from the first slip onward. The honest fix: the bin's actuator has its
+own end switch at each end of its stroke — put the forward one on a GPIO and
+publish it.
 
 ### The container lid
 
 The **front-left deck container** — the sand sample box, which the rest of the
-workspace calls `sand_box` (`aries_load_cells`: *"front-left deck box, the sand
-sample"*). The box behind it, also on the left, is `stone_box` and has no lid
-servo.
+workspace calls `sand_box`. The box behind it, also on the left, is the stone
+box (`rock_box` on the wire) and has no lid servo.
 
 That identification came from the load-cell table, not from the hardware. If it
 is the wrong box, `LID_SERVO_SAND_BOX` in `pins.h` and the topic name in
 `main.cpp` are the only two places to change.
 
-It runs on the **same `SlewServo` class and the same constants as the gripper**
-— 850–2200 µs, 550 °/s slew, normalised 0…1. Nothing about those numbers was
-re-derived for the lid, so if the lid servo is a different model or has less
-travel than the gripper's DSC55MG-270, **the range is too wide and will drive it
-into its stop**. That is the one thing here worth a bench check before it is
-bolted to the hinge.
+**On pin 38 since 2026-08-29**, having been on 10 before that. Whenever this pin
+moves, check `kScanPins` in `main.cpp`: the diagnostic scan configures every pin
+in that list `INPUT_PULLUP`, and a pin that is both scanned and driven reports
+the servo's own pulse train as a switch chattering at 50 Hz. 38 was removed from
+that list and 10 was added back to it.
 
-`0.0` is **closed** and it is also where `SlewServo` starts, so the lid is
-commanded shut within microseconds of reset. That first write is a **jump, not a
-slew** — `init()` writes the position directly, before the slew clock starts —
-so a lid left open snaps shut at power-up. Correct for a sample container, but
-it is a real movement with fingers potentially near the hinge.
+**It is a 360° continuous-rotation servo, not a positional one** — corrected
+2026-08-29 from the embedded team's own firmware, which models it that way and
+has the hardware in hand. Until then it ran on `SlewServo`, the gripper's class,
+commanded a normalised 0…1 **position**. That was an assumption nobody had
+checked, and it is not a small one: writing an angle to a continuous-rotation
+servo does not park it anywhere, it picks two fixed speeds and turns at one of
+them until something else is written.
 
-There is **no watchdog** on the lid, unlike the drill motors. A lid is meant to
-stay where it was put; closing it on a lost link would tip out a sample the
-operator was half way through collecting.
+So `sand_box/lid/cmd` carries a **speed in −1…1**, where `0.0` is stop and the
+sign is direction. `LidServo` in `lib/drill` owns it.
+
+**`LID_SERVO_NEUTRAL_US` must be trimmed on the bench, and 1500 is a guess.**
+The pulse width at which a continuous-rotation servo genuinely holds still is a
+property of *this individual unit* — set by how its centring pot was trimmed on
+the line — and it is usually not exactly 1500 µs. If the lid creeps with the
+stick released, that number is why, and nothing else is. Publish `0.0` to the
+topic, watch the horn, and move the constant 10 µs at a time until it is still.
+Each attempt is a reflash.
+
+**There is a watchdog, and here it is not optional.** `LidServo::update()` stops
+the servo if no command has arrived for 500 ms. A *position* command has a
+resting state, so the old positional lid could safely be left alone on a lost
+link; a *speed* command has none, and a lid turning when the link drops turns
+until somebody cuts the power. The board also stops it on a clean
+`AGENT_DISCONNECTED` rather than waiting the timeout out.
+
+Upstream declared this watchdog and never wrote it — `void update(uint32_t
+command_timeout_ms = 500);` in the header, an `m_last_cmd_ms` member marked
+`NEW`, no definition and no caller anywhere. Calling it would not have linked.
+It is implemented here.
+
+**It no longer snaps shut at power-up.** `init()` writes the neutral (stop)
+pulse and nothing else, so a lid left open stays open until somebody drives it.
+That is the safer boot for a servo with no idea where it is: the alternative is
+turning at speed toward a closed position it has no way to detect reaching.
+
+**On the pad:** LT + right stick up/down, via `drill_joystick`. `invert_lid` in
+`joystick.yaml` chooses which way is open — there is nothing to derive it from,
+it is how the horn is fitted.
 
 ### The stack light is active LOW
 
@@ -268,11 +300,13 @@ they share a frequency. Harmless here, because all three ask for the same
 
 ### Load cells
 
-Three HX711 amplifiers — **sand box, stone box, drill bin, in that order**,
-which is the element order of `cells` in
-`aries_load_cells/config/load_cells.yaml` and therefore **the wire format**. The
-firmware sends no names to check itself against, so swapping two entries makes
-the sand box report the stone and nothing anywhere notices.
+Three HX711 amplifiers — **sand box, stone box, drill bin**. Each has its own
+topic (`sand_box/weight`, `rock_box/weight`, `drill_cont/weight`), so there is
+no element order left to get wrong. The old wire format was a single
+`Int32MultiArray` whose ordering was the *only* thing identifying which box was
+which: swap two entries and the sand box reported the stone, both numbers stayed
+plausible, and nothing anywhere said a word. `rock_box` is the embedded team's
+name for the box this workspace calls `stone_box`.
 
 **Each cell has its own clock.** This is *not* the usual one-shared-SCK chain —
 every amplifier gets a private DT/SCK pair, so they can be read independently
@@ -280,19 +314,43 @@ and one dead amplifier cannot stall the others. Six pins, not four. Anything
 written against a shared clock (including an earlier draft of this file) is
 wrong.
 
-**Driven.** `main.cpp` constructs one `LoadCell` per amplifier and publishes
-`load_cells/raw` (`std_msgs/Int32MultiArray`, three elements, **raw converter
-counts**) at 10 Hz, RELIABLE. Scale, offset and tare live in `aries_load_cells`'
-YAML, so a recalibration is an edit and a relaunch, not a reflash with the rover
-open — and taring is `ros2 service call /load_cells/<cell>/tare`, not something
-this board does.
+**Calibrated on the board, since 2026-08-29 — and this reverses what this file
+used to say.** The board published raw counts and a host package
+(`aries_load_cells`) scaled them from YAML, precisely so that a recalibration
+was an edit and a relaunch rather than a reflash with the rover open. That
+package has been **deleted**. `HX711_*_SCALE` in `pins.h` now holds the scale
+factors, `LoadCell` applies them, and the board publishes weights at 10 Hz,
+RELIABLE. The old argument still stands; it is simply a cost that has been
+accepted.
 
-**A cell that is not answering reports the converter's negative rail
-(`-8388608`), never zero** — zero is what an empty box reads, so a dead
-amplifier would otherwise look exactly like a box somebody had emptied. Reading
-one is also strictly non-blocking: `HX711::read()` opens with `wait_ready()`,
-which spins forever on an amplifier holding DOUT high, and this loop is also the
-auger's watchdog. The topic stays silent until at least one cell has ever
+**Taring is a message, not a service:**
+
+```
+ros2 topic pub --once /sand_box/tare std_msgs/UInt8 "data: 1"   # empty box = zero
+ros2 topic pub --once /sand_box/tare std_msgs/UInt8 "data: 2"   # then: that is the lid
+```
+
+`1` zeroes the container as it stands — empty it first, this cannot tell a
+tared box from one with a rock in it. `2`, taken afterwards with the lid on,
+records the lid's weight so it is subtracted from every reading. A new `1`
+clears the lid tare, because a lid measured against the old zero means nothing
+against a new one. Both are held in RAM only: **every tare is lost on reset.**
+
+**The three scale factors have not been verified here.** 20.0 / 21.0 / −30.0
+came with the embedded team's firmware and no note of what unit they produce.
+The drill container's is negative because that cell is bolted in the other way
+round — the sign is mounting, not an error. To re-derive one: tare the empty
+box, put a known mass in, read the topic, and set
+`new_scale = old_scale × (reading / true_mass)`. That is a reflash.
+
+**A cell that is not answering reports `NaN`, never zero** — zero is what an
+empty box reads, so a dead amplifier would otherwise look exactly like a box
+somebody had emptied. `NaN` shows up as `nan` in `ros2 topic echo` and cannot
+be averaged into a plausible wrong number. Reading one is also strictly
+non-blocking: `HX711::read()` opens with `wait_ready()`, which spins forever on
+an amplifier holding DOUT high, and this loop is also the auger's watchdog —
+which is also why the boot zero is a bounded `is_ready()` poll rather than
+`HX711::tare()`. The topics stay silent until at least one cell has ever
 answered, so a rover with no cells fitted is quiet rather than permanently
 faulted.
 

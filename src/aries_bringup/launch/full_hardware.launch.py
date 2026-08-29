@@ -168,10 +168,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
         DeclareLaunchArgument("use_stacklight", default_value="true"),
-        DeclareLaunchArgument("use_load_cells", default_value="true"),
         DeclareLaunchArgument("use_drill_driver", default_value="true"),
-        DeclareLaunchArgument("load_cell_source", default_value="auto",
-                              choices=["auto", "microros", "mock"]),
         DeclareLaunchArgument("start_checker", default_value="true"),
         # Preserve the top-level choice before rover_drive_auto.launch.py sets
         # its own nested start_checker argument to false. Included launch
@@ -301,28 +298,19 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration("use_drill_driver")),
         ),
 
-        # The three load cells (aries_load_cells): the sand and stone boxes on
-        # the left of the deck, and the drill's sample bin. Same Teensy as the
-        # stack light, so the micro-ROS agent started above already carries
-        # them -- this only starts the node that turns counts into kilograms.
+        # NO LOAD-CELL NODE ANY MORE, and nothing is missing here.
         #
-        # load_cell_source:=mock makes up counts, for exercising the topics
-        # with no board attached. The firmware is still being written; `auto`
-        # does NOT fall back to mock, because a fabricated weight that looks
-        # exactly like a measured one is not something the rover should emit.
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution([
-                    FindPackageShare("aries_load_cells"),
-                    "launch",
-                    "load_cells.launch.py",
-                ])
-            ),
-            condition=IfCondition(LaunchConfiguration("use_load_cells")),
-            launch_arguments={
-                "load_cell_source": LaunchConfiguration("load_cell_source"),
-            }.items(),
-        ),
+        # The three cells -- the sand and stone boxes on the left of the deck,
+        # and the drill's sample bin -- are on the same Teensy as the stack
+        # light, and that board now scales and tares them itself. It publishes
+        # /sand_box/weight, /rock_box/weight and /drill_cont/weight directly,
+        # so the micro-ROS agent started above is the whole path and there is no
+        # host node left to start. aries_load_cells, which used to turn counts
+        # into kilograms from YAML, was removed on 2026-08-29 along with its
+        # use_load_cells and load_cell_source arguments.
+        #
+        # The cost of that move is that a recalibration is a reflash:
+        # HX711_*_SCALE in firmware/teensy_drill_sys/include/pins.h.
 
         # Separate checker.
         IncludeLaunchDescription(

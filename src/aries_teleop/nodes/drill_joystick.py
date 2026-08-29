@@ -3,9 +3,10 @@
 
 Mapping (canonical layout, i.e. after joy_layout_normalizer):
 
-    LT + D-pad up/down      feed carriage   drill_motor_joint      m/s
-    LT + D-pad left/right   sample bin      drill_container_joint  m/s
-    LT + left stick up/down auger           drill_bit_joint        rad/s
+    LT + D-pad up/down       feed carriage  drill_motor_joint      m/s
+    LT + D-pad left/right    sample bin     drill_container_joint  m/s
+    LT + left stick up/down  auger          drill_bit_joint        rad/s
+    LT + right stick up/down sand box lid   /sand_box/lid/cmd      -1..1
 
 HARDWARE MODEL. Every axis on the real drill is a DC motor - the feed carriage
 turns a lead screw, the auger spins on the head, and the sample bin rides a
@@ -62,12 +63,32 @@ thing said.
 
 Nothing consumes these topics on the real rover yet - there is no drill driver.
 They are bridged into gz by aries/config/*_gazebo_bridge.yaml.
+
+THE LID IS THE ONE AXIS THAT IS NOT LIKE THE OTHERS, in three ways worth
+knowing before touching it.
+
+It goes STRAIGHT TO THE BOARD. The other three publish Float64 rates onto the
+gz bridge topics and a driver turns those into PWM; /sand_box/lid/cmd is
+std_msgs/Float32 and is subscribed by the Teensy itself. The message type is
+part of that contract - publish Float64 there and micro-ROS makes no match at
+all, so the topic lists fine on both sides and nothing is ever delivered.
+
+It has NO SIMULATION. There is no lid joint in the URDF and no gz bridge entry,
+so this is the one control on the pad that does nothing whatsoever without the
+real board attached.
+
+And it CANNOT STOP ITSELF. It is a 360-degree continuous-rotation servo, so the
+value is a speed with no resting state: whatever was last said keeps happening.
+That is why it is inside the same stop_hold_sec burst as the motors rather than
+being published only while the stick is pushed - and why the firmware runs its
+own 500 ms watchdog underneath, in case this node is not there to send the zero
+at all.
 """
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy, JointState
-from std_msgs.msg import Float64, UInt8
+from std_msgs.msg import Float32, Float64, UInt8
 
 
 class LimitSwitchedAxis:
@@ -179,6 +200,24 @@ class DrillJoystick(Node):
         self.declare_parameter("bit_axis", 1)
         self.declare_parameter("bit_deadzone", 0.20)
 
+        # THE SAND BOX LID. Right stick vertical -- canonical axis 4, the only
+        # stick still free under LT (0/1 is the left stick and drives the
+        # auger, 2/5 are the triggers, 6/7 the d-pad).
+        #
+        # Float32, not Float64: this one is subscribed by the Teensy directly.
+        # See the note in the module docstring.
+        self.declare_parameter("lid_cmd_topic", "/sand_box/lid/cmd")
+        self.declare_parameter("lid_axis", 4)
+        self.declare_parameter("lid_deadzone", 0.20)
+        # Ceiling on the speed sent to the servo, as a fraction of its full
+        # rate. 1.0 lets the stick reach full speed; drop it if the lid slams.
+        self.declare_parameter("lid_max_speed", 1.0)
+        # WHICH DIRECTION OPENS THE LID is a fact about how the servo is
+        # mounted, and there is no way to derive it -- the servo has no position
+        # feedback and the firmware deliberately does not guess. If stick UP
+        # closes the lid, flip this.
+        self.declare_parameter("invert_lid", False)
+
         # Keep these in step with drill.xacro's joint limits: they are the
         # mechanical stops, and the limit switches are placed off them. They
         # are repeated rather than read from the URDF so this node can run
@@ -261,6 +300,11 @@ class DrillJoystick(Node):
         # Stick UP (+1) -> clockwise from above -> negative about +Z.
         self.bit_sign = 1.0 if bool(g("invert_bit").value) else -1.0
 
+        self.lid_axis = int(g("lid_axis").value)
+        self.lid_deadzone = float(g("lid_deadzone").value)
+        self.lid_max_speed = float(g("lid_max_speed").value)
+        self.lid_sign = -1.0 if bool(g("invert_lid").value) else 1.0
+
         margin = float(g("limit_margin").value)
         self.motor = LimitSwitchedAxis(
             joint=str(g("motor_joint").value),
@@ -294,6 +338,7 @@ class DrillJoystick(Node):
         self.command_motor = 0.0
         self.command_container = 0.0
         self.command_bit = 0.0
+        self.command_lid = 0.0
 
         self.limits_timeout_sec = float(g("limits_timeout_sec").value)
         self.limit_bottom = False
@@ -305,6 +350,7 @@ class DrillJoystick(Node):
         self.pub_motor = self.create_publisher(Float64, str(g("motor_cmd_topic").value), 10)
         self.pub_container = self.create_publisher(Float64, str(g("container_cmd_topic").value), 10)
         self.pub_bit = self.create_publisher(Float64, str(g("bit_cmd_topic").value), 10)
+        self.pub_lid = self.create_publisher(Float32, str(g("lid_cmd_topic").value), 10)
 
         self.create_subscription(Joy, joy_topic, self._joy_cb, 10)
         self.create_subscription(JointState, joint_states_topic, self._joint_state_cb, 10)
@@ -316,7 +362,8 @@ class DrillJoystick(Node):
         self.get_logger().info(
             f"Drill joystick ready. Hold LT/axis {self.modifier_axis}: "
             f"d-pad up/down = feed, d-pad left/right = bin, "
-            f"left stick up/down = auger. Released = every motor off."
+            f"left stick up/down = auger, right stick up/down = sand box lid. "
+            f"Released = every motor off."
         )
 
     # -- helpers -----------------------------------------------------------
@@ -410,6 +457,8 @@ class DrillJoystick(Node):
             self._axis(msg, self.dpad_horizontal_axis), self.dpad_threshold)
         self.command_bit = self._deadzone(
             self._axis(msg, self.bit_axis), self.bit_deadzone)
+        self.command_lid = self._deadzone(
+            self._axis(msg, self.lid_axis), self.lid_deadzone)
 
     # -- output ------------------------------------------------------------
     def _timer_cb(self):
@@ -431,7 +480,7 @@ class DrillJoystick(Node):
             self.container.tripped = 0
             self.switch_tripped = 0
             if now < self.stop_until:
-                self._publish(0.0, 0.0, 0.0)
+                self._publish(0.0, 0.0, 0.0, 0.0)
             return
 
         if not self.was_active:
@@ -449,13 +498,22 @@ class DrillJoystick(Node):
         self._report(self.motor, motor_trip)
         self._report(self.container, container_trip)
 
-        self._publish(motor_rate, container_rate,
-                      self.bit_sign * self.command_bit * self.bit_max_speed)
+        # Clamped, not just scaled. lid_max_speed is a ceiling and the
+        # firmware clamps again anyway, but a value outside -1..1 arriving at a
+        # servo is worth stopping at the source where the units are still
+        # legible.
+        lid_speed = self.lid_sign * self.command_lid * self.lid_max_speed
+        lid_speed = max(-1.0, min(1.0, lid_speed))
 
-    def _publish(self, motor_rate, container_rate, bit_rate):
+        self._publish(motor_rate, container_rate,
+                      self.bit_sign * self.command_bit * self.bit_max_speed,
+                      lid_speed)
+
+    def _publish(self, motor_rate, container_rate, bit_rate, lid_speed):
         self.pub_motor.publish(Float64(data=float(motor_rate)))
         self.pub_container.publish(Float64(data=float(container_rate)))
         self.pub_bit.publish(Float64(data=float(bit_rate)))
+        self.pub_lid.publish(Float32(data=float(lid_speed)))
 
 
 def main(args=None):
@@ -466,13 +524,19 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # gz latches the last rate it was given on all three axes, so a drill
-        # left running when this node dies keeps running. Zero every one of
-        # them on the way out, the same way the rover teleop zeroes its Twist.
-        # The mechanisms hold where they stop; nothing here needs to be told a
-        # position to stay at.
+        # gz latches the last rate it was given on all three drill axes, so a
+        # drill left running when this node dies keeps running. Zero every one
+        # of them on the way out, the same way the rover teleop zeroes its
+        # Twist. The mechanisms hold where they stop; nothing here needs to be
+        # told a position to stay at.
+        #
+        # The LID needs this most and can least rely on it. It is a
+        # continuous-rotation servo on the real board, so a lid turning when
+        # this node is killed keeps turning -- and a hard kill never reaches
+        # this line at all. The firmware's own 500 ms watchdog is the backstop
+        # for that case; this is the tidy exit.
         if rclpy.ok():
-            node._publish(0.0, 0.0, 0.0)
+            node._publish(0.0, 0.0, 0.0, 0.0)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

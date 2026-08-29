@@ -11,7 +11,9 @@ different](#why-it-looks-different) below.
 - **Pin map and wiring:** [`PINOUT.md`](PINOUT.md) — read this before powering
   the drill. Six pins are still proposals.
 - **Host side:** `aries_bringup` (`drill_driver.py`, `stacklight.py`),
-  `aries_moveit/teensy_gripper_hardware` (the gripper), `aries_load_cells`.
+  `aries_moveit/teensy_gripper_hardware` (the gripper), `aries_teleop`
+  (`drill_joystick.py`, which drives the feed, bin, auger and lid from the pad).
+  The load cells have no host node any more — the board scales them itself.
 
 ---
 
@@ -30,10 +32,19 @@ resolves to one.
 | `motor2/cmd_speed` | `Int32` | in | best effort | Feed carriage, −255…255 |
 | `linact/state` | `UInt8` | in | reliable | 1 extend, 2 retract, 3/4 home, 0 stop |
 | `linact/cext` | `Float32` | in | reliable | Bin travel, signed mm |
-| `sand_box/lid/cmd` | `Float32` | in | reliable | Lid, 0 closed … 1 open |
+| `sand_box/lid/cmd` | `Float32` | in | reliable | Lid **speed**, −1…1, 0 = stop |
+| `sand_box/tare` | `UInt8` | in | reliable | 1 zero the empty box, 2 zero the lid |
+| `rock_box/tare` | `UInt8` | in | reliable | as above (stone box) |
+| `drill_cont/tare` | `UInt8` | in | reliable | as above (drill bin) |
+| `sand_box/weight` | `Float32` | out | reliable | Net weight, 10 Hz, `NaN` = no reading |
+| `rock_box/weight` | `Float32` | out | reliable | as above (stone box) |
+| `drill_cont/weight` | `Float32` | out | reliable | as above (drill bin) |
+| `drill/pin_scan` | `UInt64` | out | reliable | Diagnostic: bit N set = pin N reads LOW |
 
-Seven subscriptions and one publisher, against a `colcon.meta` that allows eight
-and four. **Check that file before adding an eighth subscription.**
+Ten subscriptions and six publishers, against a `colcon.meta` that allows twelve
+and eight. **Check that file before adding an eleventh subscription** — and
+remember that editing it does nothing until the cached micro-ROS library is
+rebuilt, which `./flash.sh` does by default.
 
 ### Three of these names are the workspace's, not this firmware's
 
@@ -74,15 +85,36 @@ because they are one-shot events that nothing re-sends.
 
 ```bash
 pipx install platformio     # once
-./flash.sh                  # build and flash
+./flash.sh                  # wipe the cache, rebuild from scratch, flash
 ```
 
-`./flash.sh --build-only` compiles without touching the board.
-`./flash.sh --clean` drops the cached micro-ROS library first — **required**
-after editing `colcon.meta` or `build_flags`.
+**`./flash.sh` wipes `.pio` entirely on every run** — build tree, resolved
+`lib_deps`, and the compiled micro-ROS library with it — and builds from
+nothing. That is the whole ~380 MB and it takes several minutes, because
+micro-ROS is compiled from source.
 
-The first build takes several minutes: it downloads the ARM toolchain and
-compiles the entire micro-ROS client from source. Later builds are seconds.
+That is the default on purpose. The two failure modes are not symmetric: a
+needless rebuild costs minutes, while a build against a stale cached micro-ROS
+library flashes a board that reports success and then fails in a way that looks
+exactly like broken firmware (see `colcon.meta`, below).
+
+- `./flash.sh --fast` keeps the cache — incremental, seconds. Use it when you
+  have changed only `main.cpp` or the library sources and touched no build
+  configuration.
+- `./flash.sh --build-only` wipes and compiles without touching the board.
+- `./flash.sh -v` shows the full build output.
+
+**What a flash reaches on the board:** all of the program. HalfKay erases the
+program flash as it writes, so nothing of the previous firmware survives —
+there is no "leftover firmware" state to clear separately, and
+`teensy_loader_cli` has no erase flag because it does not need one. It does not
+clear the emulated EEPROM, which is irrelevant here: this firmware never
+includes `<EEPROM.h>` and holds no persistent state at all. A true factory erase
+is the 15-second press of the physical button, which is a bootloader feature and
+cannot be scripted.
+
+`~/.platformio` itself is **not** touched — the ARM toolchain and the Teensy
+loader live there, and they are inputs, not build output.
 
 ### Use the script, not bare `pio`
 
@@ -102,7 +134,12 @@ reasons `flash.sh` handles and documents at the top of itself:
    installer-script install. A `pipx` install puts it elsewhere and the build
    dies with `.: cannot open ~/.platformio/penv/bin/activate`.
 3. **The micro-ROS library is cached** and is not rebuilt when `colcon.meta` or
-   `build_flags` change — the edit silently does nothing without `--clean`.
+   `build_flags` change — the edit silently does nothing, and the board is
+   flashed against the old entity ceilings and the old compiler flags while the
+   build reports success. `pio run -t clean_microros` is the advertised fix and
+   it is only a partial one: it drops the micro-ROS archive and leaves
+   `.pio/libdeps`, the object files and scons's dependency database in place.
+   `flash.sh` deletes the directory.
 4. **The first upload usually loses a USB race.** The loader reboots the board
    into HalfKay, which re-enumerates as a different USB device; writing too
    early gives `Found device but unable to open` / `error writing to Teensy`
@@ -130,10 +167,12 @@ speed unset. The link is USB CDC, so the device ignores baud anyway.
 ### Two more things that will bite
 
 **`colcon.meta` is load-bearing.** `RMW_UXRCE_MAX_SUBSCRIPTIONS` defaults to
-**5** in micro_ros_platformio, and this firmware creates **seven**. Without the
-raised limit the sixth `rclc_subscription_init` fails, `create_entities()` bails,
+**5** in micro_ros_platformio, and this firmware creates **ten**;
+`RMW_UXRCE_MAX_PUBLISHERS` defaults to **4** and it creates **six**. Without the
+raised limits the over-the-line `rclc_*_init` fails, `create_entities()` bails,
 and the board sits in `WAITING_AGENT` forever while USB stays enumerated —
-indistinguishable from an unflashed Teensy. Changing it needs `--clean`.
+indistinguishable from an unflashed Teensy. Editing it does nothing until the
+cached library is rebuilt, which a default `./flash.sh` does.
 
 **Nothing may write to `Serial`.** It is the micro-ROS transport. The only
 status channel this board has is the LED on pin 13:
@@ -190,18 +229,23 @@ as the rest of the firmware, so that whole class of problem is gone.
 - **Six pins are proposals** — the bin actuator's three, both limit switches,
   and the container lid servo. `PINOUT.md` says which and why. Confirm them
   before powering the drill.
-- **The lid servo has no operator control yet, on purpose.** No joystick
-  binding, no host node — it is reachable with `ros2 topic pub` and from a
-  mission script. It also reuses the gripper's servo constants unchanged
-  (850–2200 µs, 270°), which is **too wide** if the lid servo is a different
-  model; see `PINOUT.md`.
+- **The lid servo's neutral pulse is a guess.** `LID_SERVO_NEUTRAL_US` is 1500,
+  which is where hobby servos cluster and not where any particular one stops.
+  It is a continuous-rotation servo, so a neutral that is even slightly off is a
+  lid that creeps with the stick released. Trim it on the bench — publish `0.0`
+  to `sand_box/lid/cmd`, watch the horn, move the constant 10 µs at a time.
+  Each attempt is a reflash. See `PINOUT.md`.
 - **The bin's two limit switches are not wired.** The mechanism has four
   switches across two axes; `LIMIT_SWITCH_INSTANCES` is 2 and sizes the ISR
-  router table. Until they exist the bin is dead-reckoned, which is what
-  `aries_load_cells/README.md` already assumes.
-- **Load cells are a stub.** `LoadCell` has no definition and nothing
-  constructs one. The host half is written and waiting on `/load_cells/raw`
-  (`Int32MultiArray`, three elements, raw counts). Pins reserved, unassigned.
+  router table. Until they exist the bin's position is dead-reckoned from the
+  commanded rate, and drifts from the first slip.
+- **The three load-cell scale factors have not been verified.** 20.0 / 21.0 /
+  −30.0 came with the embedded team's firmware, with no note of what unit they
+  produce — so the numbers on `*/weight` are provisional until one known mass
+  has been put in each box. `PINOUT.md` has the procedure. The negative one is
+  mounting, not an error.
+- **Every tare is lost on reset.** They live in RAM. A board that reboots
+  mid-task comes back zeroed to whatever was sitting on the cells at boot.
 - **The drill driver's calibration is not measured.** `drill_driver.yaml` maps
   rates to duty cycle with placeholders taken from `joystick.yaml`. The drill
   moves; the numbers on the topics are not yet the rates the mechanism is doing.
