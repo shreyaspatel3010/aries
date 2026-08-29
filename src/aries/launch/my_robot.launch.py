@@ -58,77 +58,11 @@ def generate_launch_description():
     # Declare arguments
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='v2',
-        choices=['v2'],
-        description='Gripper type. Only "v2" exists; "new" and "old" are '
-                    'retired to aries/urdf/legacy/ and are not built any more.'
-    )
-
-    world_arg = DeclareLaunchArgument(
-        'world',
-        default_value='maintenance_world.sdf',
-        choices=['sandbox_world.sdf', 'soil_world.sdf', 'marsyard2026.sdf', 'maintenance_world.sdf'],
-        description='World file in aries/worlds. sandbox_world.sdf has the '
-                    'planted probe; soil_world.sdf replaces it with a bed of '
-                    'loose soil grains and a deposit box for bucket sampling.'
-    )
-
-    finger_type_arg = DeclareLaunchArgument(
-        'finger_type',
-        default_value='bucket',
-        choices=['bucket', 'maintenance', 'probe'],
-        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
-    )
-
-    hardware_protocol_arg = DeclareLaunchArgument(
-        'hardware_protocol',
-        default_value='gazebo',
-        description='Hardware protocol for ros2_control'
-    )
-
-    use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time',
-        default_value='true',
-        description='Use simulation time'
-    )
-
-    headless_arg = DeclareLaunchArgument(
-        'headless',
-        default_value='false',
-        description='Run only the Gazebo server (useful for automated world tests)'
-    )
-
-    use_joystick_arg = DeclareLaunchArgument(
-        'use_joystick',
-        default_value='true',
-        description='Start the shared joystick driver and arm/gripper teleop'
-    )
-
-    use_rover_joystick_arg = DeclareLaunchArgument(
-        'use_rover_joystick',
-        default_value='true',
-        description='Use the hardware joystick mapping for simulated rover drive'
-    )
-
-    use_drill_teleop_arg = DeclareLaunchArgument(
-        'use_drill_teleop',
-        default_value='true',
-        description='LT-gated drill teleop: feed carriage, sample bin and auger'
-    )
-
-    use_cmd_vel_relay_arg = DeclareLaunchArgument(
-        'use_cmd_vel_relay',
-        default_value='true',
-        description='Relay joystick /cmd_vel/teleop commands to Gazebo /cmd_vel'
-    )
-
-    use_stacklight_arg = DeclareLaunchArgument(
-        'use_stacklight', default_value='true',
-        description=(
-            'Run the stack light: the state node that decides the colour, and '
-            'the viewer that lights the three tiers on the model to match. '
-            'Sources are simulation ones - see aries/config/stacklight_sim.yaml.'
-        ),
+        default_value='st3215',
+        choices=['st3215'],
+        description='Gripper type. Only "st3215" exists - the ST3215 rack-and-pinion; '
+                    'v2 and the older four-bars are retired to aries/urdf/legacy/. '
+                    'Declared because launch files pass it down.',
     )
 
     use_camera_downlink_arg = DeclareLaunchArgument(

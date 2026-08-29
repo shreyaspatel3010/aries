@@ -72,42 +72,31 @@
                      cannot drift) and drop the commands. The state interfaces
                      stay so the followers still report their measured
                      positions. -->
-                <xacro:if value="${gripper_type == 'v2'}">
-                    <joint name="gripper_gear_right_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                    <joint name="gripper_link_left_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                    <joint name="gripper_link_right_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                    <joint name="gripper_bucket_left_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                    <joint name="gripper_bucket_right_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                </xacro:if>
-                <!-- The ST3215 gripper has two followers, not five, and they
-                     are PRISMATIC: their state is metres, not radians. Its
-                     fingertips are bolted to the racks with fixed joints, so
-                     there is nothing else to report. -->
-                <xacro:if value="${gripper_type == 'st3215'}">
-                    <joint name="gripper_rack_left_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                    <joint name="gripper_rack_right_joint">
-                        <state_interface name="position" />
-                        <state_interface name="velocity" />
-                    </joint>
-                </xacro:if>
+                <!-- The rack followers are READ ONLY here, and they are
+                     PRISMATIC: their state is metres, not radians.
+
+                     They used to carry mimic/multiplier params as well, which
+                     coupled them a SECOND time: sdformat converts the URDF
+                     <mimic> tags into real SDF <mimic> constraints (confirmed
+                     with `gz sdf -p`), so DART already enforces the relation
+                     inside the solver. Adding the ros2_control mimic on top
+                     makes gz_ros2_control write a velocity command to the same
+                     joints every cycle, so each DOF carries a hard kinematic
+                     constraint and an independent servo command that know
+                     nothing about each other. Two solvers arguing over one DOF
+                     is what tears a linkage apart on screen while every joint
+                     is individually "satisfied".
+
+                     The fingertips are bolted to the racks with fixed joints,
+                     so there is nothing else to report. -->
+                <joint name="gripper_rack_left_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_rack_right_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
             </xacro:if>
         </ros2_control>
 
@@ -117,12 +106,11 @@
                     <plugin>mock_components/GenericSystem</plugin>
                 </hardware>
 
-                <!-- The command range is the FITTED gripper's, not a shared
-                     constant: v2 stops at -1.57 and the ST3215 runs to -4.065.
-                     Clamping the ST3215 at -1.57 would quietly cap mock runs
-                     at a 32.9 mm jaw gap against the real 82.9. -->
+                <!-- The command range is derived from the calibration YAML,
+                     the same value the real backend clamps to, so a mock run
+                     covers the same jaw gap as the hardware. -->
                 <xacro:property name="gripper_mock_min"
-                                value="${gripper_command_open if gripper_type == 'st3215' else -1.57}"/>
+                                value="${gripper_command_open}"/>
                 <joint name="gripper_gear_left_joint">
                     <command_interface name="position">
                         <param name="min">${gripper_mock_min}</param>
@@ -136,31 +124,21 @@
             </ros2_control>
         </xacro:if>
 
-        <xacro:if value="${gripper_hardware_protocol == 'rebel' or (gripper_hardware_protocol == '' and hardware_protocol == 'rebel')}">
-            <ros2_control name="${arm_id}_gripper" type="system">
-                <hardware>
-                    <plugin>teensy_gripper_hardware/TeensyGripperSystem</plugin>
-                    <param name="cmd_topic">/gripper/cmd</param>
-                    <param name="state_topic">/gripper/state</param>
-                    <param name="min_pos">-1.57</param>
-                    <param name="max_pos">0.07</param>
-                </hardware>
+        <!-- THERE IS NO TEENSY GRIPPER BACKEND ANY MORE. gripper_v2 and its
+             teensy_gripper_hardware plugin are retired (urdf/legacy/, and the
+             package carries a COLCON_IGNORE).
 
-                <joint name="gripper_gear_left_joint">
-                    <command_interface name="position" />
-                    <state_interface name="position" />
-                    <state_interface name="velocity" />
-                </joint>
-            </ros2_control>
-        </xacro:if>
+             THE TEENSY ITSELF IS VERY MUCH STILL HERE, running the drill, the
+             stack light and the load cells over one micro-ROS link. Do not read
+             the absence of a gripper block here as the board being gone - the
+             agent that serves it is started by the launch whenever the board is
+             present, independent of the gripper.
 
-        <!-- The ST3215 gripper does NOT go through the Teensy. Its servo hangs
-             off the rover PC's own USB bus-servo adapter, so this component
-             opens the serial port itself and speaks Feetech STS to it. That is
-             also why it is a separate protocol value rather than another
-             gripper_type branch inside 'rebel': the two grippers reach their
-             servos over different wires, and 'rebel' means "through the
-             Teensy". -->
+             The ST3215's servo hangs off the rover PC's own USB bus-servo
+             adapter instead, so the component below opens the serial port
+             itself and speaks Feetech STS to it. That is why it is its own
+             gripper_hardware_protocol value: the wire is different, not just
+             the plugin. -->
         <xacro:if value="${gripper_hardware_protocol == 'st3215'}">
             <ros2_control name="${arm_id}_gripper" type="system">
                 <hardware>

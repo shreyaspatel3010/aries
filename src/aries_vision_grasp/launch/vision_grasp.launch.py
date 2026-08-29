@@ -24,8 +24,8 @@ def generate_launch_description():
         DeclareLaunchArgument('target_class', default_value='probe'),
         DeclareLaunchArgument(
             'gripper_type',
-            default_value='v2',
-            choices=['v2', 'st3215'],
+            default_value='st3215',
+            choices=['st3215'],
             description=('Which gripper is fitted. MUST match the gripper_type '
                          'the URDF was launched with: the four-bar and the '
                          'rack-and-pinion share a joint name and a closed '

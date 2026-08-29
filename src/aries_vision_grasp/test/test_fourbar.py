@@ -1,4 +1,10 @@
-"""Unit tests for the calibrated four-bar gripper model.
+"""Unit tests for the calibrated FOUR-BAR gripper model (gripper_v2).
+
+That gripper is retired - the ST3215 rack-and-pinion replaced it and is now the
+default in fourbar.set_gripper() - but its tables are the only record of its
+measured geometry and the fingertip work behind it, so they are kept and still
+tested. Every case here selects 'v2' explicitly through the fixture below; the
+module default is no longer it.
 
 These tables drive the physical grasp geometry; a regression here means the
 gripper closes to the wrong gap or the arm targets the wrong contact point.
@@ -137,11 +143,19 @@ def test_contact_offset_is_stable_across_probe_widths():
 
 @pytest.fixture(autouse=True)
 def _reset_finger():
-    """Finger selection is module state, so leaving it set would leak into
-    whichever test ran next and silently change the geometry under it."""
+    """Select the four-bar and its default fingertip for every case here.
+
+    Both selections are module state, so leaving either set would leak into
+    whichever test ran next and silently change the geometry under it. The
+    gripper has to be selected explicitly now: the default is 'st3215', whose
+    geometry is a closed form with no fingertip tables at all, so without this
+    every table assertion below compares against the wrong mechanism.
+    """
+    fourbar.set_gripper('v2')
     fourbar.set_finger(fourbar.DEFAULT_FINGER)
     yield
     fourbar.set_finger(fourbar.DEFAULT_FINGER)
+    fourbar.set_gripper(fourbar.DEFAULT_GRIPPER)
 
 
 def test_default_finger_is_the_calibrated_bucket():

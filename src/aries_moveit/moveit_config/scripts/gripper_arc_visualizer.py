@@ -86,7 +86,7 @@ class GripperArcVisualizer(Node):
         # Which gripper is fitted. MUST match the URDF's gripper_type: the two
         # share the joint name and the closed angle but nothing else, so a
         # mismatch draws a confident overlay in the wrong place.
-        self.declare_parameter("gripper_type", "v2")
+        self.declare_parameter("gripper_type", "st3215")
         self.declare_parameter("publish_rate_hz", 10.0)
         # Jaw midpoint sits ~25.9 mm off the base link centreline in +y.
         self.declare_parameter("contact_y_offset_m", 0.001)
@@ -102,7 +102,7 @@ class GripperArcVisualizer(Node):
         self.gripper_joint = str(self.get_parameter("gripper_joint_name").value)
         self.gripper_type = str(self.get_parameter("gripper_type").value).strip().lower()
         if self.gripper_type not in ("v2", "st3215"):
-            self.gripper_type = "v2"
+            self.gripper_type = "st3215"
         self.samples = max(int(self.get_parameter("arc_samples").value), 8)
         self._refresh_tunables()
 

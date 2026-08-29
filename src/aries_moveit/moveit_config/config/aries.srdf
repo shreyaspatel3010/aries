@@ -19,7 +19,7 @@
          check. That is why the four-bar bars cannot simply be dropped.
 
          Every launch path that loads this file MUST pass gripper_type. -->
-    <xacro:arg name="gripper_type" default="v2"/>
+    <xacro:arg name="gripper_type" default="st3215"/>
     <xacro:property name="gripper_type" value="$(arg gripper_type)"/>
     <!-- "Open" is a property of the MECHANISM, not a shared constant.
          v2's four-bar stops at -1.57. The ST3215 rack and pinion runs to
@@ -30,8 +30,7 @@
          "Closed" is +0.07 on both by construction: gripper_st3215.xacro's zero
          pose is calibrated so the jaws touch exactly there. -->
     <xacro:arg name="gripper_command_open" default="-4.18"/>
-    <xacro:property name="gripper_open"
-                    value="${$(arg gripper_command_open) if gripper_type == 'st3215' else -1.57}"/>
+    <xacro:property name="gripper_open" value="$(arg gripper_command_open)"/>
     <!--GROUPS: Representation of a set of joints and links. This can be useful for specifying DOF to plan for, defining arms, end effectors, etc-->
     <!--LINKS: When a link is specified, the parent joint of that link (if it exists) is automatically included-->
     <!--JOINTS: When a joint is specified, the child link of that joint (which will always exist) is automatically included-->
@@ -68,19 +67,12 @@
     <group name="gripper">
         <link name="arm_gripper_base_link"/>
         <link name="gripper_gear_left_link"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-        <link name="gripper_gear_right_link"/>
-        <link name="gripper_left_link"/>
-        <link name="gripper_right_link"/>
-    </xacro:if>
         <link name="gripper_bucket_left_link"/>
         <link name="gripper_bucket_right_link"/>
         <!-- st3215 only; harmlessly skipped with a warning under v2. See the
              note at the bottom of this file. -->
-    <xacro:if value="${gripper_type == 'st3215'}">
         <link name="gripper_rack_left_link"/>
         <link name="gripper_rack_right_link"/>
-    </xacro:if>
         <joint name="gripper_gear_left_joint"/>
     </group>
     <!-- Combined group: arm + gripper controlled together.
@@ -487,28 +479,14 @@
     <disable_collisions link1="arm_base_link" link2="motor2" reason="Adjacent"/>
     <disable_collisions link1="arm_base_link" link2="motor3" reason="Adjacent"/>
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_gear_left_link" reason="Adjacent"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="arm_gripper_base_link" link2="gripper_gear_right_link" reason="Adjacent"/>
-    <disable_collisions link1="arm_gripper_base_link" link2="gripper_left_link" reason="Adjacent"/>
-    <disable_collisions link1="arm_gripper_base_link" link2="gripper_right_link" reason="Adjacent"/>
-    </xacro:if>
     <disable_collisions link1="arm_gripper_base_link" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="arm_gripper_base_link" link2="link6" reason="Adjacent"/>
     <disable_collisions link1="arm_gripper_base_link" link2="motor5" reason="Adjacent"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_left_link" link2="gripper_gear_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_gear_left_link" link2="gripper_left_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_gear_right_link" link2="gripper_right_link" reason="Adjacent"/>
-    </xacro:if>
     <disable_collisions link1="gripper_bucket_left_link" link2="gripper_bucket_right_link" reason="Never"/>
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_left_link" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_left_link" link2="link6" reason="Adjacent"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_right_link" link2="link5" reason="Adjacent"/>
-    <disable_collisions link1="gripper_gear_right_link" link2="link6" reason="Adjacent"/>
-    </xacro:if>
     <disable_collisions link1="base_link" link2="rover_camera_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="drill_link" reason="Adjacent"/>
     <!-- The drill's two prismatic links (2026-08-20). Each is Adjacent to the
@@ -587,88 +565,44 @@
     <!-- Gripper camera (rigidly mounted on arm_gripper_base_link) -->
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_camera_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_left_link" link2="gripper_camera_link" reason="Never"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_right_link" link2="gripper_camera_link" reason="Never"/>
-    <disable_collisions link1="gripper_left_link" link2="gripper_camera_link" reason="Never"/>
-    <disable_collisions link1="gripper_right_link" link2="gripper_camera_link" reason="Never"/>
-    </xacro:if>
     <!-- Four-bar linkage: bucket links overlap gear/link bodies in all configurations -->
     <disable_collisions link1="gripper_bucket_left_link" link2="gripper_gear_left_link" reason="Never"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_bucket_left_link" link2="gripper_left_link" reason="Never"/>
-    <disable_collisions link1="gripper_bucket_right_link" link2="gripper_gear_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_bucket_right_link" link2="gripper_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_bucket_left_link" link2="gripper_link_tip_left_link" reason="Never"/>
-    <disable_collisions link1="gripper_bucket_right_link" link2="gripper_link_tip_right_link" reason="Never"/>
-    </xacro:if>
-    <!-- Closed gripper: opposing fingers and four-bar links intentionally approach each other -->
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_left_link" link2="gripper_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_gear_right_link" link2="gripper_left_link" reason="Never"/>
-    </xacro:if>
+    <!-- Closed gripper: the jaws intentionally approach each other -->
     <disable_collisions link1="gripper_gear_left_link" link2="gripper_bucket_right_link" reason="Never"/>
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_right_link" link2="gripper_bucket_left_link" reason="Never"/>
-    <disable_collisions link1="gripper_left_link" link2="gripper_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_left_link" link2="gripper_bucket_right_link" reason="Never"/>
-    <disable_collisions link1="gripper_right_link" link2="gripper_bucket_left_link" reason="Never"/>
-    </xacro:if>
-    <!-- Tip connectors (massless fixed sub-links) -->
-    <xacro:if value="${gripper_type == 'v2'}">
-    <disable_collisions link1="gripper_gear_left_link" link2="gripper_gear_tip_left_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_gear_right_link" link2="gripper_gear_tip_right_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_left_link" link2="gripper_link_tip_left_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_right_link" link2="gripper_link_tip_right_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_gear_tip_left_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_gear_tip_right_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
-    </xacro:if>
 
     <!-- ==================================================================
-         SECONDARY GRIPPER (gripper_type:=st3215)
+         THE GRIPPER (gripper_type:=st3215, the only one)
 
-         This file is `cat` into robot_description_semantic, not xacro'd, so it
-         is one text for both grippers and it carries the union of their links.
-         WHICHEVER GRIPPER IS NOT FITTED, ITS ROWS WARN AT STARTUP:
+         This file is XACRO, not `cat`, because the `open` group state has to
+         carry the calibrated open angle from
+         aries_common/config/gripper_st3215.yaml. Every launch path that loads
+         it MUST pass gripper_command_open.
 
-           Link 'gripper_left_link' is not known to URDF. Cannot disable/enable collisons.
+         It used to hold the union of two grippers' links, which cost twelve red
+         lines at every startup: srdfdom does NOT skip an unknown link in a
+         GROUP, it logs it as an Error, once per node, and four nodes load the
+         model. With v2 retired there is only one link set and no warnings.
 
-         srdfdom skips those rows and carries on - they are not errors and
-         nothing is wrong. Under st3215 expect about twenty of them naming v2's
-         bars and tips; under v2, two naming the racks. Do not go looking for a
-         broken URDF.
-
-         Three link names are DELIBERATELY shared by both grippers, which is
-         what keeps the rest of this file gripper-agnostic:
-           arm_gripper_base_link     the mount
-           gripper_gear_left_link    the driven gear - v2's sector gear, the
-                                     ST3215's pinion
-           gripper_bucket_*_link     the two jaws
-         so every row above that mentions only those still applies to both.
-         Only the racks are new. -->
-    <xacro:if value="${gripper_type == 'st3215'}">
+         The group link list is not cosmetic: rebel_servo_teleop_gamepad sets
+         req.group_name to `arm_with_gripper` and calls checkSelfCollision, so a
+         link missing from the group is a link the joystick guard does not
+         check. -->
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_rack_left_link" reason="Adjacent"/>
     <disable_collisions link1="arm_gripper_base_link" link2="gripper_rack_right_link" reason="Adjacent"/>
-    </xacro:if>
     <!-- The two racks share one volume around the pinion: their carrier blocks
          both span the full 77.5 mm depth over x = -5 to +10 mm and interleave
          there. They are one degree of freedom and cannot be driven into each
          other, so this pair is meaningless to check and never passes. -->
-    <xacro:if value="${gripper_type == 'st3215'}">
     <disable_collisions link1="gripper_rack_left_link" link2="gripper_rack_right_link" reason="Never"/>
-    </xacro:if>
     <!-- Each rack is IN MESH with the pinion by design. -->
-    <xacro:if value="${gripper_type == 'st3215'}">
     <disable_collisions link1="gripper_rack_left_link" link2="gripper_gear_left_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_rack_right_link" link2="gripper_gear_left_link" reason="Adjacent"/>
-    </xacro:if>
     <!-- Fingertips are bolted to their own rack, and each rack's tail runs
          under the OPPOSITE jaw. -->
-    <xacro:if value="${gripper_type == 'st3215'}">
     <disable_collisions link1="gripper_rack_left_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_rack_right_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_rack_left_link" link2="gripper_bucket_right_link" reason="Never"/>
     <disable_collisions link1="gripper_rack_right_link" link2="gripper_bucket_left_link" reason="Never"/>
     <disable_collisions link1="gripper_rack_left_link" link2="gripper_camera_link" reason="Never"/>
     <disable_collisions link1="gripper_rack_right_link" link2="gripper_camera_link" reason="Never"/>
-    </xacro:if>
 </robot>

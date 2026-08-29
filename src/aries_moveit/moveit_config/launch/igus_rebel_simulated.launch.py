@@ -58,49 +58,11 @@ def generate_launch_description():
     # have. The contact point differs by up to 23 mm between the three jaws.
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='v2',
-        choices=['v2'],
-        description="Gripper type. Only 'v2' exists; 'new' and 'old' are retired "
-                    "to aries/urdf/legacy/ and are not built any more.")
-    finger_type_arg = DeclareLaunchArgument(
-        'finger_type',
-        default_value='bucket',
-        choices=['bucket', 'maintenance', 'probe'],
-        description='Swappable fingertip; must match the mounted jaw')
-    hardware_protocol = LaunchConfiguration('hardware_protocol')
-    gripper_type = LaunchConfiguration('gripper_type')
-    finger_type = LaunchConfiguration('finger_type')
-    use_sim_time = LaunchConfiguration('use_sim_time')
-    use_gui = LaunchConfiguration('use_gui')
-    use_joystick = LaunchConfiguration('use_joystick')
-
-    robot_description_file = os.path.join(
-        get_package_share_directory('aries'),
-        'urdf',
-        'my_robot.urdf.xacro'
-    )
-
-    robot_description = Command(
-        [
-            FindExecutable(name="xacro"),
-            " ",
-            robot_description_file,
-            " hardware_protocol:=",
-            hardware_protocol,
-            " gripper_type:=",
-            gripper_type,
-            " finger_type:=",
-            finger_type,
-        ]
-    )
-    # Launch gazebo simulator and spwan the robot
-    gazebo_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('aries_moveit'), 'launch', 'gazebo.launch.py')
-        ),
-        launch_arguments={
-            'gazebo_gui': LaunchConfiguration('gazebo_gui'),
-        }.items(),
+        default_value='st3215',
+        choices=['st3215'],
+        description="Gripper type. Only 'st3215' exists - the ST3215 rack-and-pinion; "
+                    "v2 and the older four-bars are retired to aries/urdf/legacy/. "
+                    "Declared because launch files pass it down.",
     )
     
     robot_state_pub_node = Node(

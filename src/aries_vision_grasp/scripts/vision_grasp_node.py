@@ -652,7 +652,7 @@ class VisionGraspNode(Node):
         # with the rack-and-pinion's closed forms and makes finger_type
         # meaningless -- that gripper has one CAD'd pair of scoops and no
         # fingertip interface.
-        self.declare_parameter('gripper_type', 'v2')
+        self.declare_parameter('gripper_type', 'st3215')
         self.declare_parameter('fourbar_contact_y_offset_m', 0.001)
         self.declare_parameter('fourbar_contact_z_open_m', 0.1342)
         self.declare_parameter('fourbar_contact_z_closed_m', 0.2180)

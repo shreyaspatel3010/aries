@@ -1,12 +1,15 @@
-"""Regression guards for the two grippers on the ReBeL flange.
+"""Regression guards for the ST3215 gripper, the only one on the ReBeL flange.
 
 WHAT THIS FILE IS FOR
-gripper_st3215.xacro is sold as a DROP-IN swap for gripper_v2.xacro: the SRDF,
-the controllers, gamepad.yaml and every cached pose keep working because both
-grippers publish the same driver joint under the same name with the same sign
-convention.  That promise is invisible - nothing fails loudly when it breaks,
-the gripper just opens the wrong way or by the wrong amount - so it is asserted
-here rather than trusted.
+Most of what this gripper gets wrong is invisible: nothing fails loudly when the
+sign convention flips or a limit moves, the gripper just opens the wrong way or
+by the wrong amount, or stalls against a stop.  So it is asserted here rather
+than trusted.
+
+gripper_v2 and the older four-bars are retired to aries/urdf/legacy/ (meshes to
+meshes/unused/).  The driver joint keeps the name they used,
+gripper_gear_left_joint, because the SRDF, the controllers, gamepad.yaml and
+every cached pose address it - renaming it now would buy nothing.
 
 The numbers come from scripts/build_gripper_st3215_meshes.py.  If one of these
 fails after a CAD re-export, re-run that script and move the value here to
@@ -82,11 +85,6 @@ def st3215():
     return build("st3215", hardware_protocol="mock_hardware")
 
 
-@pytest.fixture(scope="module")
-def v2():
-    return build("v2", hardware_protocol="mock_hardware")
-
-
 def joint(root, name):
     for j in root.findall("joint"):
         if j.get("name") == name:
@@ -112,45 +110,28 @@ def test_an_unknown_gripper_type_is_a_hard_error():
     out = subprocess.run(["xacro", str(URDF), "gripper_type:=bogus"],
                          capture_output=True, text=True, env=_ament_env())  # noqa: E501
     assert out.returncode != 0
-    assert "gripper_type_must_be_v2_or_st3215" in out.stderr
+    assert "gripper_type_must_be_st3215" in out.stderr
 
 
-@pytest.mark.parametrize("name", ["arm_gripper_base_link",
-                                  "gripper_gear_left_link",
-                                  "gripper_bucket_left_link",
-                                  "gripper_bucket_right_link",
-                                  "gripper_tcp"])
-def test_both_grippers_publish_the_shared_link_names(st3215, v2, name):
-    """These five names are what the SRDF, the ACM and the grasp stack address.
-
-    Rename one on either gripper and the swap stops being a drop-in: the SRDF
-    rows for it turn into startup warnings and the pair stops being collision
-    checked at all.
-    """
-    assert name in links(st3215)
-    assert name in links(v2)
+def test_the_driver_joint_keeps_the_name_the_stack_addresses(st3215):
+    """gripper_gear_left_joint is what the SRDF group, gripper_controllers.yaml,
+    moveit_controllers.yaml and gamepad.yaml all name. It outlived the gripper
+    it was named for; renaming it now would touch all of those for nothing."""
+    j = joint(st3215, "gripper_gear_left_joint")
+    assert j.get("type") == "revolute"
+    assert float(j.find("limit").get("upper")) == pytest.approx(Q_CLOSED, abs=1e-9)
+    for name in ("arm_gripper_base_link", "gripper_gear_left_link",
+                 "gripper_bucket_left_link", "gripper_bucket_right_link",
+                 "gripper_tcp"):
+        assert name in links(st3215), f"{name} is what the ACM and grasp stack address"
 
 
-def test_the_driver_joint_has_the_same_name_and_closed_angle(st3215, v2):
-    for root in (st3215, v2):
-        j = joint(root, "gripper_gear_left_joint")
-        assert j.get("type") == "revolute"
-        assert float(j.find("limit").get("upper")) == pytest.approx(Q_CLOSED, abs=1e-9)
-
-
-def test_the_flange_joint_is_identical(st3215, v2):
-    """Both bolt to the same six-hole circle at the same clocking, so anything
-    that cached a link6 -> gripper transform must not care which is fitted."""
-    a, b = joint(st3215, "arm_gripper_base_joint"), joint(v2, "arm_gripper_base_joint")
-    assert a.get("type") == b.get("type") == "fixed"
-    for attr in ("xyz", "rpy"):
-        assert a.find("origin").get(attr) == b.find("origin").get(attr)
-
-
-def test_the_tcp_sits_at_the_same_height(st3215, v2):
-    for root in (st3215, v2):
-        o = joint(root, "gripper_tcp_joint").find("origin")
-        assert [float(v) for v in o.get("xyz").split()] == [0.0, 0.0, 0.15]
+def test_the_tcp_is_where_the_srdf_chain_expects(st3215):
+    """0.15 m, inherited from the retired grippers so the SRDF chain and every
+    cached pose stayed valid across the swap. It is a reference frame, not the
+    contact point."""
+    o = joint(st3215, "gripper_tcp_joint").find("origin")
+    assert [float(v) for v in o.get("xyz").split()] == [0.0, 0.0, 0.15]
 
 
 # ---------------------------------------------------------------------------
@@ -288,17 +269,17 @@ def test_the_jaws_nest_and_that_pair_is_acm_disabled(st3215):
         "the nesting jaw pair is not disabled in the ACM"
 
 
-def test_the_camera_is_not_left_on_the_other_mount(st3215, v2):
-    """The bracket is modelled in neither base mesh, so the offset comes from
-    the camera holes in the mount casting, and the two mounts disagree by
-    18.2 mm. A wrong extrinsic is the one error the grasp stack cannot see."""
-    y_st = float(joint(st3215, "gripper_camera_joint").find("origin").get("xyz").split()[1])
-    y_v2 = float(joint(v2, "gripper_camera_joint").find("origin").get("xyz").split()[1])
-    assert y_st == pytest.approx(0.065274, abs=1e-6)
-    assert y_v2 == pytest.approx(0.047439, abs=1e-6)
+def test_the_camera_offset_is_this_mount_s(st3215):
+    """The bracket is modelled in no base mesh, so the offset comes from the
+    camera holes in the mount casting: 65.274 mm out in +Y. The retired v2 mount
+    put them at 47.439, and a stale value there is the one error the grasp stack
+    cannot see - the images look fine and every grasp is 18 mm off."""
+    y = float(joint(st3215, "gripper_camera_joint").find("origin").get("xyz").split()[1])
+    assert y == pytest.approx(0.065274, abs=1e-6)
+    assert y != pytest.approx(0.047439, abs=1e-4), "this is the retired v2 mount's offset"
 
 
-@pytest.mark.parametrize("gripper_type", ["v2", "st3215"])
+@pytest.mark.parametrize("gripper_type", ["st3215"])
 def test_every_referenced_mesh_exists(gripper_type):
     root = build(gripper_type, hardware_protocol="mock_hardware")
     missing = []
@@ -322,7 +303,7 @@ def srdf_for(gripper_type):
     return ET.fromstring(out.stdout)
 
 
-@pytest.mark.parametrize("gripper_type", ["v2", "st3215"])
+@pytest.mark.parametrize("gripper_type", ["st3215"])
 def test_the_srdf_names_no_link_the_urdf_lacks(gripper_type):
     """srdfdom does NOT quietly skip an unknown link in a GROUP.
 
@@ -348,22 +329,6 @@ def test_the_srdf_names_no_link_the_urdf_lacks(gripper_type):
     assert not unknown_acm, f"{gripper_type}: ACM rows for absent links {unknown_acm[:5]}"
 
 
-def test_the_gripper_group_still_covers_the_four_bar_on_v2():
-    """Splitting the SRDF must not quietly shrink v2's guard.
-
-    rebel_servo_teleop_gamepad sets req.group_name to `arm_with_gripper` and
-    calls checkSelfCollision, so a link missing from the group is a link the
-    joystick guard does not check. Dropping the bars would have been the easy
-    way to silence the errors above and it would have cost real safety.
-    """
-    grp = {ln.get("name") for g in srdf_for("v2").findall("group")
-           if g.get("name") == "gripper" for ln in g.findall("link")}
-    for bar in ("gripper_gear_left_link", "gripper_gear_right_link",
-                "gripper_left_link", "gripper_right_link",
-                "gripper_bucket_left_link", "gripper_bucket_right_link"):
-        assert bar in grp, f"v2's {bar} fell out of the gripper group"
-
-
 def test_the_gripper_group_covers_the_racks_on_st3215():
     grp = {ln.get("name") for g in srdf_for("st3215").findall("group")
            if g.get("name") == "gripper" for ln in g.findall("link")}
@@ -373,7 +338,7 @@ def test_the_gripper_group_covers_the_racks_on_st3215():
         assert ln in grp, f"st3215's {ln} is not in the gripper group"
 
 
-@pytest.mark.parametrize("gripper_type,expected", [("v2", -1.57), ("st3215", COMMAND_OPEN)])
+@pytest.mark.parametrize("gripper_type,expected", [("st3215", COMMAND_OPEN)])
 def test_the_srdf_open_state_matches_the_fitted_mechanism(gripper_type, expected):
     """`open` is a property of the mechanism, not a shared constant.
 
@@ -396,7 +361,7 @@ def test_the_srdf_open_state_matches_the_fitted_mechanism(gripper_type, expected
     assert float(lim.get("lower")) <= expected <= float(lim.get("upper"))
 
 
-@pytest.mark.parametrize("gripper_type", ["v2", "st3215"])
+@pytest.mark.parametrize("gripper_type", ["st3215"])
 def test_every_srdf_group_state_is_inside_the_urdf_limits(gripper_type):
     """A group state outside the joint limits is silently unplannable."""
     urdf = build(gripper_type, hardware_protocol="mock_hardware")
@@ -565,7 +530,9 @@ def test_the_grasp_stack_gap_model_is_the_mechanism(st3215):
             assert fourbar.gap_from_q(fourbar.q_from_gap(gap)) == pytest.approx(gap, abs=1e-6)
         # The jaws translate, so contact height must not vary with q.
         assert fourbar.contact_offset_z(0.0) == fourbar.contact_offset_z(-4.0)
-        # An unknown name must degrade to v2, not take the grasp stack down.
-        assert fourbar.set_gripper("nonsense") == "v2"
+        # An unknown name must degrade to the default, not take the grasp
+        # stack down mid-run.
+        assert fourbar.set_gripper("nonsense") == fourbar.DEFAULT_GRIPPER
+        assert fourbar.DEFAULT_GRIPPER == "st3215"
     finally:
-        fourbar.set_gripper("v2")
+        fourbar.set_gripper("st3215")

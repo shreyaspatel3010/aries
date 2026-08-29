@@ -1,25 +1,19 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="aries">
-  <!-- Which gripper is bolted to the ReBeL tool flange.
+  <!-- THE ST3215 RACK-AND-PINION IS THE ONLY GRIPPER as of 2026-08-30.
 
-         v2      REBEL-6DOF-04, meshing sector gears on a four-bar, servo
-                 driven through the Teensy. The primary gripper.
-         st3215  rack and pinion, one Waveshare/Feetech ST3215 bus servo wired
-                 straight to the rover PC. The secondary gripper.
+       gripper_v2 (the REBEL-6DOF-04 four-bar, servo driven through the Teensy)
+       is retired to urdf/legacy/ and its meshes to meshes/unused/gripper_v2/,
+       alongside the older 'new' and 'old' grippers. Nothing in the fleet runs
+       them.
 
-       They are MUTUALLY EXCLUSIVE - both bolt to the same six-hole flange, so
-       only one can be fitted - and swapping between them needs no change
-       anywhere else: both publish the same driver joint name
-       (gripper_gear_left_joint), the same +0.07-closed / negative-open sign
-       convention, the same gripper_bucket_*_link jaw names and the same
-       gripper_tcp at 0.15 m.
-
-       The 85.563 mm four-bar ('new') and the original ('old') are retired to
-       urdf/legacy/ and are not reachable from here.
-
-       finger_type applies to v2 only. The ST3215 gripper has one CAD'd pair of
-       scoops and no fingertip interface to swap. -->
-  <xacro:arg name="gripper_type" default="v2"/>
+       gripper_type is still DECLARED because a dozen launch files pass it down
+       and an undeclared arg is a hard error, but 'st3215' is the only accepted
+       value and every launch file's choices= is narrowed to it. finger_type is
+       likewise accepted and ignored: it selected between v2's three swappable
+       fingertips, and this gripper has one CAD'd pair of scoops with no
+       fingertip interface. -->
+  <xacro:arg name="gripper_type" default="st3215"/>
   <xacro:property name="gripper_type" value="$(arg gripper_type)"/>
   <!-- Swappable fingertip - 'bucket', 'maintenance', or 'probe' -->
   <xacro:arg name="finger_type" default="probe"/>
@@ -79,17 +73,11 @@
   <xacro:include filename="igus_rebel2.control.xacro"/>
   <!-- Instantiate the arm control macro -->
   <xacro:igus_rebel_control arm_id="aries" hardware_protocol="${hardware_protocol}" arm_hardware_protocol="${arm_hardware_protocol}" gripper_hardware_protocol="${gripper_hardware_protocol}" serial_port="${serial_port}" gripper_type="${gripper_type}" servo_bus_port="${servo_bus_port}" servo_bus_baud="${servo_bus_baud}" servo_id="${servo_id}" gripper_closed_steps="${gripper_closed_steps}" gripper_servo_invert="${gripper_servo_invert}" gripper_command_open="${gripper_command_open}"/>
-  <!-- An unknown gripper_type must fail loudly. Without this the include below
-       simply does not fire and the arm comes up with no end effector at all,
-       which reads in RViz as "the gripper meshes did not load" and sends you
-       looking at mesh paths. -->
-  <xacro:if value="${gripper_type not in ('v2', 'st3215')}">
-    <xacro:gripper_type_must_be_v2_or_st3215/>
+  <!-- A gripper_type this file does not build must fail loudly rather than
+       leave the arm with no end effector, which reads in RViz as "the gripper
+       meshes did not load" and sends you looking at mesh paths. -->
+  <xacro:if value="${gripper_type != 'st3215'}">
+    <xacro:gripper_type_must_be_st3215/>
   </xacro:if>
-  <xacro:if value="${gripper_type == 'v2'}">
-    <xacro:include filename="gripper_v2.xacro"/>
-  </xacro:if>
-  <xacro:if value="${gripper_type == 'st3215'}">
-    <xacro:include filename="gripper_st3215.xacro"/>
-  </xacro:if>
+  <xacro:include filename="gripper_st3215.xacro"/>
 </robot>

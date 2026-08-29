@@ -26,7 +26,7 @@ def generate_launch_description():
         DeclareLaunchArgument("timeout", default_value="5.0"),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
         # The checker has to look at the wire the FITTED gripper actually uses.
-        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"]),
+        DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"]),
         DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
         DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
         DeclareLaunchArgument("use_imu", default_value="auto"),

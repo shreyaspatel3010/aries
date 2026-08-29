@@ -131,8 +131,11 @@ _active_finger = DEFAULT_FINGER
 # --------------------------------------------------------------------------
 # Which gripper is bolted on. See the module docstring.
 # --------------------------------------------------------------------------
-DEFAULT_GRIPPER = 'v2'
-GRIPPERS = ('v2', 'st3215')
+DEFAULT_GRIPPER = 'st3215'
+# 'v2' is retired (aries/urdf/legacy/) but its tables are kept and still
+# reachable, because they are the only record of that gripper's measured
+# geometry and the fingertip work behind it.
+GRIPPERS = ('st3215', 'v2')
 
 # Jaw travel per radian of pinion, and the joint angle at which the jaws touch.
 # Both are properties of the mechanism, measured in
@@ -152,7 +155,7 @@ _active_gripper = DEFAULT_GRIPPER
 def set_gripper(name: str) -> str:
     """Select the fitted gripper. Returns the name actually applied.
 
-    An unknown name falls back to 'v2' rather than raising, for the same reason
+    An unknown name falls back to the default rather than raising, for the same reason
     set_finger() does: a typo in a launch argument should degrade to the
     previous behaviour, not take the grasp stack down mid-run. Log the return
     value so a silent fallback is still visible.

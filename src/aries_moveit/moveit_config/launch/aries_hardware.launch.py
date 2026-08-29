@@ -350,6 +350,19 @@ def launch_setup(context, *args, **kwargs):
     gripper_command_open = Q_CLOSED - (_stroke - int(_cal["margin_steps"])) / STEPS_PER_RAD
     gripper_open_travel = -(Q_CLOSED - (_stroke + int(_cal["limit_slack_steps"])) / STEPS_PER_RAD) * PITCH_RADIUS_M
 
+    # THE TEENSY IS RESOLVED WHATEVER GRIPPER IS FITTED.
+    #
+    # That board is not "the gripper board" - it runs the DRILL, the STACK LIGHT
+    # and the LOAD CELLS as well, over one micro-ROS link with one agent. The
+    # agent used to be started only when the gripper itself was on the Teensy,
+    # so selecting the ST3215 gripper silently took the drill, the stack light
+    # and the load cells down with it: no agent, no session, and nothing in the
+    # log connecting the two.
+    detect_timeout = float(LaunchConfiguration("gripper_detect_timeout").perform(context))
+    teensy_port, teensy_note = resolve_gripper_serial(serial_port, detect_timeout)
+    if teensy_port:
+        serial_port = teensy_port
+
     if gripper_type == "st3215":
         found_port, serial_note = resolve_servo_bus(servo_bus_port)
         if gripper_hardware_protocol in ("auto", "rebel"):
@@ -357,15 +370,7 @@ def launch_setup(context, *args, **kwargs):
         live_protocol = "st3215"
         device_note = f"servo_bus={servo_bus_port} id={servo_id}"
     else:
-        # Resolve the device before choosing the backend, so an explicit
-        # gripper_hardware_protocol:=rebel also survives a board swap. Only spend
-        # the detect timeout when we actually intend to drive the Teensy.
-        detect_timeout = float(
-            LaunchConfiguration("gripper_detect_timeout").perform(context)
-        ) if gripper_hardware_protocol in ("auto", "rebel") else 0.0
-        teensy_port, serial_note = resolve_gripper_serial(serial_port, detect_timeout)
-        if teensy_port:
-            serial_port = teensy_port
+        serial_note = teensy_note
         if gripper_hardware_protocol == "auto":
             gripper_hardware_protocol = "rebel" if teensy_port else "mock_hardware"
         live_protocol = "rebel"
@@ -379,6 +384,13 @@ def launch_setup(context, *args, **kwargs):
         + serial_note
         + ("" if gripper_hardware_protocol == live_protocol
            else "  -- SIMULATED gripper: no command will reach the servo")
+    )
+    teensy_note_log = LogInfo(
+        msg=f"[teensy] {serial_port if teensy_port else 'NOT FOUND'}"
+            + (f" -- micro-ROS agent starting; drill, stack light and load cells "
+               f"go over this link{teensy_note}" if teensy_port
+               else "  -- no agent: the DRILL, STACK LIGHT and LOAD CELLS will not "
+                    "respond. This is independent of which gripper is fitted.")
     )
 
     urdf_file = PathJoinSubstitution([FindPackageShare("aries"), "urdf", "my_robot.urdf.xacro"])
@@ -510,8 +522,11 @@ def launch_setup(context, *args, **kwargs):
             output="screen",
         )
 
+    # STARTED FOR THE BOARD, NOT FOR THE GRIPPER. See the note above: the drill,
+    # the stack light and the load cells all live on this link too, so the agent
+    # runs whenever the Teensy is present regardless of which gripper is fitted.
     micro_ros_agent = None
-    if gripper_hardware_protocol == "rebel":
+    if teensy_port:
         # GENERATED, not a checked-in file, and it carries this machine's
         # interface pin as well as the low-latency QoS. Fast DDS reads ONE
         # profiles file per process and the variables below outrank the
@@ -753,8 +768,11 @@ def launch_setup(context, *args, **kwargs):
     # Per-gripper overlay, loaded last so its keys win. Only the ST3215 gripper
     # has one, and it exists only because that mechanism's open position is
     # -4.065 where teleop_speeds.yaml's shared value is v2's -1.57.
+    # One gripper now, so the overlay is unconditional. It stays a separate file
+    # rather than being folded into teleop_speeds.yaml because that file is
+    # shared with the arm and the rover, and these keys are the gripper's.
     teleop_gripper_files = []
-    if gripper_type == "st3215":
+    if True:
         teleop_gripper_files.append(os.path.join(
             get_package_share_directory("aries_moveit"), "config",
             "teleop_speeds_st3215.yaml"))
@@ -823,6 +841,7 @@ def launch_setup(context, *args, **kwargs):
 
     nodes = [
         gripper_detect_note,
+        teensy_note_log,
         ros2_control_node,
         robot_state_pub,
         wheel_joint_publisher_node,
@@ -851,11 +870,11 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
-            DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"], description="Which gripper is bolted to the flange. v2 = four-bar via the Teensy; st3215 = rack-and-pinion on the USB bus-servo adapter. Mutually exclusive; 'new' and 'old' are retired to aries/urdf/legacy/."),
+            DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"], description="Which gripper is bolted to the flange. Only the ST3215 rack-and-pinion exists; v2 and the older four-bars are retired to aries/urdf/legacy/. Accepted-and-narrowed because a dozen launch files pass it down."),
             DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new/v2 gripper)"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
-            DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "st3215", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend. 'auto' picks the one that matches gripper_type if its device is present, else mock_hardware."),
+            DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "st3215", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend. 'auto' resolves to st3215 when the bus-servo adapter is present, else mock_hardware. 'rebel' is gone with the Teensy gripper - the Teensy itself still runs the drill, stack light and load cells."),
             DeclareLaunchArgument("use_joystick", default_value="false", description="Start joystick arm teleop"),
             DeclareLaunchArgument(
                 "use_joy_node",

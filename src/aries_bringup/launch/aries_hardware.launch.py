@@ -512,11 +512,11 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
-        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"]),
+        DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
-        DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "st3215", "mock_hardware", "gazebo"]),
+        DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "st3215", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("use_joystick", default_value="true"),
         # Whether the pad is READ here, as opposed to whether teleop runs here.
         # false when the joystick is on the base station: the consumers below

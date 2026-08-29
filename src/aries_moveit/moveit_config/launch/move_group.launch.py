@@ -484,10 +484,11 @@ def generate_launch_description():
     # builds the bucket rather than silently falling back to the probe.
     gripper_type_arg = DeclareLaunchArgument(
         "gripper_type",
-        default_value="v2",
-        choices=["v2", "st3215"],
-        description="Gripper type. Only 'v2' exists; 'new' and 'old' are retired "
-                    "Gazebo and robot_state_publisher were launched with.",
+        default_value="st3215",
+        choices=["st3215"],
+        description="Gripper type. Only 'st3215' exists - the ST3215 rack-and-pinion; "
+                    "v2 and the older four-bars are retired to aries/urdf/legacy/. "
+                    "Declared because launch files pass it down.",
     )
     finger_type_arg = DeclareLaunchArgument(
         "finger_type",
