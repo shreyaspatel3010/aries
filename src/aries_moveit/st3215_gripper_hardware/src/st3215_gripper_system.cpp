@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace st3215_gripper_hardware
 {
@@ -134,6 +136,38 @@ void ST3215GripperSystem::inhibit(const std::string & reason)
                "Everything else - the arm, the rover - keeps running.");
 }
 
+std::string ST3215GripperSystem::probe_bus()
+{
+  // IDs 1..30 covers the factory default and any hand-assigned one; a full
+  // 0..253 sweep would take most of a minute at this timeout for no real gain.
+  const std::vector<int> bauds{baud_, 500000, 115200, 250000, 57600};
+  std::string found;
+  for (size_t i = 0; i < bauds.size(); ++i) {
+    if (i > 0) {
+      bus_.close();
+      if (!bus_.open(port_, bauds[i], timeout_ms_)) { continue; }
+    }
+    std::string ids;
+    for (uint8_t id = 1; id <= 30; ++id) {
+      if (bus_.ping(id)) { ids += (ids.empty() ? "" : ", ") + std::to_string(id); }
+    }
+    if (!ids.empty()) {
+      found += (found.empty() ? "" : "; ") + std::to_string(bauds[i]) +
+               " baud: id " + ids;
+      break;      // one answering baud is the answer; stop hunting
+    }
+  }
+  bus_.close();
+  if (found.empty()) {
+    return " NOTHING answered on any ID at any of 1M/500k/250k/115200/57600 baud. "
+           "The adapter enumerated (the port opened), so this is the servo side: "
+           "check that the bus servo has its own 6-12 V supply - USB powers the "
+           "adapter's logic only - and that the 3-pin lead is seated.";
+  }
+  return " Something DID answer, at " + found +
+         ". Set servo_id:= / servo_bus_baud:= to match, or re-address the servo.";
+}
+
 hardware_interface::CallbackReturn
 ST3215GripperSystem::on_activate(const rclcpp_lifecycle::State &)
 {
@@ -163,14 +197,22 @@ ST3215GripperSystem::on_activate(const rclcpp_lifecycle::State &)
     return start_inhibited();
   }
 
+  // Spread the attempts over ~0.5 s rather than firing five back to back: a
+  // servo that was just powered, or an adapter that has just enumerated, is not
+  // ready within a few milliseconds.
   bool alive = false;
-  for (int attempt = 0; attempt < 5 && !alive; ++attempt) {
+  for (int attempt = 0; attempt < 10 && !alive; ++attempt) {
     alive = bus_.ping(servo_id_);
+    if (!alive) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
   }
   if (!alive) {
+    // Do not just report the failure - go and find out WHY, while the port is
+    // already open and nothing else is using it. "No reply from id 1" is the
+    // same message whether the servo is at id 3, at another baud, or unpowered,
+    // and those have completely different fixes.
+    const std::string probe = probe_bus();
     inhibit("no reply from servo id " + std::to_string(servo_id_) + " on " + port_ +
-            " at " + std::to_string(baud_) + " baud. List the IDs actually on the bus "
-            "with `python3 scripts/st3215_test.py --scan`.");
+            " at " + std::to_string(baud_) + " baud." + probe);
     return start_inhibited();
   }
 

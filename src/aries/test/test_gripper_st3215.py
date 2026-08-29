@@ -258,9 +258,9 @@ def test_the_jaws_nest_and_that_pair_is_acm_disabled(st3215):
         f"near zero means the handedness was lost in a re-export; a much larger "
         f"one means the lips are modelled through each other.")
 
-    srdf = (SRC / "aries_moveit" / "moveit_config" / "config" / "aries.srdf").read_text()
-    assert ('link1="gripper_bucket_left_link" link2="gripper_bucket_right_link"'
-            in srdf), "the nesting jaw pair is not disabled in the ACM"
+    pairs = {(d.get("link1"), d.get("link2")) for d in srdf_for("st3215").findall("disable_collisions")}
+    assert ("gripper_bucket_left_link", "gripper_bucket_right_link") in pairs, \
+        "the nesting jaw pair is not disabled in the ACM"
 
 
 def test_the_camera_is_not_left_on_the_other_mount(st3215, v2):
@@ -285,6 +285,110 @@ def test_every_referenced_mesh_exists(gripper_type):
         if not path.exists():
             missing.append(fn)
     assert not missing, f"missing meshes: {missing}"
+
+
+def srdf_for(gripper_type):
+    """The SRDF is xacro, gated on gripper_type. See its header for why."""
+    path = SRC / "aries_moveit" / "moveit_config" / "config" / "aries.srdf"
+    out = subprocess.run(["xacro", str(path), f"gripper_type:={gripper_type}"],
+                         capture_output=True, text=True, env=_ament_env())
+    assert out.returncode == 0, f"xacro failed on the SRDF:\n{out.stderr[-1500:]}"
+    return ET.fromstring(out.stdout)
+
+
+@pytest.mark.parametrize("gripper_type", ["v2", "st3215"])
+def test_the_srdf_names_no_link_the_urdf_lacks(gripper_type):
+    """srdfdom does NOT quietly skip an unknown link in a GROUP.
+
+    It logs `Error: Link 'x' declared as part of group 'gripper' is not known to
+    the URDF`, once per node that loads the model - four of them here, so a
+    plain union of both grippers' link sets printed twelve red lines at every
+    startup on a stack that was working fine. The disable_collisions rows only
+    warn, but both are checked here: a clean start is what lets a real fault be
+    seen.
+    """
+    urdf = build(gripper_type, hardware_protocol="mock_hardware")
+    srdf = srdf_for(gripper_type)
+    known = links(urdf)
+
+    unknown_group = [ln.get("name") for g in srdf.findall("group")
+                     for ln in g.findall("link") if ln.get("name") not in known]
+    assert not unknown_group, (
+        f"{gripper_type}: SRDF groups name links the URDF does not have "
+        f"({unknown_group}) - srdfdom logs these as Errors")
+
+    unknown_acm = [(d.get("link1"), d.get("link2")) for d in srdf.findall("disable_collisions")
+                   if d.get("link1") not in known or d.get("link2") not in known]
+    assert not unknown_acm, f"{gripper_type}: ACM rows for absent links {unknown_acm[:5]}"
+
+
+def test_the_gripper_group_still_covers_the_four_bar_on_v2():
+    """Splitting the SRDF must not quietly shrink v2's guard.
+
+    rebel_servo_teleop_gamepad sets req.group_name to `arm_with_gripper` and
+    calls checkSelfCollision, so a link missing from the group is a link the
+    joystick guard does not check. Dropping the bars would have been the easy
+    way to silence the errors above and it would have cost real safety.
+    """
+    grp = {ln.get("name") for g in srdf_for("v2").findall("group")
+           if g.get("name") == "gripper" for ln in g.findall("link")}
+    for bar in ("gripper_gear_left_link", "gripper_gear_right_link",
+                "gripper_left_link", "gripper_right_link",
+                "gripper_bucket_left_link", "gripper_bucket_right_link"):
+        assert bar in grp, f"v2's {bar} fell out of the gripper group"
+
+
+def test_the_gripper_group_covers_the_racks_on_st3215():
+    grp = {ln.get("name") for g in srdf_for("st3215").findall("group")
+           if g.get("name") == "gripper" for ln in g.findall("link")}
+    for ln in ("gripper_gear_left_link", "gripper_rack_left_link",
+               "gripper_rack_right_link",
+               "gripper_bucket_left_link", "gripper_bucket_right_link"):
+        assert ln in grp, f"st3215's {ln} is not in the gripper group"
+
+
+@pytest.mark.parametrize("gripper_type,expected", [("v2", -1.57), ("st3215", -4.065)])
+def test_the_srdf_open_state_matches_the_fitted_mechanism(gripper_type, expected):
+    """`open` is a property of the mechanism, not a shared constant.
+
+    Before aries.srdf was xacro'd it was one static -1.57 for both, which on the
+    ST3215 is a 32.9 mm jaw gap out of 82.9 - so a MoveIt "open" left more than
+    half the stroke unreachable while the joystick, which has its own overlay,
+    opened fully. The two must agree.
+    """
+    srdf = srdf_for(gripper_type)
+    values = [float(j.get("value"))
+              for gs in srdf.findall("group_state") if gs.get("name") == "open"
+              for j in gs.findall("joint") if j.get("name") == "gripper_gear_left_joint"]
+    assert values, "the SRDF has no `open` group state for the gripper"
+    for value in values:
+        assert value == pytest.approx(expected, abs=1e-9)
+
+    # And it has to be reachable, or MoveIt rejects every plan to it.
+    urdf = build(gripper_type, hardware_protocol="mock_hardware")
+    lim = joint(urdf, "gripper_gear_left_joint").find("limit")
+    assert float(lim.get("lower")) <= expected <= float(lim.get("upper"))
+
+
+@pytest.mark.parametrize("gripper_type", ["v2", "st3215"])
+def test_every_srdf_group_state_is_inside_the_urdf_limits(gripper_type):
+    """A group state outside the joint limits is silently unplannable."""
+    urdf = build(gripper_type, hardware_protocol="mock_hardware")
+    limits = {}
+    for j in urdf.findall("joint"):
+        lim = j.find("limit")
+        if lim is not None and lim.get("lower") is not None:
+            limits[j.get("name")] = (float(lim.get("lower")), float(lim.get("upper")))
+    bad = []
+    for gs in srdf_for(gripper_type).findall("group_state"):
+        for j in gs.findall("joint"):
+            name, value = j.get("name"), float(j.get("value"))
+            if not name.startswith("gripper"):
+                continue        # joint5 has a pre-existing, unrelated overrun
+            lo, hi = limits.get(name, (-1e9, 1e9))
+            if not lo - 1e-9 <= value <= hi + 1e-9:
+                bad.append((gs.get("name"), name, value, (lo, hi)))
+    assert not bad, f"{gripper_type}: unreachable gripper group states {bad}"
 
 
 def _const_from(path, name):

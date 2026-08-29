@@ -154,9 +154,15 @@ class Servo:
             torque=self.r8(R_TORQUE),
         )
 
-    def goto(self, target, timeout=8.0, quiet=False):
-        """Command a position (steps) and block until it settles."""
-        target = max(POS_MIN, min(POS_MAX, int(target)))
+    def goto(self, target, timeout=8.0, quiet=False, clamp=True):
+        """Command a position (steps) and block until it settles.
+
+        clamp=False reaches the hard 0/4095 stops, which POS_MIN/POS_MAX
+        deliberately keep away from. Only --pos does that, and only because a
+        datum of exactly 0 is sometimes what you want to assemble against.
+        """
+        target = max(POS_MIN, min(POS_MAX, int(target))) if clamp else \
+            max(0, min(STEPS_PER_REV - 1, int(target)))
         self.w16(R_GOAL_POS, target)
         t0 = time.time()
         pos = None
@@ -546,6 +552,11 @@ def main():
     ap.add_argument("--mode", choices=("position", "wheel"),
                     help="switch operating mode. EPROM write, persists across "
                          "power cycles. wheel = continuous rotation.")
+    ap.add_argument("--pos", type=int, metavar="STEPS",
+                    help="POSITION-MODE absolute move to a raw step count "
+                         "(0-4095, 0 deg = step 0). This is the one that works "
+                         "in the mode the gripper runs in; --goto below is "
+                         "wheel-mode only. Prints the travel before moving.")
     ap.add_argument("--goto", type=float, metavar="DEG",
                     help="continuous-rotation move to an absolute angle (needs "
                          "wheel mode). Software-closed loop, so it can cross the "
@@ -597,9 +608,39 @@ def main():
         if now != want:
             sv.close()
             return "mode write did not take effect"
-        if args.goto is None and args.spin is None:
+        if args.goto is None and args.spin is None and args.pos is None:
             sv.close()
             return 0
+
+    if args.pos is not None:
+        mode = sv.r8(R_MODE)
+        if mode != 0:
+            sv.close()
+            return (f"--pos needs POSITION mode; the servo is in mode {mode} "
+                    "(wheel), where goal positions are ignored. "
+                    "Run with --mode position first.")
+        here = sv.r16(R_PRES_POS)
+        if here is None:
+            sv.close()
+            return "no position feedback"
+        target = max(0, min(STEPS_PER_REV - 1, args.pos))
+        # Say how far it is about to move BEFORE moving. With the racks engaged
+        # a long travel runs the jaws into an end stop, and the horn alone gives
+        # no clue how much of the stroke is left.
+        print(f"  now    {here:>4} ({here * 360 / STEPS_PER_REV:6.1f} deg)")
+        print(f"  target {target:>4} ({target * 360 / STEPS_PER_REV:6.1f} deg)"
+              f"   travel {target - here:+d} steps "
+              f"({(target - here) * 360 / STEPS_PER_REV:+.1f} deg)")
+        if not (POS_MIN <= target <= POS_MAX):
+            print(f"  NOTE: {target} is outside the {POS_MIN}-{POS_MAX} working band; "
+                  "that band exists to stay off the hard 0/4095 stops.")
+        sv.w16(R_GOAL_SPEED, args.speed)
+        sv.goto(target, clamp=False)
+        t = sv.telemetry()
+        print(f"  settled at {t['pos']} ({(t['pos'] or 0) * 360 / STEPS_PER_REV:.1f} deg), "
+              f"load {t['load']}, {t['volt'] / 10.0 if t['volt'] else '?'} V, {t['temp']} C")
+        sv.close()
+        return 0
 
     if args.goto is not None or args.spin is not None:
         if sv.r8(R_MODE) != 1:

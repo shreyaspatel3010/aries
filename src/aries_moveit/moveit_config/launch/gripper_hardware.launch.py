@@ -100,8 +100,14 @@ def generate_launch_description():
     robot_description = {'robot_description': robot_description_content}
     
     # Robot semantic description (SRDF)
+    # aries.srdf is XACRO, not plain text: it carries both grippers' link sets
+    # and gates them on gripper_type. `cat` here yields a semantic model with
+    # the other gripper's links in it, which srdfdom reports as Errors, and
+    # with the xacro tags left in as unknown elements.
     robot_description_semantic_content = Command([
-        'cat ', os.path.join(moveit_config_dir, 'aries.srdf')
+        FindExecutable(name='xacro'), ' ',
+        os.path.join(moveit_config_dir, 'aries.srdf'),
+        ' gripper_type:=', gripper_type,
     ])
     robot_description_semantic = {
         'robot_description_semantic': ParameterValue(robot_description_semantic_content, value_type=str)

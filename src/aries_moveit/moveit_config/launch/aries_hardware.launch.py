@@ -390,7 +390,14 @@ def launch_setup(context, *args, **kwargs):
     robot_description = ParameterValue(robot_description_raw, value_type=str)
 
     srdf_file = os.path.join(get_package_share_directory("aries_moveit"), "config", "aries.srdf")
-    robot_description_semantic = ParameterValue(Command(["cat ", srdf_file]), value_type=str)
+    # aries.srdf is XACRO, not plain text: it carries both grippers' link sets
+    # and gates them on gripper_type. `cat` here yields a semantic model with
+    # the other gripper's links in it, which srdfdom reports as Errors, and
+    # with the xacro tags left in as unknown elements.
+    robot_description_semantic = ParameterValue(
+        Command([FindExecutable(name="xacro"), " ", srdf_file,
+                 " gripper_type:=", gripper_type]),
+        value_type=str)
 
     kinematics_file = PathJoinSubstitution([FindPackageShare("aries_moveit"), "config", "kinematics.yaml"])
     joint_limits_file = PathJoinSubstitution([FindPackageShare("aries_moveit"), "config", "joint_limits.yaml"])

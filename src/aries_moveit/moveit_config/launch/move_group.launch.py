@@ -86,11 +86,17 @@ def opaque_func(context, *args, **kwargs):
         ]
     )
     
+    # aries.srdf is XACRO, not plain text: it carries both grippers' link sets
+    # and gates them on gripper_type. `cat` here yields a semantic model with
+    # the other gripper's links in it, which srdfdom reports as Errors, and
+    # with the xacro tags left in as unknown elements.
     robot_description_semantic = Command(
         [
-            FindExecutable(name="cat"),
+            FindExecutable(name="xacro"),
             " ",
             robot_description_semantic_file,
+            " gripper_type:=",
+            gripper_type,
         ]
     )
 

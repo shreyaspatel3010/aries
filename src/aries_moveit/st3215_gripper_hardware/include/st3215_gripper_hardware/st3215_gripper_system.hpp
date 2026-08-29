@@ -73,6 +73,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "st3215_gripper_hardware/sts_bus.hpp"
 
@@ -102,6 +103,11 @@ private:
   /// Finish activation after inhibit(): keep reading if the port is open, but
   /// never write. Returns SUCCESS so the controller manager survives.
   hardware_interface::CallbackReturn start_inhibited();
+  /// After a failed ping: sweep the bus for any servo, at this baud and then at
+  /// the other common ones, and describe what was found. Turns "no reply from
+  /// id 1" into something that says whether the servo is at another ID, another
+  /// baud, or not powered at all.
+  std::string probe_bus();
 
   std::string joint_name_;
 
@@ -117,7 +123,17 @@ private:
   int goal_speed_{2000};
   int torque_limit_{0};       // 0 = do not write
   double io_rate_hz_{100.0};
-  int timeout_ms_{5};
+  // 25 ms, NOT the 1 ms a 1 Mbaud round trip suggests. The wire time for a
+  // 6-byte request and a 6-byte reply is ~120 us, but this is a USB CDC-ACM
+  // bridge (a CH343), and the host schedules bulk transfers when it feels like
+  // it - a few milliseconds is normal and an occasional scheduling hiccup is
+  // longer. scripts/st3215_test.py, which works, allows 50 ms.
+  //
+  // This started at 5 ms and that was wrong: it answered on one run and not the
+  // next, which is exactly how a marginal deadline shows up. It costs nothing
+  // when the servo is healthy, because a read returns as soon as the bytes
+  // arrive; it is only the ceiling.
+  int timeout_ms_{25};
 
   // --- squeeze-relax --------------------------------------------------
   // A closed command drives to gap 0 by design, so gripping anything leaves a
