@@ -20,9 +20,10 @@ TWO GRIPPERS SHARE THIS MODULE, selected with set_gripper():
             Anything that compensates for contact drift can simply skip it on
             this gripper.
 
-            Its usable range is q in [-4.065, +0.07], two and a half times v2's
-            in joint terms for about the same 83 mm of gap, so a q value is NOT
-            portable between the two even though both call +0.07 closed.
+            Its usable range is q in [-3.76, +0.07] and it opens to 76.8 mm
+            against v2's 83 - WIDER, and over twice the joint travel. A q
+            value is not portable between the two even though both call
+            +0.07 closed.
 
 The rest of this file, and everything below about fingertips, applies to 'v2'.
 
@@ -140,7 +141,7 @@ GRIPPERS = ('v2', 'st3215')
 # so contact lands on the +0.07 rad this whole stack calls closed.
 ST3215_PITCH_R = 0.01002676
 ST3215_Q_CLOSED = 0.07
-ST3215_Q_OPEN = -4.065
+ST3215_Q_OPEN = -3.76
 # The lips meet 207.8 mm above arm_gripper_base_link, and stay there: the jaws
 # translate, so this does not vary with q.
 ST3215_CONTACT_Z = 0.2078

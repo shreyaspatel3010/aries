@@ -22,22 +22,39 @@
 //     80 Hz loop that also drives the ARM: a servo that stops answering must
 //     not be able to stall the arm's control cycle.
 //
-// SERVO ZERO, AND WHY IT IS A PARAMETER
+// SERVO ZERO, AND THE OFFSET THIS GRIPPER DEPENDS ON
 //
-// The gripper needs 4.135 rad (236.9 deg, 2695 steps) to go from closed to
-// fully open, out of the servo's 360 deg single-turn range.  It fits, but only
-// with the zero placed deliberately.  ``closed_steps`` is the raw step count at
-// q = +0.07 rad, jaws touching.  To calibrate:
+// MEASURED 2026-08-29 on the assembled gripper, torque off, hand-swept stop to
+// stop in one motion with the position unwrapped: full close 3520, full open
+// 489, 3031 steps of travel.  So closed_steps 3520, invert FALSE (opening
+// DECREASES the count), open end 541 as commanded with 50 steps held off the
+// stop.  Those are the launch defaults.
 //
-//     python3 scripts/st3215_test.py --monitor      # torque off, back-drive
-//     close the jaws by hand until they just touch, read the step count,
-//     put that number in closed_steps.
+// THE SERVO CARRIES A POSITION-CORRECTION OFFSET AND THIS CALIBRATION NEEDS IT.
+// Register 31 is set to 1232 (85 as delivered).  Without it the stroke straddles
+// the 4095/0 encoder seam, and a single-turn servo in position mode CANNOT hold
+// a goal across that: told to move from one side to the other it takes the
+// direct numeric path, which is the long way round - backwards through the whole
+// mechanism at full torque.  No value of closed_steps or invert fixes it, and it
+// is not something this component can work around, because the servo chooses the
+// path.  If the servo is swapped or factory-reset, set reg31 again first.
 //
-// Check it: closed_steps - 2695 must stay above 50 with invert false (or
-// closed_steps + 2695 below 4045 with invert true), or the servo runs into its
-// own encoder seam partway through the stroke.  on_activate() checks this and
-// INHIBITS commanding if it does not hold (see below), because the failure
-// otherwise appears as the gripper stopping mid-open for no visible reason.
+// The stroke is 3056 steps at the joint limit out of a usable 3995 (50..4045),
+// so the zero is not free to sit anywhere: closed_steps must be at least 3106
+// with invert false.  on_activate() checks this and INHIBITS commanding if it
+// does not hold, because the failure otherwise looks like the gripper stopping
+// mid-open for no reason.
+//
+// To re-measure, torque off and sweep by hand:
+//
+//     python3 scripts/st3215_test.py --monitor
+//
+// and read the step at each stop.  THE STEP NUMBERS ALONE CANNOT TELL YOU WHICH
+// STOP IS WHICH - both assignments are valid arithmetic and leave the same
+// margin - so pair each reading with a look at the jaws.  Getting it backwards
+// yields a gripper that opens on close and closes on open, with nothing in any
+// log to say so.  It happened once here, on the strength of an apparent button
+// inversion that turned out to be the stale-goal startup snap below.
 //
 // MODE IS NOT WRITTEN HERE.  REG_MODE is an EPROM register: writing it wears
 // the cell and persists across power cycles.  on_activate() READS it, and if
@@ -123,6 +140,23 @@ private:
   int goal_speed_{2000};
   int torque_limit_{0};       // 0 = do not write
   double io_rate_hz_{100.0};
+  // SLEW LIMIT on the goal actually written to the servo, rad/s.
+  //
+  // Nothing else bounds how far one write can move this gripper. A wrong
+  // closed_steps, a mis-parsed invert, or a bench script writing a raw goal can
+  // all ask for a jump of most of a revolution, and the servo will take it at
+  // full speed - which on a rack and pinion means driving the jaws through
+  // their stops. That happened on the bench: a goal write produced ~960 steps
+  // of travel per command and wrapped the encoder, and the pinion appears to
+  // have skipped against the racks.
+  //
+  // 3.0 rad/s still crosses the whole 1.87 rad stroke in 0.62 s, so it costs
+  // nothing in normal use; it only removes the ability to make one enormous
+  // uncommanded move. The controller's own trajectory is unaffected - it never
+  // asks for anything this fast.
+  double max_slew_rad_per_s_{3.0};
+  double slewed_goal_{0.0};
+  bool slew_primed_{false};
   // 25 ms, NOT the 1 ms a 1 Mbaud round trip suggests. The wire time for a
   // 6-byte request and a 6-byte reply is ~120 us, but this is a USB CDC-ACM
   // bridge (a CH343), and the host schedules bulk transfers when it feels like
@@ -156,6 +190,10 @@ private:
   std::atomic<double> state_eff_{0.0};
   std::atomic<bool> have_state_{false};
   std::atomic<bool> command_inhibited_{false};
+  // False until a controller writes a command that differs from the position
+  // seeded at activation. While false the io thread writes nothing at all, so
+  // bringing the stack up cannot move the gripper.
+  std::atomic<bool> have_command_{false};
   std::string inhibit_reason_;
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> read_failures_{0};

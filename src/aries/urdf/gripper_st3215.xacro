@@ -54,26 +54,24 @@
 
             travel per radian = 21 * 3.0000 / (2 * pi) = 10.02676 mm
 
-        STROKE.  0 to 82.9 mm of jaw gap, against v2's 0 to 83 mm - near enough
-        the same working range, reached a completely different way:
+        STROKE.  0 to 76.8 mm of jaw gap, against v2's 0 to 83 mm - comparable,
+        over more than twice the joint travel for it.
 
           jaw gap [mm] against q [rad], exactly linear
-            q      +0.07   0.00  -0.20  -0.50  -1.00  -1.57  -2.00  -3.00  -4.065
-            gap      0.0    1.4    5.4   11.4   21.5   32.9   41.5   61.6    82.9
+            q      +0.07   0.00  -0.50  -1.00  -2.00  -3.00  -3.76
+            gap      0.0    1.4   11.4   21.5   41.5   61.6   76.8
 
           jaw faces meet at z = 207.8 mm from arm_gripper_base_link (the lip);
           the flat shank faces run z = 115 to 155 mm.
 
         THREE THINGS TO KNOW BEFORE TRUSTING A COMMANDED ANGLE
 
-        1. -1.57 IS NOT FULLY OPEN HERE.  It is on v2, whose joint stops there.
-           This mechanism runs to -4.065, and the SRDF `open` group state -
-           which is shared text, `cat` into robot_description_semantic, and has
-           to stay valid for v2 as well - still says -1.57.  So a MoveIt
-           "open" leaves this gripper at a 32.9 mm gap, less than half its
-           travel.  That is a valid pose, not a bug, but anything that wants
-           the full 82.9 mm has to command the joint limit directly.
-           teleop_speeds_st3215.yaml does exactly that for the joystick.
+        1. -1.57 IS NOT THE SAME POSE ON THE TWO GRIPPERS.  It is v2's hard
+           stop and its full 83 mm; here it is a 32.9 mm gap with two thirds of
+           the travel still left.  aries.srdf is xacro now and its `open` state
+           follows the fitted gripper (-1.57 on v2, -3.76 here), so MoveIt and
+           the joystick agree - but a q value cached from a v2 session means a
+           very different jaw gap on this gripper.
 
         2. THE JAWS NEST.  The two scoop halves are handed: the right lip runs
            3.000 mm wider than the left so the pair closes into one bowl.  It
@@ -83,25 +81,74 @@
            which is measured at the shank faces, and stop short of +0.07 on
            anything it actually means to hold.
 
-        3. THE SERVO HAS 360 DEG AND THE STROKE WANTS 237 OF THEM.  q spans
-           +0.07 to -4.065 = 4.135 rad = 236.9 deg = 2695 of the ST3215's 4096
-           steps.  It fits, but only if the servo's zero is placed with that in
-           mind - see st3215_gripper_hardware's closed_steps parameter and the
-           calibration note in its header.  Unlike v2 this servo does report a
-           real position, so a mis-set zero shows up immediately in
-           /joint_states rather than being echoed back as if it were fine.
+        3. THE SERVO ZERO STILL HAS TO BE SET, but it is no longer tight.  q
+           spans +0.07 to -1.805 = 1.875 rad = 107 deg = 1222 of the ST3215's
+           4096 steps, so almost any zero fits: closed_steps <= 2823 with
+           invert true, or >= 1272 with invert false.  On the built gripper it
+           is closed_steps 1844 with invert FALSE - opening decreases the step
+           count - which puts the open end at 622.  Unlike v2 this servo reports a real position, so a mis-set
+           zero shows up immediately in /joint_states rather than being echoed
+           back as if it were fine.
     -->
 
     <xacro:property name="rack_pitch_radius" value="0.01002676"/>
 
-    <!-- Full open, from the CAD: the left fingertip's shank face runs into the
-         -X end wall after 42.8 mm of travel (ray-cast through the wall to find
-         which (y,z) cells are solid all the way through, then measured to the
-         frontmost blocked jaw point; the right jaw has 54.8 mm, so the left is
-         what binds).  2 mm is held back from that, because the wall is a
-         printed part and the fingertip meets it flat-on with nothing to guide
-         it in. -->
-    <xacro:property name="gripper_open_travel" value="0.0408"/>
+    <!-- Full open, MEASURED ON THE ASSEMBLED GRIPPER, 2026-08-29.  Torque off,
+         jaws back-driven by hand from stop to stop in one continuous motion,
+         recorded at 25 Hz with the position unwrapped across the encoder seam:
+
+             full open              step  489
+             hand-forced close      step 3520
+             SERVO-REACHABLE close  step 3038   <- this is closed_steps
+             usable travel          2549 steps = 3.9101 rad
+
+         which is 39.2 mm of travel per jaw and a 78.4 mm gap.
+
+         CLOSED_STEPS IS THE SERVO-REACHABLE STOP, NOT THE HAND-FORCED ONE.  A
+         hand can flex the jaws 482 steps (7.4 mm per jaw) past where the servo
+         can drive them.  Aiming q=+0.07 at the hand figure makes every close
+         command push into a shortfall it can never deliver - measured stalling
+         at step 3038 with the motor audibly straining.  Measure this end by
+         driving it closed and reading where it stalls, not by pushing it shut.  This gripper
+         opens WIDER than v2 (83 mm), over more than twice the joint travel.
+
+         THIS DEPENDS ON THE SERVO'S POSITION-CORRECTION OFFSET.  Register 31 is
+         set to 1232 (it was 85 as delivered).  Without that offset the stroke
+         straddles the 4095/0 seam, and a single-turn servo cannot hold a goal
+         across it: told to go from one side to the other it drives the long way
+         round, backwards through the whole mechanism.  That is not something
+         closed_steps or invert can fix.  If the servo is ever swapped or
+         factory-reset, reg31 must be set again or every number here is wrong.
+
+         DO NOT REPLACE THIS WITH THE BUILD SCRIPT'S NUMBER.  Ray-casting the
+         CAD says 42.8 mm per jaw; the measurement says 46.6.  The 2026-08-28
+         GLB re-export merged and dropped solids, so the ray sees a different
+         mount to the one on the robot.  The measurement wins.
+
+         THE JOINT LIMIT AND THE COMMAND LIMIT ARE NOT THE SAME NUMBER, and
+         conflating them is what broke the arm:
+
+           * This limit is what the joint may BE.  It has to cover every pose
+             the gripper can physically hold, plus slack for backlash and
+             encoder noise, or a legitimate parked position reports as out of
+             bounds - and MoveIt then refuses to plan for the WHOLE ARM, not
+             just the gripper:
+
+                 Joint 'gripper_gear_left_joint' from the starting state is
+                 outside bounds by: [-1.84594] should be in [-1.80457], [0.07]
+                 PlanningRequestAdapter 'CheckStartStateBounds' failed
+
+             So the limit spans the full 3031-step stroke plus 25 steps.
+
+           * What we COMMAND is clamped separately and tighter, by min_pos on
+             the hardware component in igus_rebel2.control.xacro (-3.76, i.e.
+             50 steps off the stop).  The component clamps every write to it, so
+             even a slider dragged to this limit cannot drive the servo into the
+             stop.
+
+         Keep it that way round: generous on what can be observed, tight on what
+         can be commanded. -->
+    <xacro:property name="gripper_open_travel" value="0.038888"/>
 
     <!-- Keep the nominal commands inside Gazebo's physics limits.  When a
          commanded endpoint equals a DART hard stop the mimic-constrained

@@ -75,7 +75,7 @@ def generate_launch_description():
         DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
         DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud")),
         DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id")),
-        DeclareLaunchArgument("gripper_closed_steps", default_value="3000"),
+        DeclareLaunchArgument("gripper_closed_steps", default_value="3038"),
         DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),

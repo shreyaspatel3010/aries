@@ -56,7 +56,7 @@
        They are launch args rather than devices.yaml entries because they are
        calibration, not device identity - devices.yaml says so in its header.
        See st3215_gripper_hardware's package header for how to measure them. -->
-  <xacro:arg name="gripper_closed_steps" default="3000"/>
+  <xacro:arg name="gripper_closed_steps" default="3038"/>
   <xacro:property name="gripper_closed_steps" value="$(arg gripper_closed_steps)"/>
   <xacro:arg name="gripper_servo_invert" default="false"/>
   <xacro:property name="gripper_servo_invert" value="$(arg gripper_servo_invert)"/>

@@ -557,6 +557,13 @@ def main():
                          "(0-4095, 0 deg = step 0). This is the one that works "
                          "in the mode the gripper runs in; --goto below is "
                          "wheel-mode only. Prints the travel before moving.")
+    ap.add_argument("--max-travel", type=int, default=400, metavar="STEPS",
+                    help="refuse a --pos move longer than this (default 400). The "
+                         "gripper's whole stroke is ~1272 steps; a larger jump is "
+                         "almost always a wrong target, and it drives the jaws "
+                         "through their stops.")
+    ap.add_argument("--force", action="store_true",
+                    help="allow a --pos move longer than --max-travel")
     ap.add_argument("--goto", type=float, metavar="DEG",
                     help="continuous-rotation move to an absolute angle (needs "
                          "wheel mode). Software-closed loop, so it can cross the "
@@ -634,6 +641,19 @@ def main():
         if not (POS_MIN <= target <= POS_MAX):
             print(f"  NOTE: {target} is outside the {POS_MIN}-{POS_MAX} working band; "
                   "that band exists to stay off the hard 0/4095 stops.")
+        # TRAVEL CAP. A raw goal write is the one thing here with no bound on
+        # how far it moves the horn, and on a rack and pinion a large jump
+        # drives the jaws through their stops. Measured on the bench: goal
+        # writes produced ~960 steps per command and wrapped the encoder, and
+        # the pinion skipped against the racks. Anything past this asks for
+        # --force, so a big move is always deliberate.
+        travel = abs(target - here)
+        if travel > args.max_travel and not args.force:
+            sv.close()
+            return (f"{travel} steps is more than --max-travel {args.max_travel}. "
+                    f"On the assembled gripper the whole stroke is ~1272 steps, so a "
+                    f"move this size probably means the target is wrong. Re-run with "
+                    f"--force if you really mean it.")
         sv.w16(R_GOAL_SPEED, args.speed)
         sv.goto(target, clamp=False)
         t = sv.telemetry()

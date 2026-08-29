@@ -92,6 +92,7 @@ ST3215GripperSystem::on_init(const hardware_interface::HardwareInfo & info)
   stall_speed_rad_ = param_double(info_, "stall_speed_rad", stall_speed_rad_);
   stall_hold_s_ = param_double(info_, "stall_hold_s", stall_hold_s_);
   relax_bias_rad_ = param_double(info_, "relax_bias_rad", relax_bias_rad_);
+  max_slew_rad_per_s_ = param_double(info_, "max_slew_rad_per_s", max_slew_rad_per_s_);
 
   if (min_pos_ >= max_pos_) {
     RCLCPP_FATAL(logger_, "min_pos %.4f must be below max_pos %.4f", min_pos_, max_pos_);
@@ -258,10 +259,15 @@ ST3215GripperSystem::on_activate(const rclcpp_lifecycle::State &)
             "would move them by an unknown amount from an unknown place.");
     return start_inhibited();
   }
-  const double q = std::clamp(rad_from_steps(static_cast<int>(raw_pos)), min_pos_, max_pos_);
+  // NOT clamped into [min_pos_, max_pos_]. Where the gripper IS parked is a
+  // fact; clamping it to the command band and then commanding that would walk
+  // the jaws to the band edge the moment the stack starts.
+  const double q = rad_from_steps(static_cast<int>(raw_pos));
   state_pos_.store(q);
   cmd_pos_.store(q);            // hold station; do not lurch on the first write
   cmd_iface_ = q;
+  slewed_goal_ = q;
+  slew_primed_ = true;
   last_reported_pos_ = q;
   have_state_.store(true);
   RCLCPP_INFO(logger_, "servo %u at step %u -> q = %.4f rad (gap %.1f mm)",
@@ -275,6 +281,18 @@ ST3215GripperSystem::on_activate(const rclcpp_lifecycle::State &)
   if (torque_limit_ > 0) {
     bus_.write16(servo_id_, REG_TORQUE_LIMIT, static_cast<uint16_t>(torque_limit_));
   }
+  // ORDER MATTERS: goal first, THEN torque.
+  //
+  // The servo keeps its goal position across a torque-off/torque-on cycle, and
+  // across the whole session that wrote it. Enabling torque with a stale goal
+  // makes the horn SNAP to wherever the last run left it - reported from the
+  // bench as "when starting it goes to the close position", which is exactly
+  // what a stale closed-end goal looks like. Writing the present position as
+  // the goal first makes the enable a no-op hold.
+  if (goal_speed_ > 0) {
+    bus_.write16(servo_id_, REG_GOAL_SPEED, static_cast<uint16_t>(goal_speed_));
+  }
+  bus_.write16(servo_id_, REG_GOAL_POSITION, raw_pos);
   bus_.write8(servo_id_, REG_TORQUE_ENABLE, 1);
 
   running_.store(true);
@@ -362,6 +380,15 @@ void ST3215GripperSystem::io_loop()
       if (clock::now() - next > std::chrono::seconds(1)) { next = clock::now(); }
       continue;
     }
+    // Until a controller has actually written a command, send NOTHING. The
+    // goal was set to the measured position in on_activate(), so the servo is
+    // already holding station; writing a clamped cmd_pos_ here would drag a
+    // gripper parked outside the command band to its edge at every startup.
+    if (!have_command_.load()) {
+      std::this_thread::sleep_until(next);
+      if (clock::now() - next > std::chrono::seconds(1)) { next = clock::now(); }
+      continue;
+    }
     double goal = std::clamp(cmd_pos_.load(), min_pos_, max_pos_);
 
     // Squeeze-relax: if the servo has been commanded past what it can reach
@@ -380,6 +407,12 @@ void ST3215GripperSystem::io_loop()
         stalled_since = clock::time_point::min();
       }
     }
+
+    // Rate-limit the goal we actually write. See max_slew_rad_per_s_.
+    if (!slew_primed_) { slewed_goal_ = have_state_.load() ? measured : goal; slew_primed_ = true; }
+    const double max_delta = max_slew_rad_per_s_ / std::max(1.0, io_rate_hz_);
+    slewed_goal_ += std::clamp(goal - slewed_goal_, -max_delta, max_delta);
+    goal = slewed_goal_;
 
     const int steps = std::clamp(steps_from_rad(goal), POS_MIN, POS_MAX);
     const auto now = clock::now();
@@ -428,7 +461,14 @@ hardware_interface::return_type
 ST3215GripperSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
   if (std::isfinite(cmd_iface_)) {
-    cmd_pos_.store(std::clamp(cmd_iface_, min_pos_, max_pos_));
+    const double want = std::clamp(cmd_iface_, min_pos_, max_pos_);
+    // A controller echoing back the position we seeded is not a command. Only
+    // a value that actually differs releases the io thread to start writing,
+    // so simply starting the stack never moves the gripper.
+    if (!have_command_.load() && std::fabs(cmd_iface_ - state_pos_.load()) > 1e-6) {
+      have_command_.store(true);
+    }
+    cmd_pos_.store(want);
   }
   return hardware_interface::return_type::OK;
 }

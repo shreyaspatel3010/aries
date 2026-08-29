@@ -55,7 +55,7 @@ Q_CLOSE = 0.07
 # from here -- the URDF is XML and the grasp package is COLCON_IGNOREd.
 # src/aries/test/test_gripper_st3215.py cross-checks all three.
 ST3215_PITCH_R = 0.01002676
-ST3215_Q_OPEN = -4.065
+ST3215_Q_OPEN = -3.76
 ST3215_Q_CLOSE = 0.07
 ST3215_CONTACT_Z = 0.2078
 

@@ -25,7 +25,7 @@
 
 /**/rebel_servo_teleop_gamepad:
   ros__parameters:
-    gripper_open_position: -4.065
+    gripper_open_position: -3.76
     gripper_closed_position: 0.07
     # The stroke is 2.5x v2's in joint terms (4.135 rad against 1.64), and the
     # ST3215 is rated 4.71 rad/s against the joint's old nominal 1.0. Scale the
@@ -37,7 +37,7 @@
 
 /**/rebel_movegroup_joystick:
   ros__parameters:
-    gripper_open_position: -4.065
+    gripper_open_position: -3.76
     gripper_closed_position: 0.07
     gripper_speed: 5.00
     max_gripper_command_step: 0.10

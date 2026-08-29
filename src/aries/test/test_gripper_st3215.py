@@ -32,7 +32,20 @@ URDF = SRC / "aries" / "urdf" / "my_robot.urdf.xacro"
 # The mechanism, from the build script.
 PITCH_R = 0.01002676          # m of jaw travel per radian of pinion
 Q_CLOSED = 0.07               # rad at which the jaws touch
-OPEN_TRAVEL = 0.0408          # m per jaw, 2 mm inside the CAD's 42.8
+# TWO DIFFERENT LIMITS, and conflating them broke arm planning once already.
+#
+# OPEN_TRAVEL is what the joint may BE: the full measured stroke plus slack, so
+# a gripper parked at its stop is never "out of bounds" (MoveIt then refuses to
+# plan for the whole arm). COMMAND_OPEN is what we may COMMAND: held 50 steps
+# off the stop so the servo never stalls. Observation generous, command tight.
+#
+# Measured on the assembled gripper: full close step 572, full open step 1844
+# (poses read and labelled by hand, torque off: 575 closed, 1720 open).
+# NOT the CAD's 42.8 mm - ray-casting the simplified GLB finds 2.3x the real
+# stroke. See gripper_st3215.xacro.
+OPEN_TRAVEL = 0.038888        # m per jaw -> URDF joint limit
+COMMAND_OPEN = -3.76          # rad -> SRDF `open`, teleop, fourbar, min_pos
+CLOSED_STEPS, OPEN_STOP_STEPS, INVERT = 3038, 489, False
 STEPS_PER_REV = 4096          # ST3215 encoder, one turn
 SERVO_USABLE_STEPS = 4045 - 50
 
@@ -180,8 +193,10 @@ def test_rack_limits_are_the_driver_limits_scaled(st3215):
 def test_the_stroke_is_the_measured_one(st3215):
     lower = float(joint(st3215, "gripper_gear_left_joint").find("limit").get("lower"))
     assert lower == pytest.approx(-OPEN_TRAVEL / PITCH_R, abs=1e-4)
-    full_gap = 2.0 * PITCH_R * (Q_CLOSED - lower)
-    assert full_gap == pytest.approx(0.0829, abs=5e-4)
+    # The commanded open pose is the usable stroke; the limit sits a little past
+    # it so the physical stop is still inside bounds.
+    assert 2.0 * PITCH_R * (Q_CLOSED - COMMAND_OPEN) == pytest.approx(0.0768, abs=5e-4)
+    assert lower < COMMAND_OPEN, "the joint limit must not cut off the commanded open pose"
 
 
 def test_the_stroke_fits_inside_one_servo_turn(st3215):
@@ -347,7 +362,7 @@ def test_the_gripper_group_covers_the_racks_on_st3215():
         assert ln in grp, f"st3215's {ln} is not in the gripper group"
 
 
-@pytest.mark.parametrize("gripper_type,expected", [("v2", -1.57), ("st3215", -4.065)])
+@pytest.mark.parametrize("gripper_type,expected", [("v2", -1.57), ("st3215", COMMAND_OPEN)])
 def test_the_srdf_open_state_matches_the_fitted_mechanism(gripper_type, expected):
     """`open` is a property of the mechanism, not a shared constant.
 
@@ -439,14 +454,17 @@ def test_every_copy_of_the_mechanism_constants_agrees(st3215):
     for where, value in closed_copies.items():
         assert value == pytest.approx(Q_CLOSED, abs=1e-9), f"closed angle drifted in {where}"
 
+    # Every copy carries the COMMAND limit, not the joint limit. It must equal
+    # COMMAND_OPEN and sit inside the URDF limit; a copy at the joint limit
+    # would command the servo into its stop.
     open_copies = {
         "fourbar.py": fourbar.ST3215_Q_OPEN,
         "gripper_arc_visualizer.py": _const_from(viz, "ST3215_Q_OPEN"),
     }
     for where, value in open_copies.items():
-        assert urdf_lower <= value <= urdf_lower + 0.01, (
-            f"{where} opens to {value:.4f} against the URDF limit {urdf_lower:.4f}; "
-            f"{'past the limit, so the command is rejected' if value < urdf_lower else 'leaving stroke unused'}")
+        assert value == pytest.approx(COMMAND_OPEN, abs=1e-9), (
+            f"{where} opens to {value:.4f}, not the commanded {COMMAND_OPEN}")
+        assert value > urdf_lower, f"{where} is past the joint limit {urdf_lower:.4f}"
 
     # The joystick's open position. Parsed as YAML rather than grepped: the
     # file's own comments quote v2's -1.57 to explain why this overlay exists,
@@ -457,8 +475,8 @@ def test_every_copy_of_the_mechanism_constants_agrees(st3215):
                 for section in cfg.values()]
     assert joy_open, "teleop_speeds_st3215.yaml no longer sets gripper_open_position"
     for value in joy_open:
-        assert urdf_lower <= value <= urdf_lower + 0.01, (
-            f"the joystick opens to {value} against the URDF limit {urdf_lower:.4f}")
+        assert value == pytest.approx(COMMAND_OPEN, abs=1e-9), (
+            f"the joystick opens to {value}, not the commanded {COMMAND_OPEN}")
 
     # And the hardware component's own clamp, in the control xacro.
     import re
@@ -466,7 +484,51 @@ def test_every_copy_of_the_mechanism_constants_agrees(st3215):
     m = re.search(r'<param name="min_pos">([-\d.]+)</param>',
                   control[control.index("ST3215GripperSystem"):])
     assert m, "the st3215 hardware block no longer sets min_pos"
-    assert urdf_lower <= float(m.group(1)) <= urdf_lower + 0.01
+    assert float(m.group(1)) == pytest.approx(COMMAND_OPEN, abs=1e-9), (
+        "min_pos is the component's own clamp and is the last thing standing "
+        "between a slider dragged to the joint limit and a stalled servo")
+
+
+def test_the_measured_stroke_stays_inside_the_servo_stops():
+    """The whole stroke has to sit between the servo's own hard stops.
+
+    Measured: closed 572, open 1844 - opening RAISES the count, so invert is
+    true. The component holds 50 steps back from the open stop, commanding 1791.
+    Both ends must stay inside the 50..4045 working band or the servo crosses
+    its 4095 -> 0 encoder seam mid-stroke.
+
+    The direction is asserted here because the step numbers cannot carry it:
+    swapping the two stop labels is equally valid arithmetic and yields a
+    gripper that opens on close and closes on open, silently.
+    """
+    invert = INVERT
+    direction = -1 if invert else 1
+    per_rad = STEPS_PER_REV / (2 * math.pi)
+
+    # What we COMMAND must stop short of the mechanical stop.
+    cmd_steps = round(CLOSED_STEPS + direction * (COMMAND_OPEN - Q_CLOSED) * per_rad)
+    toward_open = 1 if OPEN_STOP_STEPS > CLOSED_STEPS else -1
+    assert (OPEN_STOP_STEPS - cmd_steps) * toward_open > 0, (
+        f"the commanded open end (step {cmd_steps}) is past the measured stop at "
+        f"{OPEN_STOP_STEPS} - the servo would stall against it")
+    assert abs(OPEN_STOP_STEPS - cmd_steps) >= 25, "margin off the open stop is too thin"
+
+    # What the joint may BE must cover the stop, or a parked gripper reports out
+    # of bounds and MoveIt aborts planning for the whole arm.
+    limit_steps = round(CLOSED_STEPS + direction * (-OPEN_TRAVEL / PITCH_R - Q_CLOSED) * per_rad)
+    assert (limit_steps - OPEN_STOP_STEPS) * toward_open > 0, (
+        f"the joint limit (step {limit_steps}) does not reach the mechanical stop "
+        f"at {OPEN_STOP_STEPS}; a gripper parked there is out of bounds")
+
+    for name, st in (("closed", CLOSED_STEPS), ("command open", cmd_steps),
+                     ("joint limit", limit_steps)):
+        assert 50 <= st <= 4045, f"{name} at step {st} is outside the servo band"
+
+    # And the launch defaults must be these, or the calibration is only in a
+    # comment. This is the pair that was wrong on the first bench run.
+    urdf = (SRC / "aries" / "urdf" / "my_robot.urdf.xacro").read_text()
+    assert f'name="gripper_closed_steps" default="{CLOSED_STEPS}"' in urdf
+    assert f'name="gripper_servo_invert" default="{str(invert).lower()}"' in urdf
 
 
 def test_the_grasp_stack_gap_model_is_the_mechanism(st3215):
@@ -480,7 +542,7 @@ def test_the_grasp_stack_gap_model_is_the_mechanism(st3215):
     try:
         assert fourbar.gap_from_q(Q_CLOSED) == pytest.approx(0.0, abs=1e-9)
         # Round trip through the inverse, which is what sizes a real grasp.
-        for gap in (0.005, 0.030, 0.060, 0.0829):
+        for gap in (0.005, 0.030, 0.060, 0.0768):  # up to the commanded open
             assert fourbar.gap_from_q(fourbar.q_from_gap(gap)) == pytest.approx(gap, abs=1e-6)
         # The jaws translate, so contact height must not vary with q.
         assert fourbar.contact_offset_z(0.0) == fourbar.contact_offset_z(-4.0)

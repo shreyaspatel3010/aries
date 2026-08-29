@@ -30,7 +30,7 @@
          "Closed" is +0.07 on both by construction: gripper_st3215.xacro's zero
          pose is calibrated so the jaws touch exactly there. -->
     <xacro:property name="gripper_open"
-                    value="${-4.065 if gripper_type == 'st3215' else -1.57}"/>
+                    value="${-3.76 if gripper_type == 'st3215' else -1.57}"/>
     <!--GROUPS: Representation of a set of joints and links. This can be useful for specifying DOF to plan for, defining arms, end effectors, etc-->
     <!--LINKS: When a link is specified, the parent joint of that link (if it exists) is automatically included-->
     <!--JOINTS: When a joint is specified, the child link of that joint (which will always exist) is automatically included-->
