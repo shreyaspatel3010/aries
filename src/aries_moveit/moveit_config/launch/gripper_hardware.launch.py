@@ -39,10 +39,10 @@ def generate_launch_description():
 
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='v2',
-        choices=['v2'],
-        description='Which gripper URDF to load. Only "v2" exists; "new" and '
-                    '"old" are retired to aries/urdf/legacy/.'
+        default_value='st3215',
+        choices=['st3215'],
+        description='Which gripper URDF to load. Only "st3215" exists; v2 '
+                    'and the older four-bars are retired to aries/urdf/legacy/.'
     )
 
     finger_type_arg = DeclareLaunchArgument(

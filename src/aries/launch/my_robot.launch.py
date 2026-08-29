@@ -58,10 +58,11 @@ def generate_launch_description():
     # Declare arguments
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
-        default_value='v2',
-        choices=['v2'],
-        description='Gripper type. Only "v2" exists; "new" and "old" are '
-                    'retired to aries/urdf/legacy/ and are not built any more.'
+        default_value='st3215',
+        choices=['st3215'],
+        description='Gripper type. Only "st3215" exists - the ST3215 rack-and-'
+                    'pinion. v2 and the older four-bars are retired to '
+                    'aries/urdf/legacy/ and are not built any more.'
     )
 
     world_arg = DeclareLaunchArgument(
