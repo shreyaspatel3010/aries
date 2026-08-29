@@ -355,7 +355,7 @@ def generate_launch_description():
             description="Empty means aries_moveit/launch/moveit.rviz.",
         ),
         DeclareLaunchArgument(
-            "gripper_type", default_value="v2", choices=["v2"],
+            "gripper_type", default_value="v2", choices=["v2", "st3215"],
             description="MUST match the rover, or the model shown here is not "
                         "the robot that is moving.",
         ),

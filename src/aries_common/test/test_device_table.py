@@ -103,9 +103,10 @@ def test_builtin_defaults_match_the_yaml():
 
 
 def test_builtin_servo_bus_defaults_match_the_yaml():
-    """Bench gear, but the same trap: st3215_test.py reads servo_bus.port to
-    find the adapter, and an unreadable YAML drops it to this copy."""
-    for key in ("port", "baud"):
+    """No longer bench-only: this is the secondary gripper's wire, so an
+    unreadable YAML dropping to a stale copy here sends the launched stack's
+    ros2_control component at the wrong port or the wrong servo ID."""
+    for key in ("port", "baud", "gripper_servo_id"):
         assert DEFAULTS["servo_bus"][key] == device(f"servo_bus.{key}"), (
             f"servo_bus.{key} differs between devices.py DEFAULTS and devices.yaml"
         )

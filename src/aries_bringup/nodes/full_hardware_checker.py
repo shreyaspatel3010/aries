@@ -130,6 +130,13 @@ class FullHardwareChecker(Node):
         self.declare_parameter("arm_joint_names", ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"])
 
         self.declare_parameter("gripper_serial_port", device("gripper.serial_port"))
+        # WHICH GRIPPER IS FITTED, because the two are on different wires: v2's
+        # servo is behind the Teensy, the ST3215 is on its own USB bus-servo
+        # adapter. Checking the Teensy while the ST3215 gripper is fitted is
+        # not a near miss - it is a green row for a device this gripper does
+        # not use, next to a silent one for the device it does.
+        self.declare_parameter("gripper_type", "v2")
+        self.declare_parameter("servo_bus_port", device("servo_bus.port"))
         self.declare_parameter("can_interface", device("rover.can_interface"))
         self.declare_parameter("use_imu", "auto")
         self.declare_parameter("imu_port", device("imu.port"))
@@ -194,6 +201,8 @@ class FullHardwareChecker(Node):
         self.arm_socket_timeout = float(self.get_parameter("arm_socket_timeout").value)
         self.arm_joint_names = _as_list(self.get_parameter("arm_joint_names").value)
         self.gripper_serial_port = str(self.get_parameter("gripper_serial_port").value)
+        self.gripper_type = str(self.get_parameter("gripper_type").value)
+        self.servo_bus_port = str(self.get_parameter("servo_bus_port").value)
         self.can_interface = str(self.get_parameter("can_interface").value)
         self.use_imu = str(self.get_parameter("use_imu").value).strip().lower()
         self.imu_port = str(self.get_parameter("imu_port").value)
@@ -377,7 +386,23 @@ class FullHardwareChecker(Node):
         except OSError:
             return False
 
+    def _gripper_device_label(self) -> str:
+        """What the gripper row is actually looking at."""
+        if self.gripper_type == "st3215":
+            return f"ST3215 bus ({self.servo_bus_port})"
+        return "Serial/Teensy"
+
     def _gripper_serial_present(self) -> bool:
+        if self.gripper_type == "st3215":
+            # NO GENERIC FALLBACK HERE, unlike the Teensy branch below, and
+            # that is deliberate. /dev/aries_servo_bus is a udev symlink keyed
+            # to this adapter's serial; the by-id name a bare CH340 would get
+            # is shared by every CH340 there is. Accepting any ttyACM/ttyUSB
+            # would turn this row green for the IMU, or for whatever else was
+            # plugged in - which is the exact failure this checker exists to
+            # catch. If the symlink is missing, say so and let the operator run
+            # scripts/setup_system.sh.
+            return Path(self.servo_bus_port).exists()
         if Path(self.gripper_serial_port).exists():
             return True
         if glob.glob("/dev/serial/by-id/*Teensy*"):
@@ -687,10 +712,11 @@ class FullHardwareChecker(Node):
         # ── Gripper rows ──────────────────────────────────────────────────────
         print(f"\n{B}  Gripper:{RST}", flush=True)
 
+        _gdev = self._gripper_device_label()
         if s["gripper_serial"]:
-            print(f"  {G}✓{RST} Serial/Teensy — {G}present{RST}", flush=True)
+            print(f"  {G}✓{RST} {_gdev} — {G}present{RST}", flush=True)
         else:
-            print(f"  {Y}~{RST} Serial/Teensy — {Y}not found, mock/auto fallback expected{RST}", flush=True)
+            print(f"  {Y}~{RST} {_gdev} — {Y}not found, mock/auto fallback expected{RST}", flush=True)
 
         if s["gripper_controller_up"]:
             print(f"  {G}✓{RST} rebel_gripper_controller — {G}active/detected{RST}", flush=True)
@@ -886,15 +912,16 @@ class FullHardwareChecker(Node):
                 )
 
         if self.check_gripper:
+            _grow = f"Gripper serial ({self.gripper_type})"
             if s["gripper_serial"]:
-                physical_status.append((G, "✓", "Gripper serial", "connected"))
+                physical_status.append((G, "✓", _grow, "connected"))
             elif gripper_ready:
                 physical_status.append(
-                    (Y, "~", "Gripper serial", "not found; fallback/controller active")
+                    (Y, "~", _grow, "not found; fallback/controller active")
                 )
             else:
                 physical_status.append(
-                    (R, "✗", "Gripper serial", "not found; no gripper fallback/controller")
+                    (R, "✗", _grow, "not found; no gripper fallback/controller")
                 )
 
         if self.check_imu:

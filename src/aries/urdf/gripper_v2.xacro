@@ -512,7 +512,11 @@
     <!-- Gripper Camera (D435i) - defined in gripper_camera.xacro. Its mount
          pose is unchanged: it hangs off a bracket that is modelled in neither
          base mesh, and the base solid itself is the same part in the same
-         frame, so the old extrinsics still apply. -->
+         frame, so the old extrinsics still apply. The offset moved out of that
+         file when gripper_st3215.xacro arrived, because that mount's camera
+         holes sit 18.2 mm further out; the value here is the one this file
+         always used. -->
+    <xacro:property name="gripper_camera_y" value="0.047439"/>
     <xacro:include filename="gripper_camera.xacro" />
 
 </robot>

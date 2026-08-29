@@ -54,10 +54,20 @@ imu:
   port: "/dev/microstrain_main"
 
 servo_bus:
-  # Feetech ST3215 bus-servo adapter (URT-1 or the Waveshare driver board),
-  # used by scripts/st3215_test.py. Bench gear, not part of the launched stack
-  # -- no ros2_control component talks to it -- but the port is device
-  # identity, and device identity lives in this file.
+  # Feetech ST3215 bus-servo adapter (URT-1 or the Waveshare driver board).
+  #
+  # NO LONGER BENCH-ONLY, as of 2026-08-28. This is the wire to the SECONDARY
+  # gripper (gripper_type:=st3215), whose single ST3215 direct-drives the
+  # rack-and-pinion. st3215_gripper_hardware opens this port itself from inside
+  # ros2_control -- it does NOT go through the Teensy or the micro-ROS agent,
+  # which is the whole reason it is a separate gripper_hardware_protocol.
+  # scripts/st3215_test.py still uses it too, for bench work and for the
+  # closed_steps calibration.
+  #
+  # ONE PROCESS AT A TIME. A bus servo answers whoever asked last, and two
+  # openers on one port interleave replies -- which is not a clean failure,
+  # because a mismatched reply still verifies as a valid packet for the OTHER
+  # request. Stop the stack before running st3215_test.py against a live rover.
   #
   # /dev/aries_servo_bus is a symlink from 99-aries-servo-bus.rules, which
   # scripts/setup_system.sh installs. Without it the adapter is /dev/ttyUSB0 or
@@ -73,6 +83,10 @@ servo_bus:
   port: "/dev/aries_servo_bus"
   # 1 Mbaud is the ST3215 factory default.
   baud: 1000000
+  # Bus ID of the servo that drives the secondary gripper. 1 is the factory
+  # default and this bus has exactly one servo on it; `st3215_test.py --scan`
+  # is what to check it with if the gripper does not answer.
+  gripper_servo_id: 1
   # Set, so the rule is a single serial-matched line rather than a chip match.
   # Empty it to fall back to matching any CH340/CH343/CP210x/FT232 bridge --
   # unambiguous on Aries (the Teensy is 16c0:04xx and the IMU 199b/0483, so no

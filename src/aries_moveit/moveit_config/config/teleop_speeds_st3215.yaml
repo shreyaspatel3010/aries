@@ -1,0 +1,44 @@
+# Joystick overlay for the SECONDARY gripper (gripper_type:=st3215).
+#
+# Loaded AFTER teleop_speeds.yaml so these keys win, and only when the ST3215
+# rack-and-pinion gripper is the one fitted. Everything teleop_speeds.yaml sets
+# for the arm is inherited untouched; this file exists solely because the two
+# grippers do not share a stroke.
+#
+# WHY IT IS NEEDED
+# teleop_speeds.yaml says gripper_open_position: -1.57, which is v2's joint
+# stop. On this gripper -1.57 is only a 32.9 mm jaw gap out of a mechanism that
+# opens to 82.9 mm, so the joystick's "open" would leave more than half the
+# stroke unreachable. -4.065 is this mechanism's own limit, 2 mm short of where
+# the left fingertip's shank meets the end wall.
+#
+# The SRDF's `open` group state still says -1.57 and is deliberately left
+# alone: it is shared text that has to stay valid for v2, where -4.065 is out
+# of range. So a MoveIt "open" and a joystick "open" genuinely differ on this
+# gripper. That is a real difference, not a mistake - see the header of
+# aries/urdf/gripper_st3215.xacro.
+#
+# The block is duplicated into both node sections for the same reason
+# teleop_speeds.yaml duplicates its own: a ROS 2 YAML parameter file matches on
+# node name, and a /** wildcard section would leak these keys into every node
+# that loads this file.
+
+/**/rebel_servo_teleop_gamepad:
+  ros__parameters:
+    gripper_open_position: -4.065
+    gripper_closed_position: 0.07
+    # The stroke is 2.5x v2's in joint terms (4.135 rad against 1.64), and the
+    # ST3215 is rated 4.71 rad/s against the joint's old nominal 1.0. Scale the
+    # step and the speed with it so a held open button takes about the same
+    # wall-clock time as it does on v2 rather than 2.5x longer.
+    gripper_speed: 5.00
+    max_gripper_command_step: 0.10
+    gripper_trajectory_duration: 0.10
+
+/**/rebel_movegroup_joystick:
+  ros__parameters:
+    gripper_open_position: -4.065
+    gripper_closed_position: 0.07
+    gripper_speed: 5.00
+    max_gripper_command_step: 0.10
+    gripper_trajectory_duration: 0.10

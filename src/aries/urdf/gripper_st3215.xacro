@@ -1,0 +1,354 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!--
+        REBEL-6DOF-04 SECONDARY gripper (gripper_type:=st3215).
+
+        Rack and pinion, driven by one Waveshare/Feetech ST3215 bus servo wired
+        straight to the rover PC over the USB bus-servo adapter - NOT through
+        the Teensy that runs the v2 gripper, the drill and the stack light.
+        Built from the CAD export "new_gripper.glb";
+        scripts/build_gripper_st3215_meshes.py splits that assembly into the
+        per-link meshes loaded below and prints every number quoted here, so
+        all of it can be regenerated rather than trusted.
+
+        IT IS A DROP-IN SWAP FOR gripper_v2.xacro
+        Same igus ReBeL tool flange (six M3.5 on a 43.01 mm bolt circle, same
+        0/60/120... clocking), so arm_gripper_base_joint is byte-for-byte the
+        one v2 uses.  The DRIVER JOINT KEEPS ITS NAME, gripper_gear_left_joint,
+        and its sign convention - q = +0.07 rad closes, q < 0 opens - so the
+        SRDF `open`/`closed` group states, gripper_controllers.yaml,
+        moveit_controllers.yaml, gamepad.yaml and every cached pose keep
+        working with no edit.  gripper_bucket_left_link and
+        gripper_bucket_right_link keep their names too, which is what the ACM
+        and the grasp stack address.
+
+        The name survives because it is still literally true: the driver joint
+        still turns a gear.  What changed is everything behind it.
+
+        HOW IT WORKS
+        The servo output shaft IS the pinion - direct drive, no reduction - so
+        the joint value below is the servo shaft angle, exactly, with no
+        calibration curve in between.  That is the whole reason this gripper is
+        easier to command than v2, where the Teensy took a normalised 0-1 float
+        and the hardware had no position sensor at all.  The pinion meshes with
+        two opposed racks, one per jaw, so the jaws TRANSLATE along +/-X: the
+        jaw faces stay parallel and square through the entire stroke, and the
+        gap is exactly linear in q.  There is no over-centre point and no
+        non-monotonic branch, both of which v2 has.
+
+        THE ONE CONSTANT EVERYTHING ELSE FOLLOWS FROM
+            rack_pitch_radius = 10.02676 mm of jaw travel per radian
+
+        It is NOT measured off the tooth radii.  The pinion's tip radius is
+        11.985 mm and its root 9.986, which fit no standard tooth form - the
+        rack flanks work out at about a 7 deg pressure angle, so these are
+        simplified printed teeth and any addendum reasoning about where the
+        pitch circle sits is guesswork.  What is exact for any rack and pinion
+        that meshes without skipping is that the rack advances one linear pitch
+        per pinion angular pitch.  The pinion has 21 teeth (an order-parameter
+        fit over the tooth-tip angles scores 0.911 at N=21 against 0.005 at
+        every other count from 18 to 27) and the racks' tip lands sit on a
+        3.0000 mm pitch, read straight off the exported vertex coordinates.
+        So one servo turn is exactly 21 x 3 mm = 63.0 mm of rack, and
+
+            travel per radian = 21 * 3.0000 / (2 * pi) = 10.02676 mm
+
+        STROKE.  0 to 82.9 mm of jaw gap, against v2's 0 to 83 mm - near enough
+        the same working range, reached a completely different way:
+
+          jaw gap [mm] against q [rad], exactly linear
+            q      +0.07   0.00  -0.20  -0.50  -1.00  -1.57  -2.00  -3.00  -4.065
+            gap      0.0    1.4    5.4   11.4   21.5   32.9   41.5   61.6    82.9
+
+          jaw faces meet at z = 207.8 mm from arm_gripper_base_link (the lip);
+          the flat shank faces run z = 115 to 155 mm.
+
+        THREE THINGS TO KNOW BEFORE TRUSTING A COMMANDED ANGLE
+
+        1. -1.57 IS NOT FULLY OPEN HERE.  It is on v2, whose joint stops there.
+           This mechanism runs to -4.065, and the SRDF `open` group state -
+           which is shared text, `cat` into robot_description_semantic, and has
+           to stay valid for v2 as well - still says -1.57.  So a MoveIt
+           "open" leaves this gripper at a 32.9 mm gap, less than half its
+           travel.  That is a valid pose, not a bug, but anything that wants
+           the full 82.9 mm has to command the joint limit directly.
+           teleop_speeds_st3215.yaml does exactly that for the joystick.
+
+        2. THE JAWS NEST.  The two scoop halves are handed: the right lip runs
+           3.000 mm wider than the left so the pair closes into one bowl.  It
+           is the LIPS that meet at q = +0.07, at z = 203-208 mm; the flat
+           shank faces are still 0.59 mm apart there.  Anything converting an
+           object width into a close angle should use the gap table above,
+           which is measured at the shank faces, and stop short of +0.07 on
+           anything it actually means to hold.
+
+        3. THE SERVO HAS 360 DEG AND THE STROKE WANTS 237 OF THEM.  q spans
+           +0.07 to -4.065 = 4.135 rad = 236.9 deg = 2695 of the ST3215's 4096
+           steps.  It fits, but only if the servo's zero is placed with that in
+           mind - see st3215_gripper_hardware's closed_steps parameter and the
+           calibration note in its header.  Unlike v2 this servo does report a
+           real position, so a mis-set zero shows up immediately in
+           /joint_states rather than being echoed back as if it were fine.
+    -->
+
+    <xacro:property name="rack_pitch_radius" value="0.01002676"/>
+
+    <!-- Full open, from the CAD: the left fingertip's shank face runs into the
+         -X end wall after 42.8 mm of travel (ray-cast through the wall to find
+         which (y,z) cells are solid all the way through, then measured to the
+         frontmost blocked jaw point; the right jaw has 54.8 mm, so the left is
+         what binds).  2 mm is held back from that, because the wall is a
+         printed part and the fingertip meets it flat-on with nothing to guide
+         it in. -->
+    <xacro:property name="gripper_open_travel" value="0.0408"/>
+
+    <!-- Keep the nominal commands inside Gazebo's physics limits.  When a
+         commanded endpoint equals a DART hard stop the mimic-constrained
+         joints can wedge there and refuse the following reverse command.  Real
+         hardware retains its physical limits.  Same margin gripper_v2.xacro
+         uses, for the same reason. -->
+    <xacro:property name="gripper_joint_lower_limit"
+                    value="${(-gripper_open_travel / rack_pitch_radius) - (0.05 if gripper_hardware_protocol == 'gazebo' else 0.0)}"/>
+    <xacro:property name="gripper_joint_upper_limit"
+                    value="${0.12 if gripper_hardware_protocol == 'gazebo' else 0.07}"/>
+
+    <!-- The rack joints mimic the driver at +rack_pitch_radius, so their limits
+         are the driver's scaled by the same factor.  Reusing the driver limits
+         unscaled would make every pose invalid in MoveIt by three orders of
+         magnitude. -->
+    <xacro:property name="rack_joint_lower_limit"
+                    value="${gripper_joint_lower_limit * rack_pitch_radius}"/>
+    <xacro:property name="rack_joint_upper_limit"
+                    value="${gripper_joint_upper_limit * rack_pitch_radius}"/>
+
+    <!-- Real ST3215 numbers rather than v2's placeholder 500 N.m / 1.0 rad/s.
+         Stall torque is 30 kg.cm at 12 V and no-load speed 45 rpm, and the
+         pinion is direct-driven, so these ARE the joint's limits with nothing
+         in between. The velocity matters: this gripper has to turn 4.135 rad to
+         go from closed to fully open where v2 turns 1.64, so at v2's nominal
+         1.0 rad/s a full open would take over four seconds. joint_limits.yaml
+         allows the gripper 10 rad/s, so this is the binding value. -->
+    <xacro:property name="servo_effort" value="2.94"/>
+    <xacro:property name="servo_velocity" value="4.71"/>
+
+    <!-- Only Gazebo reads these. Sized the same way gripper_v2.xacro's are:
+         damping gives an explicit-integration limit of h < 2I/b well clear of
+         the 1 ms world step, and friction stays under each link's own gravity
+         load so it cannot weld the mechanism. The racks are prismatic, so
+         their friction is a force in newtons, not a torque. -->
+    <xacro:property name="pinion_joint_damping" value="0.01"/>
+    <xacro:property name="pinion_joint_friction" value="0.001"/>
+    <xacro:property name="rack_joint_damping" value="5.0"/>
+    <xacro:property name="rack_joint_friction" value="0.05"/>
+
+    <!-- Mass properties integrated from each exported mesh at 1050 kg/m^3
+         (near-solid printed plastic), the density gripper_v2.xacro uses so the
+         two grippers stay comparable. The servo is the exception: it is
+         carried at the ST3215's datasheet 60 g and combined with the mount by
+         parallel axis, so the base tensor is not a uniform-density one.
+
+         TOTAL 797 g, against v2's 458 g. Most of that is the mount casting -
+         404 cm^3 of modelled solid, 424 g at this density - and the two 104
+         cm^3 scoops. If the real parts are printed at a normal infill the true
+         figure will be well under this; the density is deliberately the
+         conservative one, and it is the number the ReBeL's payload budget
+         should be checked against. -->
+    <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
+        <inertial>
+            <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+            <mass value="${mass}"/>
+            <inertia ixx="${ixx}" ixy="${ixy}" ixz="${ixz}"
+                     iyy="${iyy}" iyz="${iyz}" izz="${izz}"/>
+        </inertial>
+    </xacro:macro>
+
+    <xacro:macro name="gripper_mesh_geometry" params="file">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/gripper_st3215/${file}"/>
+            </geometry>
+            <material name="">
+                <color rgba="1 1 1 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="${mesh_location}/gripper_st3215/${file}"/>
+            </geometry>
+        </collision>
+    </xacro:macro>
+
+    <!-- ==================== mount ==================== -->
+    <!-- Identical to gripper_v2.xacro's, deliberately: the flange bolt circle
+         on this mount is the same radius at the same clocking, so the two
+         grippers hang off link6 in the same place and the same orientation and
+         nothing that cached a TF between link6 and the gripper has to care
+         which one is fitted. -->
+    <joint name="arm_gripper_base_joint" type="fixed">
+        <parent link="link6"/>
+        <child link="arm_gripper_base_link"/>
+        <origin xyz="0.0 0.0 0.0522" rpy="0.0 0.0 3.141592653589793"/>
+    </joint>
+
+    <!-- Mount casting, end walls and the ST3215 case, merged into one solid. -->
+    <link name="arm_gripper_base_link">
+        <xacro:gripper_inertial mass="0.4843" cx="0.00182" cy="0.00466" cz="0.05230"
+                                ixx="8.4368e-04" iyy="2.0360e-03" izz="1.6291e-03"
+                                ixy="1.2821e-05" ixz="-2.1053e-05" iyz="1.0487e-04"/>
+        <xacro:gripper_mesh_geometry file="st3215_base.stl"/>
+    </link>
+
+    <!-- ==================== pinion (the driver) ==================== -->
+    <!-- Keeps gripper_v2's name for the joint AND for its child link. That is
+         not a compatibility fudge: in both grippers this joint is the one the
+         controller commands and its child is the gear it turns.
+
+         AXIS IS -Z, NOT +Z, and that is what makes +q close. The rack that
+         meshes on the +Y side of the pinion moves -X when the pinion turns
+         about +Z, and that rack carries the LEFT (-X) jaw, so a +Z axis would
+         make +q open - backwards from the convention the rest of the stack
+         assumes. Flipping the axis is preferred to negating both mimic
+         multipliers, so that the two rack joints report the same number and a
+         reader comparing joint_states sees one value, not a signed pair. -->
+    <link name="gripper_gear_left_link">
+        <xacro:gripper_inertial mass="0.0086" cx="0.0" cy="0.0" cz="0.00413"
+                                ixx="1.8985e-06" iyy="1.8985e-06" izz="4.4095e-07"/>
+        <xacro:gripper_mesh_geometry file="st3215_pinion.stl"/>
+    </link>
+
+    <joint name="gripper_gear_left_joint" type="revolute">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_gear_left_link"/>
+        <origin xyz="0.0 0.0 0.083195" rpy="0.0 0.0 0.0"/>
+        <axis xyz="0 0 -1"/>
+        <limit effort="${servo_effort}" velocity="${servo_velocity}"
+               lower="${gripper_joint_lower_limit}" upper="${gripper_joint_upper_limit}"/>
+        <dynamics damping="${pinion_joint_damping}" friction="${pinion_joint_friction}"/>
+    </joint>
+
+    <!-- ==================== racks ==================== -->
+    <!-- One degree of freedom, carried by the gear mesh. The multiplier is the
+         travel-per-radian constant and it is POSITIVE on both sides; the
+         opposite sense of the two jaws is in the axis, so both joints report
+         the same positive number as they close.
+
+         WHICH CAD SOLID CARRIES WHICH JAW IS NOT WHAT THE NAMES SAY. The solid
+         named "Rack" in the export has its teeth on +Y and its carrier block
+         under the -X fingertip, so it is the LEFT rack here; "Rack 2" is the
+         mirror. The build script asserts the assignment by carrier position
+         rather than by name, because getting it backwards silently flips the
+         whole open/close convention while still looking like a working
+         gripper. -->
+    <xacro:macro name="rack" params="side sx cx cy ixy ixz iyz">
+        <link name="gripper_rack_${side}_link">
+            <xacro:gripper_inertial mass="0.0426" cx="${cx}" cy="${cy}" cz="0.10412"
+                                    ixx="1.8332e-05" iyy="5.2456e-05" izz="6.7720e-05"
+                                    ixy="${ixy}" ixz="${ixz}" iyz="${iyz}"/>
+            <xacro:gripper_mesh_geometry file="st3215_rack_${side}.stl"/>
+        </link>
+
+        <joint name="gripper_rack_${side}_joint" type="prismatic">
+            <parent link="arm_gripper_base_link"/>
+            <child link="gripper_rack_${side}_link"/>
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+            <axis xyz="${sx} 0 0"/>
+            <limit effort="${servo_effort / rack_pitch_radius}" velocity="${servo_velocity * rack_pitch_radius}"
+                   lower="${rack_joint_lower_limit}" upper="${rack_joint_upper_limit}"/>
+            <dynamics damping="${rack_joint_damping}" friction="${rack_joint_friction}"/>
+            <mimic joint="gripper_gear_left_joint" multiplier="${rack_pitch_radius}" offset="0.0"/>
+        </joint>
+    </xacro:macro>
+
+    <xacro:rack side="left"  sx="1"  cx="0.00338"  cy="0.00716"
+                ixy="-9.6137e-06" ixz="5.1487e-06"  iyz="2.0759e-06"/>
+    <xacro:rack side="right" sx="-1" cx="-0.00338" cy="-0.00838"
+                ixy="-8.5631e-06" ixz="-5.1487e-06" iyz="-1.8410e-06"/>
+
+    <!-- ==================== fingertips ==================== -->
+    <!-- Bolted to their racks, so these joints are fixed - there is no
+         fingertip degree of freedom to cancel the way v2's -1.0 mimic cancels
+         its bar. They are separate links only so that gripper_bucket_*_link
+         keeps addressing the jaw the way it does on v2: that is the name the
+         ACM, the grasp stack and the held-probe check all use.
+
+         Their frames are arm_gripper_base_link's frame at q = 0, so every
+         number below reads directly in base coordinates at the zero pose.
+
+         COLLISION IS BOXES, AND IT HAS TO STAY THAT WAY. In this gz-sim /
+         DART-bullet stack a <mesh> collision generates NO contacts against
+         another <mesh>: bullet wraps both as concave GImpact shapes and
+         GImpact-vs-GImpact yields no manifold, which is why the v2 fingers
+         passed through everything they were asked to operate. Four boxes per
+         tip, z-bands tiling the mesh end to end so there is no gap, x/y from a
+         300k-point surface sampling. The scoop bands are SOLID where the real
+         part is a shell - the same conservative trade gripper_v2.xacro makes,
+         and for the same reason: nothing in these worlds is scooped as
+         particles. -->
+    <xacro:macro name="fingertip" params="side sx b0x b3x b3sx">
+        <link name="gripper_bucket_${side}_link">
+            <xacro:gripper_inertial mass="0.1091" cx="${sx * 0.02098}" cy="-0.00083" cz="0.15027"
+                                    ixx="1.0192e-04" iyy="8.3559e-05" izz="5.4152e-05"
+                                    ixz="${sx * 8.0858e-06}"/>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/gripper_st3215/st3215_bucket_${side}.stl"/>
+                </geometry>
+                <material name="">
+                    <color rgba="1 1 1 1"/>
+                </material>
+            </visual>
+            <collision name="tip_band0">
+                <origin xyz="${sx * 0.01700} -0.00100 0.12660" rpy="0 0 0"/>
+                <geometry><box size="0.0320 0.0775 0.0232"/></geometry>
+            </collision>
+            <collision name="tip_band1">
+                <origin xyz="${sx * 0.02600} -0.00075 0.14980" rpy="0 0 0"/>
+                <geometry><box size="0.0500 0.0600 0.0232"/></geometry>
+            </collision>
+            <collision name="tip_band2">
+                <origin xyz="${sx * 0.02600} -0.00075 0.17300" rpy="0 0 0"/>
+                <geometry><box size="0.0500 0.0600 0.0232"/></geometry>
+            </collision>
+            <collision name="tip_band3">
+                <origin xyz="${sx * b3x} -0.00075 0.19620" rpy="0 0 0"/>
+                <geometry><box size="${b3sx} 0.0600 0.0232"/></geometry>
+            </collision>
+        </link>
+
+        <joint name="gripper_bucket_${side}_joint" type="fixed">
+            <parent link="gripper_rack_${side}_link"/>
+            <child link="gripper_bucket_${side}_link"/>
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        </joint>
+    </xacro:macro>
+
+    <!-- The top band is where the handedness shows: the right lip is 43.0 mm
+         wide against the left's 40.0, which is what lets the two nest. Do not
+         "tidy" them to match. -->
+    <xacro:fingertip side="left"  sx="-1" b0x="0.01700" b3x="0.02101" b3sx="0.0400"/>
+    <xacro:fingertip side="right" sx="1"  b0x="0.01700" b3x="0.01951" b3sx="0.0430"/>
+
+    <!-- ==================== TCP ==================== -->
+    <!-- Held at gripper_v2's 0.15 m so the SRDF chain and every cached pose
+         stay valid across a gripper swap. It is a reference frame, not the
+         contact point: the jaws span z = 115 to 208 mm and meet at 208. -->
+    <link name="gripper_tcp"/>
+
+    <joint name="gripper_tcp_joint" type="fixed">
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_tcp"/>
+        <origin xyz="0.0 0.0 0.15" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- Gripper camera (D435i). The bracket is modelled in neither base mesh,
+         but this mount's camera holes sit 18.2 mm further out in +Y than v2's
+         (65.27 mm from the flange axis against 47.08), so the pose is NOT the
+         one gripper_camera.xacro carries by default and is overridden here. -->
+    <xacro:property name="gripper_camera_y" value="0.065274"/>
+    <xacro:include filename="gripper_camera.xacro" />
+
+</robot>

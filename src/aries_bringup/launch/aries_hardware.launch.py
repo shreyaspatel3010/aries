@@ -464,6 +464,11 @@ def launch_setup(context, *args, **kwargs):
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
                 "serial_port": LaunchConfiguration("serial_port"),
+                "servo_bus_port": LaunchConfiguration("servo_bus_port"),
+                "servo_bus_baud": LaunchConfiguration("servo_bus_baud"),
+                "servo_id": LaunchConfiguration("servo_id"),
+                "gripper_closed_steps": LaunchConfiguration("gripper_closed_steps"),
+                "gripper_servo_invert": LaunchConfiguration("gripper_servo_invert"),
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
                 "use_wheel_joint_publisher": LaunchConfiguration(
@@ -506,11 +511,11 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
-        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2"]),
+        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
-        DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
+        DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "st3215", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("use_joystick", default_value="true"),
         # Whether the pad is READ here, as opposed to whether teleop runs here.
         # false when the joystick is on the base station: the consumers below
@@ -521,6 +526,11 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
+        DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
+        DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud")),
+        DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id")),
+        DeclareLaunchArgument("gripper_closed_steps", default_value="3000"),
+        DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="false"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false"),
         DeclareLaunchArgument(

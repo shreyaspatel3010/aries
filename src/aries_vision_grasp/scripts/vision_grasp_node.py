@@ -647,6 +647,12 @@ class VisionGraspNode(Node):
         # contact tables in fourbar. It MUST match the finger_type the URDF
         # was launched with, or the attached probe mesh lands ~30 mm off.
         self.declare_parameter('finger_type', 'bucket')
+        # Which gripper is bolted to the flange. MUST match the gripper_type
+        # the URDF was launched with. 'st3215' replaces the four-bar tables
+        # with the rack-and-pinion's closed forms and makes finger_type
+        # meaningless -- that gripper has one CAD'd pair of scoops and no
+        # fingertip interface.
+        self.declare_parameter('gripper_type', 'v2')
         self.declare_parameter('fourbar_contact_y_offset_m', 0.001)
         self.declare_parameter('fourbar_contact_z_open_m', 0.1342)
         self.declare_parameter('fourbar_contact_z_closed_m', 0.2180)
@@ -1326,6 +1332,15 @@ class VisionGraspNode(Node):
         self.max_grasp_descent_below_target_m = float(p('max_grasp_descent_below_target_m').value)
         self.min_grasp_height_above_floor_m = float(p('min_grasp_height_above_floor_m').value)
 
+        requested_gripper = str(p('gripper_type').value)
+        self.gripper_type = fourbar.set_gripper(requested_gripper)
+        if self.gripper_type != requested_gripper.strip().lower():
+            self.get_logger().error(
+                f'gripper_type="{requested_gripper}" is not one of '
+                f'{list(fourbar.GRIPPERS)}; falling back to "{self.gripper_type}" '
+                f'geometry. The two grippers do NOT share a q-to-gap curve, so a '
+                f'wrong value here mis-sizes every close by tens of millimetres.')
+
         requested_finger = str(p('finger_type').value)
         self.finger_type = fourbar.set_finger(requested_finger)
         if self.finger_type != requested_finger.strip().lower():
@@ -1343,7 +1358,20 @@ class VisionGraspNode(Node):
         # mounted finger's own contact geometry from its table. For the bucket
         # the table reproduces the configured values exactly, so this only
         # changes behaviour when a different finger is actually selected.
-        if self.finger_type != fourbar.DEFAULT_FINGER:
+        if self.gripper_type == 'st3215':
+            # The jaws translate, so contact does not move in Z at all and
+            # there is nothing to interpolate between open and closed.
+            q_open, _ = fourbar.q_limits()
+            derived = fourbar.contact_offset_z(q_open)
+            self.get_logger().info(
+                f'[Gripper] st3215 rack-and-pinion: contact z is constant at '
+                f'{derived*1000:.0f} mm (the four-bar climbs 86 mm between open and '
+                f'closed; this one does not), stroke {fourbar.gap_from_q(q_open)*1000:.0f} mm, '
+                f'q range {q_open:+.3f} to {fourbar.ST3215_Q_CLOSED:+.3f}. '
+                f'finger_type is ignored.')
+            self.fourbar_contact_z_open_m = derived
+            self.fourbar_contact_z_closed_m = derived
+        elif self.finger_type != fourbar.DEFAULT_FINGER:
             derived_open = fourbar.contact_offset_z(fourbar.Q_MIN)
             derived_closed = fourbar.contact_offset_z(-0.200)
             self.get_logger().info(

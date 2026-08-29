@@ -45,6 +45,10 @@
         <link name="gripper_right_link"/>
         <link name="gripper_bucket_left_link"/>
         <link name="gripper_bucket_right_link"/>
+        <!-- st3215 only; harmlessly skipped with a warning under v2. See the
+             note at the bottom of this file. -->
+        <link name="gripper_rack_left_link"/>
+        <link name="gripper_rack_right_link"/>
         <joint name="gripper_gear_left_joint"/>
     </group>
     <!-- Combined group: arm + gripper controlled together.
@@ -570,4 +574,45 @@
     <disable_collisions link1="gripper_right_link" link2="gripper_link_tip_right_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_tip_left_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
     <disable_collisions link1="gripper_gear_tip_right_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
+
+    <!-- ==================================================================
+         SECONDARY GRIPPER (gripper_type:=st3215)
+
+         This file is `cat` into robot_description_semantic, not xacro'd, so it
+         is one text for both grippers and it carries the union of their links.
+         WHICHEVER GRIPPER IS NOT FITTED, ITS ROWS WARN AT STARTUP:
+
+           Link 'gripper_left_link' is not known to URDF. Cannot disable/enable collisons.
+
+         srdfdom skips those rows and carries on - they are not errors and
+         nothing is wrong. Under st3215 expect about twenty of them naming v2's
+         bars and tips; under v2, two naming the racks. Do not go looking for a
+         broken URDF.
+
+         Three link names are DELIBERATELY shared by both grippers, which is
+         what keeps the rest of this file gripper-agnostic:
+           arm_gripper_base_link     the mount
+           gripper_gear_left_link    the driven gear - v2's sector gear, the
+                                     ST3215's pinion
+           gripper_bucket_*_link     the two jaws
+         so every row above that mentions only those still applies to both.
+         Only the racks are new. -->
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_rack_left_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_base_link" link2="gripper_rack_right_link" reason="Adjacent"/>
+    <!-- The two racks share one volume around the pinion: their carrier blocks
+         both span the full 77.5 mm depth over x = -5 to +10 mm and interleave
+         there. They are one degree of freedom and cannot be driven into each
+         other, so this pair is meaningless to check and never passes. -->
+    <disable_collisions link1="gripper_rack_left_link" link2="gripper_rack_right_link" reason="Never"/>
+    <!-- Each rack is IN MESH with the pinion by design. -->
+    <disable_collisions link1="gripper_rack_left_link" link2="gripper_gear_left_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_rack_right_link" link2="gripper_gear_left_link" reason="Adjacent"/>
+    <!-- Fingertips are bolted to their own rack, and each rack's tail runs
+         under the OPPOSITE jaw. -->
+    <disable_collisions link1="gripper_rack_left_link" link2="gripper_bucket_left_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_rack_right_link" link2="gripper_bucket_right_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_rack_left_link" link2="gripper_bucket_right_link" reason="Never"/>
+    <disable_collisions link1="gripper_rack_right_link" link2="gripper_bucket_left_link" reason="Never"/>
+    <disable_collisions link1="gripper_rack_left_link" link2="gripper_camera_link" reason="Never"/>
+    <disable_collisions link1="gripper_rack_right_link" link2="gripper_camera_link" reason="Never"/>
 </robot>

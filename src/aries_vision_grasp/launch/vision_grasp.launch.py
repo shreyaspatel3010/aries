@@ -23,6 +23,15 @@ def generate_launch_description():
         DeclareLaunchArgument('model_path', default_value=_share_path('models/grasp.pt')),
         DeclareLaunchArgument('target_class', default_value='probe'),
         DeclareLaunchArgument(
+            'gripper_type',
+            default_value='v2',
+            choices=['v2', 'st3215'],
+            description=('Which gripper is fitted. MUST match the gripper_type '
+                         'the URDF was launched with: the four-bar and the '
+                         'rack-and-pinion share a joint name and a closed '
+                         'angle but not a stroke.'),
+        ),
+        DeclareLaunchArgument(
             'finger_type',
             default_value='bucket',
             choices=['bucket', 'maintenance', 'probe'],
@@ -55,6 +64,7 @@ def generate_launch_description():
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'model_path': LaunchConfiguration('model_path'),
                     'target_class': LaunchConfiguration('target_class'),
+                    'gripper_type': LaunchConfiguration('gripper_type'),
                     'finger_type': LaunchConfiguration('finger_type'),
                 },
                 # Last so posture values live in one authoritative file.

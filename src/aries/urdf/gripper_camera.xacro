@@ -26,9 +26,17 @@
           /gripper_camera/aligned_depth_to_color/image_raw  (alias of the depth image)
     -->
 
-    <!-- Mount joint - attaches camera to gripper base -->
+    <!-- Mount joint - attaches camera to gripper base.
+
+         gripper_camera_y IS SET BY WHOEVER INCLUDES THIS FILE and there is no
+         default on purpose. The bracket is modelled in neither gripper's base
+         mesh, so the offset comes from the camera holes in the mount casting,
+         and the two grippers do not agree: v2 puts them 47.439 mm out in +Y,
+         the ST3215 mount 65.274 mm. A default here would silently hang the
+         camera in the wrong place on whichever gripper did not match it, and a
+         wrong extrinsic is the one error the grasp stack cannot see. -->
     <joint name="gripper_camera_joint" type="fixed">
-        <origin xyz="0.0 0.047439 0.035208" rpy="0 -1.57 -1.57"/>
+        <origin xyz="0.0 ${gripper_camera_y} 0.035208" rpy="0 -1.57 -1.57"/>
         <parent link="arm_gripper_base_link"/>
         <child link="gripper_camera_bottom_screw_frame"/>
     </joint>

@@ -62,12 +62,21 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
 
-        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2"]),
+        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
+        # The secondary gripper's wire. Overridable here for the same reason
+        # serial_port is: a bench adapter does not always land on the udev
+        # symlink, and without these the only way to point the stack at a
+        # different port is to edit devices.yaml.
+        DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
+        DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud")),
+        DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id")),
+        DeclareLaunchArgument("gripper_closed_steps", default_value="3000"),
+        DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
         DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
@@ -197,6 +206,11 @@ def generate_launch_description():
                 "arm_hardware_protocol": LaunchConfiguration("arm_hardware_protocol"),
                 "gripper_hardware_protocol": LaunchConfiguration("gripper_hardware_protocol"),
                 "serial_port": LaunchConfiguration("serial_port"),
+                "servo_bus_port": LaunchConfiguration("servo_bus_port"),
+                "servo_bus_baud": LaunchConfiguration("servo_bus_baud"),
+                "servo_id": LaunchConfiguration("servo_id"),
+                "gripper_closed_steps": LaunchConfiguration("gripper_closed_steps"),
+                "gripper_servo_invert": LaunchConfiguration("gripper_servo_invert"),
                 "suppress_rebel_logs": LaunchConfiguration("suppress_rebel_logs"),
                 "suppress_moveit_execution_logs": LaunchConfiguration("suppress_moveit_execution_logs"),
                 "enable_depth_sensor": LaunchConfiguration("enable_depth_sensor"),
@@ -325,6 +339,8 @@ def generate_launch_description():
             launch_arguments={
                 "checker_interval": LaunchConfiguration("checker_interval"),
                 "serial_port": LaunchConfiguration("serial_port"),
+                "gripper_type": LaunchConfiguration("gripper_type"),
+                "servo_bus_port": LaunchConfiguration("servo_bus_port"),
                 "can_interface": LaunchConfiguration("can_interface"),
                 "use_imu": LaunchConfiguration("use_rover_imu"),
                 "imu_port": LaunchConfiguration("rover_imu_port"),

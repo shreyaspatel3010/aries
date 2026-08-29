@@ -36,6 +36,13 @@ from aries_common.devices import device, device_str
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 GRIPPER_JOINTS = ["gripper_gear_left_joint"]
 
+# Every gripper backend that has a controller to spawn. "st3215" is the
+# secondary gripper's servo, reached over the rover PC's own USB bus-servo
+# adapter; "rebel" is the primary gripper's servo behind the Teensy. They are
+# separate protocols because they are separate WIRES, not because the URDFs
+# differ - that part is gripper_type.
+GRIPPER_PROTOCOLS = ("rebel", "st3215", "mock_hardware", "gazebo")
+
 # The board ID is baked into the by-id path, so swapping the Teensy changes it
 # (16739090 -> 20379650 on 2026-08-12) and an exact-path check then resolves to
 # mock_hardware against a perfectly healthy board. Treat the configured path as
@@ -66,6 +73,22 @@ def resolve_gripper_serial(configured: str, detect_timeout: float):
         if time.monotonic() >= deadline:
             return None, ""
         time.sleep(0.1)
+
+
+def resolve_servo_bus(configured: str):
+    """Find the ST3215 bus-servo adapter. Returns (port_or_None, note).
+
+    Unlike the Teensy there is no by-id fallback worth taking. /dev/aries_servo_bus
+    comes from 99-aries-servo-bus.rules matching this adapter's serial, and the
+    by-id name a CH340 would otherwise get (usb-1a86_USB_Serial-if00-port0) is
+    shared by every CH340 on earth -- stable but not unique. Guessing at one
+    would mean commanding whatever generic USB-serial device happened to be
+    plugged in. Better to fall back to mock and say so.
+    """
+    if Path(configured).exists():
+        return configured, ""
+    return None, (f"  -- {configured} is absent; run scripts/setup_system.sh to install "
+                  "99-aries-servo-bus.rules, and check the adapter is plugged in")
 
 
 def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
@@ -154,7 +177,7 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
             "joint6": {"p": 1.0, "d": 0.1, "i": 0.0, "i_clamp": 0.0, "ff_velocity_scale": 1.0},
         }
 
-    if gripper_protocol in ("rebel", "mock_hardware", "gazebo"):
+    if gripper_protocol in GRIPPER_PROTOCOLS:
         data["controller_manager"]["ros__parameters"]["rebel_gripper_controller"] = {
             "type": "joint_trajectory_controller/JointTrajectoryController"
         }
@@ -162,6 +185,25 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
             "ros__parameters": {
                 "joints": GRIPPER_JOINTS,
                 "command_interfaces": ["position"],
+                # POSITION AND VELOCITY ONLY, on both grippers.
+                #
+                # The ST3215 hardware component exports an effort state
+                # interface as well, and it is worth having - it is a real
+                # measurement, not an echo. But it must NOT be listed here:
+                # joint_trajectory_controller validates this list against
+                # {position, velocity, acceleration} and REFUSES TO INITIALISE
+                # on anything else. Measured against the servo emulator:
+                #
+                #   Invalid value set during initialization for parameter
+                #   'state_interfaces': Entry 'effort' ... is not in the set
+                #   '{position, velocity, acceleration}'
+                #
+                # which surfaces only as "Could not initialize the controller
+                # named 'rebel_gripper_controller'" in the spawner - i.e. no
+                # gripper at all, from adding a field that looked free.
+                # joint_state_broadcaster publishes every available state
+                # interface regardless, so the effort still reaches
+                # /joint_states, which is where anything reading it wants it.
                 "state_interfaces": ["position", "velocity"],
                 "state_publish_rate": 80.0,
                 "action_monitor_rate": 40.0,
@@ -173,7 +215,15 @@ def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
                 # the Teensy BEFORE the servo has physically moved, causing the servo
                 # to overshoot, reverse, and overshoot again — the visible
                 # close → open → close symptom.
-                "open_loop_control": True,
+                #
+                # The ST3215 gripper is the exception and MUST run closed loop:
+                # its servo reports a real encoder position, so the measurement
+                # is the measurement and there is no echo to fight. Leaving
+                # open_loop_control on there would throw away the one thing this
+                # gripper has that the other does not — the ability to notice
+                # that the jaws did not reach the commanded angle, which is what
+                # tells an empty close from a grip.
+                "open_loop_control": gripper_protocol != "st3215",
                 # The vision grasp node owns a bounded feedback/contact watchdog
                 # and cancels explicitly. Keep the JTC deadline outside that
                 # window so rigid contact cannot abort first.
@@ -277,25 +327,45 @@ def launch_setup(context, *args, **kwargs):
         except OSError:
             arm_hardware_protocol = "mock_hardware"
 
-    # Resolve the device before choosing the backend, so an explicit
-    # gripper_hardware_protocol:=rebel also survives a board swap. Only spend the
-    # detect timeout when we actually intend to drive the Teensy.
-    detect_timeout = float(
-        LaunchConfiguration("gripper_detect_timeout").perform(context)
-    ) if gripper_hardware_protocol in ("auto", "rebel") else 0.0
-    teensy_port, serial_note = resolve_gripper_serial(serial_port, detect_timeout)
-    if teensy_port:
-        serial_port = teensy_port
+    # WHICH DEVICE TO LOOK FOR FOLLOWS gripper_type, NOT THE PROTOCOL NAME.
+    # The two grippers reach their servos over different wires: v2 through the
+    # Teensy on its by-id path, st3215 through the USB bus-servo adapter. Probing
+    # for the wrong one resolves to mock_hardware while the fitted gripper is
+    # sitting there working, which reads in the log as a dead gripper.
+    servo_bus_port = LaunchConfiguration("servo_bus_port").perform(context)
+    servo_bus_baud = LaunchConfiguration("servo_bus_baud").perform(context)
+    servo_id = LaunchConfiguration("servo_id").perform(context)
+    gripper_closed_steps = LaunchConfiguration("gripper_closed_steps").perform(context)
+    gripper_servo_invert = LaunchConfiguration("gripper_servo_invert").perform(context)
 
-    if gripper_hardware_protocol == "auto":
-        gripper_hardware_protocol = "rebel" if teensy_port else "mock_hardware"
+    if gripper_type == "st3215":
+        found_port, serial_note = resolve_servo_bus(servo_bus_port)
+        if gripper_hardware_protocol in ("auto", "rebel"):
+            gripper_hardware_protocol = "st3215" if found_port else "mock_hardware"
+        live_protocol = "st3215"
+        device_note = f"servo_bus={servo_bus_port} id={servo_id}"
+    else:
+        # Resolve the device before choosing the backend, so an explicit
+        # gripper_hardware_protocol:=rebel also survives a board swap. Only spend
+        # the detect timeout when we actually intend to drive the Teensy.
+        detect_timeout = float(
+            LaunchConfiguration("gripper_detect_timeout").perform(context)
+        ) if gripper_hardware_protocol in ("auto", "rebel") else 0.0
+        teensy_port, serial_note = resolve_gripper_serial(serial_port, detect_timeout)
+        if teensy_port:
+            serial_port = teensy_port
+        if gripper_hardware_protocol == "auto":
+            gripper_hardware_protocol = "rebel" if teensy_port else "mock_hardware"
+        live_protocol = "rebel"
+        device_note = f"serial_port={serial_port}"
 
     # Always say which backend won. Silent fallback to mock is indistinguishable
     # from a dead gripper from the outside.
     gripper_detect_note = LogInfo(
-        msg=f"[gripper auto] serial_port={serial_port} resolved={gripper_hardware_protocol}"
+        msg=f"[gripper auto] gripper_type={gripper_type} {device_note} "
+            f"resolved={gripper_hardware_protocol}"
         + serial_note
-        + ("" if gripper_hardware_protocol == "rebel"
+        + ("" if gripper_hardware_protocol == live_protocol
            else "  -- SIMULATED gripper: no command will reach the servo")
     )
 
@@ -310,6 +380,11 @@ def launch_setup(context, *args, **kwargs):
             " gripper_type:=", gripper_type,
             " finger_type:=", finger_type,
             " serial_port:=", serial_port,
+            " servo_bus_port:=", servo_bus_port,
+            " servo_bus_baud:=", servo_bus_baud,
+            " servo_id:=", servo_id,
+            " gripper_closed_steps:=", gripper_closed_steps,
+            " gripper_servo_invert:=", gripper_servo_invert,
         ]
     ).perform(context)
     robot_description = ParameterValue(robot_description_raw, value_type=str)
@@ -336,7 +411,7 @@ def launch_setup(context, *args, **kwargs):
 
     ros2_control_yaml = build_ros2_control_yaml(arm_hardware_protocol, gripper_hardware_protocol)
     controllers_dict = build_moveit_controller_config(
-        gripper_hardware_protocol in ("rebel", "mock_hardware", "gazebo")
+        gripper_hardware_protocol in GRIPPER_PROTOCOLS
     )
     ros2_control_log_levels = []
     if suppress_rebel_logs and arm_hardware_protocol == "rebel":
@@ -478,7 +553,7 @@ def launch_setup(context, *args, **kwargs):
         )
 
     gripper_controller_spawner = None
-    if gripper_hardware_protocol in ("rebel", "mock_hardware", "gazebo"):
+    if gripper_hardware_protocol in GRIPPER_PROTOCOLS:
         gripper_controller_spawner = Node(
             package="controller_manager",
             executable="spawner",
@@ -653,12 +728,20 @@ def launch_setup(context, *args, **kwargs):
     teleop_speeds_file = os.path.join(
         get_package_share_directory("aries_moveit"), "config", "teleop_speeds.yaml"
     )
+    # Per-gripper overlay, loaded last so its keys win. Only the ST3215 gripper
+    # has one, and it exists only because that mechanism's open position is
+    # -4.065 where teleop_speeds.yaml's shared value is v2's -1.57.
+    teleop_gripper_files = []
+    if gripper_type == "st3215":
+        teleop_gripper_files.append(os.path.join(
+            get_package_share_directory("aries_moveit"), "config",
+            "teleop_speeds_st3215.yaml"))
     gamepad_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
         executable="rebel_servo_teleop_gamepad",
         name="rebel_servo_teleop_gamepad",
-        parameters=[gamepad_file, teleop_speeds_file],
+        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files],
         output="screen",
     )
 
@@ -667,7 +750,7 @@ def launch_setup(context, *args, **kwargs):
         package="aries_moveit",
         executable="rebel_movegroup_joystick.py",
         name="rebel_movegroup_joystick",
-        parameters=[gamepad_file, teleop_speeds_file],
+        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files],
         output="screen",
     )
 
@@ -679,7 +762,7 @@ def launch_setup(context, *args, **kwargs):
         package="aries_moveit",
         executable="arm_preset_pose_joystick.py",
         name="arm_preset_pose_joystick",
-        parameters=[gamepad_file, teleop_speeds_file],
+        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files],
         output="screen",
     )
 
@@ -689,6 +772,12 @@ def launch_setup(context, *args, **kwargs):
     # sweep it draws is wrong by 100 mm. It used to be gated on
     # gripper_type == "new", which no longer exists. Re-fit the tables to v2
     # before adding the node back.
+    #
+    # That is a v2 problem only. On gripper_type:=st3215 the overlay needs no
+    # tables at all - the jaws translate, so it draws the exact closed form -
+    # and it IS launched on that gripper from move_group.launch.py. Adding it
+    # back here would be safe for st3215 and still wrong for v2, so it stays
+    # out until the v2 tables are re-fitted.
 
     rviz_config = os.path.join(get_package_share_directory("aries_moveit"), "launch", "moveit.rviz")
     rviz_node = Node(
@@ -737,11 +826,11 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
-            DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2"], description="Which gripper URDF to load. Only 'v2' exists; 'new' and 'old' are retired to aries/urdf/legacy/."),
+            DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"], description="Which gripper is bolted to the flange. v2 = four-bar via the Teensy; st3215 = rack-and-pinion on the USB bus-servo adapter. Mutually exclusive; 'new' and 'old' are retired to aries/urdf/legacy/."),
             DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new/v2 gripper)"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
-            DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend"),
+            DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "rebel", "st3215", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend. 'auto' picks the one that matches gripper_type if its device is present, else mock_hardware."),
             DeclareLaunchArgument("use_joystick", default_value="false", description="Start joystick arm teleop"),
             DeclareLaunchArgument(
                 "use_joy_node",
@@ -758,6 +847,11 @@ def generate_launch_description():
             DeclareLaunchArgument("joy_dev", default_value=device_str("joystick.device"), description="Joystick device used by joy_node and the layout normalizer"),
             DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"], description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps"),
             DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port"), description="USB-serial port for the Teensy gripper controller"),
+            DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port"), description="Serial port of the ST3215 bus-servo adapter (gripper_type:=st3215 only)"),
+            DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud"), description="Baud rate for the ST3215 bus-servo adapter"),
+            DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id"), description="Bus ID of the ST3215 driving the secondary gripper"),
+            DeclareLaunchArgument("gripper_closed_steps", default_value="3000", description="BENCH CALIBRATION: the ST3215's raw encoder step with the jaws just touching (q=+0.07). Changes whenever the servo is unbolted; see st3215_gripper_hardware's header for how to measure it."),
+            DeclareLaunchArgument("gripper_servo_invert", default_value="false", choices=["true", "false"], description="BENCH CALIBRATION: true if a rising ST3215 step count OPENS the jaws instead of closing them."),
             DeclareLaunchArgument("gripper_detect_timeout", default_value="8.0", description="Seconds to wait for the Teensy serial device before falling back to mock_hardware. Covers USB re-enumeration after a board reset."),
             DeclareLaunchArgument("suppress_rebel_logs", default_value="false", description="Suppress chatty igus_rebel logger output from ros2_control_node"),
             DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false", description="Suppress routine MoveIt execution chatter from move_group and ros2_control_node"),

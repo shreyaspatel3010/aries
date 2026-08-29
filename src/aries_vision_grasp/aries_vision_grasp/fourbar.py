@@ -1,4 +1,34 @@
-"""Calibrated four-bar gripper geometry, per swappable fingertip.
+"""Calibrated gripper geometry: jaw gap and contact height against joint angle.
+
+TWO GRIPPERS SHARE THIS MODULE, selected with set_gripper():
+
+  'v2'      the primary four-bar, three swappable fingertips, geometry
+            interpolated from the measured tables below. This is what the rest
+            of this docstring is about and the default.
+
+  'st3215'  the secondary rack and pinion. No tables and no fingertip choice:
+            the pinion direct-drives two racks, so the jaws TRANSLATE and both
+            relationships are exact closed forms rather than curves --
+
+                gap(q)      = 2 * 0.01002676 * (0.07 - q)      [linear]
+                contact z   = 0.2078 m                          [constant]
+
+            The constant contact height is the real structural difference and
+            not a simplification: a four-bar's fingertip swings through an arc,
+            so its contact point climbs 86 mm between open and closed, which is
+            why v2 needs a contact table at all. A rack does not move in Z.
+            Anything that compensates for contact drift can simply skip it on
+            this gripper.
+
+            Its usable range is q in [-4.065, +0.07], two and a half times v2's
+            in joint terms for about the same 83 mm of gap, so a q value is NOT
+            portable between the two even though both call +0.07 closed.
+
+The rest of this file, and everything below about fingertips, applies to 'v2'.
+
+---
+
+Calibrated four-bar gripper geometry, per swappable fingertip.
 
 The tables map the commanded gear joint angle q (rad) to the physical jaw gap
 and to the finger contact midpoint expressed in arm_gripper_base_link. They
@@ -97,6 +127,53 @@ Q_MAX = float(_Q_GAP[-1])
 _active_finger = DEFAULT_FINGER
 
 
+# --------------------------------------------------------------------------
+# Which gripper is bolted on. See the module docstring.
+# --------------------------------------------------------------------------
+DEFAULT_GRIPPER = 'v2'
+GRIPPERS = ('v2', 'st3215')
+
+# Jaw travel per radian of pinion, and the joint angle at which the jaws touch.
+# Both are properties of the mechanism, measured in
+# scripts/build_gripper_st3215_meshes.py: 21 teeth on a 3.0000 mm rack pitch
+# gives 21 * 3 / (2*pi) mm per radian, and the URDF's zero pose is calibrated
+# so contact lands on the +0.07 rad this whole stack calls closed.
+ST3215_PITCH_R = 0.01002676
+ST3215_Q_CLOSED = 0.07
+ST3215_Q_OPEN = -4.065
+# The lips meet 207.8 mm above arm_gripper_base_link, and stay there: the jaws
+# translate, so this does not vary with q.
+ST3215_CONTACT_Z = 0.2078
+
+_active_gripper = DEFAULT_GRIPPER
+
+
+def set_gripper(name: str) -> str:
+    """Select the fitted gripper. Returns the name actually applied.
+
+    An unknown name falls back to 'v2' rather than raising, for the same reason
+    set_finger() does: a typo in a launch argument should degrade to the
+    previous behaviour, not take the grasp stack down mid-run. Log the return
+    value so a silent fallback is still visible.
+    """
+    global _active_gripper
+    key = str(name).strip().lower()
+    _active_gripper = key if key in GRIPPERS else DEFAULT_GRIPPER
+    return _active_gripper
+
+
+def active_gripper() -> str:
+    """Name of the gripper currently driving the geometry."""
+    return _active_gripper
+
+
+def q_limits() -> tuple:
+    """(most open, most closed) joint angle the fitted gripper can reach."""
+    if _active_gripper == 'st3215':
+        return (ST3215_Q_OPEN, ST3215_Q_CLOSED)
+    return (float(_Q_GAP[0]), float(_Q_GAP[-1]))
+
+
 def set_finger(name: str) -> str:
     """Select the mounted fingertip. Returns the name actually applied.
 
@@ -122,6 +199,9 @@ def _tables():
 
 def gap_from_q(q: float) -> float:
     """Actual finger inner gap (m) for a gear joint angle (rad)."""
+    if _active_gripper == 'st3215':
+        q_clip = float(np.clip(q, ST3215_Q_OPEN, ST3215_Q_CLOSED))
+        return 2.0 * ST3215_PITCH_R * (ST3215_Q_CLOSED - q_clip)
     gap, _ = _tables()
     q_clip = float(np.clip(q, _Q_GAP[0], _Q_GAP[-1]))
     return float(np.interp(q_clip, _Q_GAP, gap))
@@ -134,6 +214,9 @@ def q_from_gap(gap_m: float) -> float:
     clamps (open/close command limits, floor-grasp q window) are applied by
     the caller.
     """
+    if _active_gripper == 'st3215':
+        q = ST3215_Q_CLOSED - float(gap_m) / (2.0 * ST3215_PITCH_R)
+        return float(np.clip(q, ST3215_Q_OPEN, ST3215_Q_CLOSED))
     gap, _ = _tables()
     # The narrow fingers bottom out at gap 0 for several trailing angles.
     # np.interp needs a strictly increasing xp, so collapse that flat tail to
@@ -147,6 +230,9 @@ def q_from_gap(gap_m: float) -> float:
 
 def contact_offset_z(q: float) -> float:
     """Local Z (m) of the finger contact midpoint for a gear joint angle."""
+    if _active_gripper == 'st3215':
+        # Constant by construction: the jaws translate along X only.
+        return ST3215_CONTACT_Z
     _, z_contact = _tables()
     q_clip = float(np.clip(q, _Q_CONTACT[0], _Q_CONTACT[-1]))
     return float(np.interp(q_clip, _Q_CONTACT, z_contact))

@@ -1,0 +1,7 @@
+<library path="st3215_gripper_hardware">
+  <class name="st3215_gripper_hardware/ST3215GripperSystem"
+         type="st3215_gripper_hardware::ST3215GripperSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>ST3215 bus-servo rack-and-pinion gripper, driven over serial from the rover PC</description>
+  </class>
+</library>

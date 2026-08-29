@@ -43,6 +43,22 @@ Z_MID = [0.1342, 0.1680, 0.2092, 0.2180, 0.2189, 0.2196, 0.2197, 0.2195]
 Q_OPEN = -1.57
 Q_CLOSE = 0.07
 
+# The SECONDARY gripper (gripper_type:=st3215) needs no tables: the pinion
+# direct-drives two racks, so the jaws translate and both relationships are
+# exact.  The "arc" it sweeps is a straight line at constant height, which is
+# the whole visible difference between the two mechanisms and worth drawing
+# honestly rather than approximating with the four-bar's curve.
+#
+# THIS IS THE THIRD COPY of the pitch radius (the others are
+# aries/urdf/gripper_st3215.xacro and aries_vision_grasp/fourbar.py) and it is
+# copied rather than imported because those two packages cannot be imported
+# from here -- the URDF is XML and the grasp package is COLCON_IGNOREd.
+# src/aries/test/test_gripper_st3215.py cross-checks all three.
+ST3215_PITCH_R = 0.01002676
+ST3215_Q_OPEN = -4.065
+ST3215_Q_CLOSE = 0.07
+ST3215_CONTACT_Z = 0.2078
+
 
 def _interp(x, xs, ys):
     """Linear interpolation with clamped ends (xs ascending)."""
@@ -67,6 +83,10 @@ class GripperArcVisualizer(Node):
         self.declare_parameter("marker_topic", "gripper_arc_markers")
         self.declare_parameter("joint_state_topic", "joint_states")
         self.declare_parameter("gripper_joint_name", "gripper_gear_left_joint")
+        # Which gripper is fitted. MUST match the URDF's gripper_type: the two
+        # share the joint name and the closed angle but nothing else, so a
+        # mismatch draws a confident overlay in the wrong place.
+        self.declare_parameter("gripper_type", "v2")
         self.declare_parameter("publish_rate_hz", 10.0)
         # Jaw midpoint sits ~25.9 mm off the base link centreline in +y.
         self.declare_parameter("contact_y_offset_m", 0.001)
@@ -80,10 +100,13 @@ class GripperArcVisualizer(Node):
 
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.gripper_joint = str(self.get_parameter("gripper_joint_name").value)
+        self.gripper_type = str(self.get_parameter("gripper_type").value).strip().lower()
+        if self.gripper_type not in ("v2", "st3215"):
+            self.gripper_type = "v2"
         self.samples = max(int(self.get_parameter("arc_samples").value), 8)
         self._refresh_tunables()
 
-        self.current_q = Q_OPEN
+        self.current_q = self.q_range()[0]
 
         self.marker_pub = self.create_publisher(
             MarkerArray, str(self.get_parameter("marker_topic").value), 1)
@@ -111,10 +134,31 @@ class GripperArcVisualizer(Node):
         if idx < len(msg.position):
             self.current_q = float(msg.position[idx])
 
+    def q_range(self):
+        """(open, closed) joint angle for the fitted gripper."""
+        if self.gripper_type == "st3215":
+            return ST3215_Q_OPEN, ST3215_Q_CLOSE
+        return Q_OPEN, Q_CLOSE
+
+    def contact_z(self, q):
+        """Height of the jaw contact midpoint at joint angle q.
+
+        Constant on the ST3215: its jaws translate. The four-bar's climbs 86 mm
+        between open and closed, which is what the grey midpoint path draws.
+        """
+        if self.gripper_type == "st3215":
+            return ST3215_CONTACT_Z + self.z_off
+        return _interp(q, Q_MID, Z_MID) + self.z_off
+
     def jaw_points(self, q):
         """Left and right jaw contact points at joint angle q."""
-        half_gap = 0.5 * _interp(q, Q_GAP, GAP)
-        z = _interp(q, Q_MID, Z_MID) + self.z_off
+        if self.gripper_type == "st3215":
+            q = min(max(q, ST3215_Q_OPEN), ST3215_Q_CLOSE)
+            half_gap = ST3215_PITCH_R * (ST3215_Q_CLOSE - q)
+            z = ST3215_CONTACT_Z + self.z_off
+        else:
+            half_gap = 0.5 * _interp(q, Q_GAP, GAP)
+            z = _interp(q, Q_MID, Z_MID) + self.z_off
         left = Point(x=-half_gap, y=self.y_off, z=z)
         right = Point(x=half_gap, y=self.y_off, z=z)
         return left, right
@@ -139,7 +183,8 @@ class GripperArcVisualizer(Node):
     def publish_markers(self):
         self._refresh_tunables()
         arr = MarkerArray()
-        qs = [Q_OPEN + (Q_CLOSE - Q_OPEN) * i / (self.samples - 1)
+        q_open, q_close = self.q_range()
+        qs = [q_open + (q_close - q_open) * i / (self.samples - 1)
               for i in range(self.samples)]
 
         # Jaw sweep arcs, open -> close (cyan).
@@ -155,19 +200,18 @@ class GripperArcVisualizer(Node):
             left_arc.points.append(left)
             right_arc.points.append(right)
             mid_path.points.append(
-                Point(x=0.0, y=self.y_off,
-                      z=_interp(q, Q_MID, Z_MID) + self.z_off))
+                Point(x=0.0, y=self.y_off, z=self.contact_z(q)))
         arr.markers += [left_arc, right_arc, mid_path]
 
         # Point of closing: where the jaws meet at full close (red).
         close_pt = self._marker(3, Marker.SPHERE, (0.014, 0.014, 0.014),
                                 _color(0.95, 0.15, 0.15))
         close_pt.pose.position = Point(
-            x=0.0, y=self.y_off, z=_interp(Q_CLOSE, Q_MID, Z_MID) + self.z_off)
+            x=0.0, y=self.y_off, z=self.contact_z(q_close))
         arr.markers.append(close_pt)
 
         # Fully-open jaw endpoints (green).
-        open_left, open_right = self.jaw_points(Q_OPEN)
+        open_left, open_right = self.jaw_points(q_open)
         for mid, pt in ((4, open_left), (5, open_right)):
             m = self._marker(mid, Marker.SPHERE, (0.010, 0.010, 0.010),
                              _color(0.2, 0.85, 0.3))

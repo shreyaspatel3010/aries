@@ -25,6 +25,9 @@ def generate_launch_description():
         DeclareLaunchArgument("checker_interval", default_value="3.0"),
         DeclareLaunchArgument("timeout", default_value="5.0"),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
+        # The checker has to look at the wire the FITTED gripper actually uses.
+        DeclareLaunchArgument("gripper_type", default_value="v2", choices=["v2", "st3215"]),
+        DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
         DeclareLaunchArgument("can_interface", default_value=device_str("rover.can_interface")),
         DeclareLaunchArgument("use_imu", default_value="auto"),
         DeclareLaunchArgument("imu_port", default_value=device_str("imu.port")),
@@ -85,6 +88,8 @@ def generate_launch_description():
                 "check_interval": LaunchConfiguration("checker_interval"),
                 "timeout": LaunchConfiguration("timeout"),
                 "gripper_serial_port": LaunchConfiguration("serial_port"),
+                "gripper_type": LaunchConfiguration("gripper_type"),
+                "servo_bus_port": LaunchConfiguration("servo_bus_port"),
                 "can_interface": LaunchConfiguration("can_interface"),
                 "use_imu": _text("use_imu"),
                 "imu_port": LaunchConfiguration("imu_port"),

@@ -319,6 +319,11 @@ def opaque_func(context, *args, **kwargs):
     teleop_speed_params = [teleop_speeds_file]
     if use_sim_speeds:
         teleop_speed_params.append(teleop_speeds_sim_file)
+    # Per-gripper overlay, appended last so its keys win over both of the
+    # above. See teleop_speeds_st3215.yaml for why only that gripper has one.
+    if gripper_type.perform(context) == "st3215":
+        teleop_speed_params.append(PathJoinSubstitution(
+            [FindPackageShare("aries_moveit"), "config", "teleop_speeds_st3215.yaml"]))
     teleop_twist_joy_node = Node(
         condition=servo_joystick_condition,
         package="aries_moveit",
@@ -352,19 +357,22 @@ def opaque_func(context, *args, **kwargs):
         parameters=[
             {'use_sim_time': use_sim_time},
             teleop_joy_twist_file,
-            teleop_speeds_file,
+            *teleop_speed_params,
         ],
         output="screen",
     )
 
     # Gripper arc overlay for RViz: jaw open/close sweep + point of closing.
-    # The robot model here always loads the new four-bar gripper.
+    # It carries its own geometry, so it has to be told which gripper is loaded
+    # or it draws the four-bar's curve over a mechanism whose jaws travel in a
+    # straight line.
     gripper_arc_visualizer_node = Node(
         package="aries_moveit",
         executable="gripper_arc_visualizer.py",
         namespace=namespace,
         name="gripper_arc_visualizer",
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[{'use_sim_time': use_sim_time,
+                     'gripper_type': gripper_type}],
         output="screen",
     )
 
@@ -471,7 +479,7 @@ def generate_launch_description():
     gripper_type_arg = DeclareLaunchArgument(
         "gripper_type",
         default_value="v2",
-        choices=["v2"],
+        choices=["v2", "st3215"],
         description="Gripper type. Only 'v2' exists; 'new' and 'old' are retired "
                     "Gazebo and robot_state_publisher were launched with.",
     )
