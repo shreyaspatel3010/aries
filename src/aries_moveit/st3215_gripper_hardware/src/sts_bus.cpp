@@ -220,4 +220,31 @@ bool StsBus::write16(uint8_t id, uint8_t addr, uint16_t value)
   return transact(id, INST_WRITE, p, 3, nullptr, 0);
 }
 
+std::string status_flags(uint8_t status)
+{
+  if (status == 0) { return ""; }
+  static const struct { uint8_t bit; const char * name; } kBits[] = {
+    {STATUS_VOLTAGE, "voltage"},
+    {STATUS_SENSOR, "sensor"},
+    {STATUS_TEMPERATURE, "overheat"},
+    {STATUS_CURRENT, "overcurrent"},
+    {STATUS_ANGLE, "angle"},
+    {STATUS_OVERLOAD, "overload"},
+  };
+  std::string out;
+  for (const auto & b : kBits) {
+    if (status & b.bit) {
+      if (!out.empty()) { out += "+"; }
+      out += b.name;
+    }
+  }
+  // Bits 6 and 7 are not in the table. Say so rather than dropping them: an
+  // unexplained bit is exactly the thing worth seeing.
+  if (status & 0xC0u) {
+    if (!out.empty()) { out += "+"; }
+    out += "unknown";
+  }
+  return out;
+}
+
 }  // namespace st3215_gripper_hardware

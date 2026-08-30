@@ -43,6 +43,18 @@ Visualization Manager:
       Show Names: false
       Update Interval: 0
       Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: GripperStatus
+      Namespaces:
+        gripper_status: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gripper_status_markers
+      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
       Max Value: 1

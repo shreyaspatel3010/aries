@@ -80,10 +80,30 @@
 // fix on a throttle so it cannot be mistaken for a working gripper.  The arm
 // keeps working.
 
+// LIVE TELEMETRY
+//
+// The servo reports its own supply voltage, winding temperature, current and
+// protection status, and it is the ONLY part of the arm that does. None of
+// that fits through a ros2_control state interface that a stock broadcaster
+// would publish, so this component owns a small rclcpp::Node and publishes a
+// diagnostic_msgs/DiagnosticArray on /diagnostics at telemetry_rate_hz.
+// scripts/gripper_status_overlay.py in aries_moveit turns that into the RViz
+// text overlay; anything else that wants the numbers (a checker, a log) reads
+// the same topic.
+//
+// The DANGER and CUTOFF thresholds are the SERVO'S OWN, read out of EPROM at
+// activation (max temperature, max/min input voltage, protection current) -
+// they are not constants invented here, because the servo unloads torque on
+// its own limits and not on ours. DANGER is a margin short of one of them;
+// CUTOFF is REG_STATUS actually non-zero, which means the servo has already
+// tripped, or this component having inhibited commanding.
+
 #include <hardware_interface/system_interface.hpp>
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/state.hpp>
+
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 
 #include <atomic>
 #include <limits>
@@ -125,6 +145,14 @@ private:
   /// id 1" into something that says whether the servo is at another ID, another
   /// baud, or not powered at all.
   std::string probe_bus();
+  /// Read the servo's own protection limits out of EPROM. Best effort: a limit
+  /// that does not answer is left unknown and the display says so rather than
+  /// comparing against a guess.
+  void read_protection_limits();
+  /// One DiagnosticArray on /diagnostics. Called from the io thread, including
+  /// while inhibited - a gripper that refuses commands is precisely when the
+  /// operator needs to see why.
+  void publish_telemetry();
 
   std::string joint_name_;
 
@@ -183,11 +211,42 @@ private:
   double stall_hold_s_{0.35};
   double relax_bias_rad_{0.015};
 
+  // --- telemetry ------------------------------------------------------
+  bool publish_diagnostics_{true};
+  double telemetry_rate_hz_{5.0};
+  // How close to the servo's OWN limit counts as danger. Small enough that
+  // "danger" means the trip is close, wide enough to give the operator time
+  // to back off: the ST3215 climbs roughly 1 deg C every few seconds when
+  // stalled, so 8 deg C is tens of seconds of warning.
+  double warn_temp_margin_c_{8.0};
+  double warn_volt_margin_v_{0.5};
+  double warn_current_frac_{0.8};
+  // Sustained load with no motion, as a fraction of the 0-1000 duty. Not a
+  // servo limit - it is the squeeze-relax condition seen from outside, and it
+  // is the state a gripper holding an object actually sits in.
+  double warn_load_frac_{0.7};
+
+  // Servo protection limits, read from EPROM at activation. Negative means the
+  // read failed and nothing is compared against it.
+  double max_temp_c_{-1.0};
+  double max_volt_v_{-1.0};
+  double min_volt_v_{-1.0};
+  double protect_current_ma_{-1.0};
+
   // --- shared with the I/O thread -------------------------------------
   std::atomic<double> cmd_pos_{0.0};
   std::atomic<double> state_pos_{0.0};
   std::atomic<double> state_vel_{0.0};
   std::atomic<double> state_eff_{0.0};
+  std::atomic<int> state_steps_{0};
+  std::atomic<double> state_load_frac_{0.0};   // signed, -1..1 of full duty
+  std::atomic<double> state_volt_{0.0};
+  std::atomic<double> state_temp_{0.0};
+  std::atomic<double> state_current_ma_{0.0};
+  std::atomic<uint8_t> state_status_{0};
+  std::atomic<bool> state_moving_{false};
+  std::atomic<bool> relaxing_{false};
+  std::atomic<double> written_goal_{0.0};
   std::atomic<bool> have_state_{false};
   std::atomic<bool> command_inhibited_{false};
   // False until a controller writes a command that differs from the position
@@ -197,9 +256,18 @@ private:
   std::string inhibit_reason_;
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> read_failures_{0};
+  // Reads failed back to back. The total above says how flaky the link has
+  // ever been; this says whether the servo is answering RIGHT NOW, which is
+  // what separates "warm" from "unplugged" on the display.
+  std::atomic<uint32_t> consecutive_failures_{0};
 
   StsBus bus_;
   std::thread io_thread_;
+  // Our own node, because a hardware component is not given one in Jazzy. It
+  // is never spun: a publisher works without an executor, and this component
+  // has nothing to receive.
+  rclcpp::Node::SharedPtr tel_node_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_pub_;
   rclcpp::Logger logger_{rclcpp::get_logger("ST3215GripperSystem")};
   // RCLCPP_*_THROTTLE needs a clock it can keep state against, and the io
   // thread has no node to borrow one from.

@@ -392,14 +392,15 @@ def _const_from(path, name):
 
 
 def test_every_copy_of_the_mechanism_constants_agrees(st3215):
-    """The pitch radius and the stroke are written down in FOUR places.
+    """The pitch radius and the stroke are written down in FIVE places.
 
-    The URDF is the source of truth, but three consumers cannot read it: the
+    The URDF is the source of truth, but four consumers cannot read it: the
     grasp package is COLCON_IGNOREd, the RViz overlay is a standalone script,
-    and the teleop overlay is YAML.  So each carries its own copy, and the only
-    thing keeping them in step is this test.  Drift is silent in the worst way -
-    the gripper closes on a confident angle for the wrong width, or the overlay
-    marks a point of closing the jaws never reach.
+    the teleop overlay is YAML, and the ros2_control hardware component is a
+    C++ plugin that must not gain a dependency on any of them.  So each carries
+    its own copy, and the only thing keeping them in step is this test.  Drift
+    is silent in the worst way - the gripper closes on a confident angle for
+    the wrong width, or an overlay reports a jaw gap the jaws do not have.
 
     The open angle is checked as a BOUND, not for equality: the copies use a
     round -4.065 where the URDF limit is -4.0691, which is 0.04 mm of jaw travel
@@ -407,6 +408,7 @@ def test_every_copy_of_the_mechanism_constants_agrees(st3215):
     joint limit is rejected outright - so the test allows a small shortfall and
     no overrun at all.
     """
+    import re
     import sys
     sys.path.insert(0, str(SRC / "aries_vision_grasp"))
     from aries_vision_grasp import fourbar
@@ -416,9 +418,19 @@ def test_every_copy_of_the_mechanism_constants_agrees(st3215):
     teleop = (SRC / "aries_moveit" / "moveit_config" / "config"
               / "teleop_speeds_st3215.yaml").read_text()
 
+    # The hardware component states the same number as mm of JAW GAP per radian,
+    # which is twice the pitch radius because both racks move. Checked in its
+    # own units so the test fails on the number as written, not on a
+    # rearrangement of it.
+    hw = (SRC / "aries_moveit" / "st3215_gripper_hardware" / "src"
+          / "st3215_gripper_system.cpp").read_text()
+    m = re.search(r"JAW_MM_PER_RAD = 2000\.0 \* ([\d.]+);", hw)
+    assert m, "JAW_MM_PER_RAD is gone from st3215_gripper_system.cpp"
+
     pitch_copies = {
         "fourbar.py": fourbar.ST3215_PITCH_R,
         "gripper_arc_visualizer.py": _const_from(viz, "ST3215_PITCH_R"),
+        "st3215_gripper_system.cpp": float(m.group(1)),
     }
     for where, value in pitch_copies.items():
         assert value == pytest.approx(PITCH_R, abs=1e-8), f"pitch radius drifted in {where}"

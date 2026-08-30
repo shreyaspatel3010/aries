@@ -51,6 +51,18 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
+      Name: GripperStatus
+      Namespaces:
+        gripper_status: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gripper_status_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
       Name: GripperArc
       Namespaces:
         gripper_arc: true

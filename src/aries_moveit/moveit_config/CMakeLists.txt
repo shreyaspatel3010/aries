@@ -65,6 +65,7 @@ install(PROGRAMS
   scripts/rebel_movegroup_joystick.py
   scripts/arm_preset_pose_joystick.py
   scripts/gripper_arc_visualizer.py
+  scripts/gripper_status_overlay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

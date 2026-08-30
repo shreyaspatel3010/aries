@@ -164,6 +164,18 @@
                     <param name="accel">0</param>
                     <param name="goal_speed">2000</param>
                     <param name="torque_limit">800</param>
+                    <!-- LIVE TELEMETRY. The component publishes the servo's
+                         position, jaw gap, load, current, voltage, temperature
+                         and protection status as a DiagnosticArray on
+                         /diagnostics, and aries_moveit's gripper_status_overlay
+                         draws it over the gripper in RViz. The DANGER and
+                         CUTOFF thresholds come from the servo's own EPROM
+                         limits, read at activation - there is nothing to set
+                         here. publish_diagnostics=false turns the whole thing
+                         off; telemetry_rate_hz sets how often it is published
+                         (it does NOT change how often the servo is polled,
+                         which stays at io_rate_hz). -->
+                    <param name="telemetry_rate_hz">5.0</param>
                 </hardware>
 
                 <joint name="gripper_gear_left_joint">

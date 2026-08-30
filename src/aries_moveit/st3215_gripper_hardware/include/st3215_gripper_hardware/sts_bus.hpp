@@ -26,9 +26,18 @@
 namespace st3215_gripper_hardware
 {
 
-// SMS/STS control table.  EPROM below 31, SRAM at and above it.
+// SMS/STS control table.  EPROM below 40, SRAM at and above it.
 enum : uint8_t
 {
+  // EPROM protection limits.  The servo enforces these itself: exceed one and
+  // it raises the matching bit in REG_STATUS and unloads torque according to
+  // its unloading condition (reg 19).  We only ever READ them - they are the
+  // servo's own idea of "too hot" / "too low" and are what a live display
+  // must compare against, rather than numbers invented here.
+  REG_MAX_TEMPERATURE = 13,   // deg C, 1 per LSB
+  REG_MAX_VOLTAGE = 14,       // 0.1 V per LSB
+  REG_MIN_VOLTAGE = 15,       // 0.1 V per LSB
+  REG_PROTECTION_CURRENT = 28,  // 16-bit, 6.5 mA per LSB
   REG_MODE = 33,          // EPROM. 0 = position, 1 = wheel.
   REG_TORQUE_ENABLE = 40,
   REG_ACCELERATION = 41,
@@ -42,9 +51,48 @@ enum : uint8_t
   REG_PRESENT_LOAD = 60,
   REG_PRESENT_VOLTAGE = 62,
   REG_PRESENT_TEMPERATURE = 63,
+  REG_STATUS = 65,
   REG_MOVING = 66,
   REG_PRESENT_CURRENT = 69,
 };
+
+// REG_PRESENT_POSITION .. REG_PRESENT_CURRENT+1 inclusive, so ONE block read
+// gets position, speed, load, voltage, temperature, status, moving and
+// current.  It is 15 bytes instead of 6 - about 150 us more wire time at
+// 1 Mbaud - and it is still one USB round trip, which is the part that costs.
+// Reading the telemetry registers separately would triple the poll's latency
+// budget for numbers that only feed a display.
+constexpr uint8_t TELEMETRY_BLOCK_START = REG_PRESENT_POSITION;
+constexpr uint8_t TELEMETRY_BLOCK_LEN = REG_PRESENT_CURRENT + 2 - REG_PRESENT_POSITION;  // 15
+
+/// Offset of \p reg within a block read starting at TELEMETRY_BLOCK_START.
+constexpr int tel(uint8_t reg) { return reg - TELEMETRY_BLOCK_START; }
+
+// Register units.
+constexpr double CURRENT_LSB_MA = 6.5;   // present current and protection current
+constexpr double VOLTAGE_LSB_V = 0.1;    // present voltage and both voltage limits
+constexpr double LOAD_FULL_SCALE = 1000.0;  // present load is a 0-1000 PWM duty
+
+// REG_STATUS bits.  Same layout as the unloading condition (reg 19), the LED
+// alarm condition (reg 20), and the ERR byte every reply carries.
+//
+// TAKEN FROM THE WAVESHARE ST3215 MEMORY TABLE, not provoked on this servo -
+// deliberately fault-testing a gripper servo to confirm a bit number is not
+// worth the servo.  So the display names the bits it decodes but always shows
+// the raw byte beside them: if one is ever seen, the number is checkable
+// against the table even if the label here is wrong.
+enum : uint8_t
+{
+  STATUS_VOLTAGE = 1u << 0,
+  STATUS_SENSOR = 1u << 1,
+  STATUS_TEMPERATURE = 1u << 2,
+  STATUS_CURRENT = 1u << 3,
+  STATUS_ANGLE = 1u << 4,
+  STATUS_OVERLOAD = 1u << 5,
+};
+
+/// Human-readable list of the set bits in a REG_STATUS byte, "" when clear.
+std::string status_flags(uint8_t status);
 
 constexpr int STEPS_PER_REV = 4096;
 

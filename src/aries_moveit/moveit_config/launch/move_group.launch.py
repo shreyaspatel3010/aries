@@ -382,6 +382,20 @@ def opaque_func(context, *args, **kwargs):
         output="screen",
     )
 
+    # Live servo telemetry as an RViz text overlay: jaw gap, joint, current,
+    # voltage, temperature, and whether the servo is near or past one of its own
+    # protection limits. It reads /diagnostics, which only the st3215 hardware
+    # component publishes, so on mock or sim it simply says NO TELEMETRY rather
+    # than needing to be gated on the protocol.
+    gripper_status_overlay_node = Node(
+        package="aries_moveit",
+        executable="gripper_status_overlay.py",
+        namespace=namespace,
+        name="gripper_status_overlay",
+        parameters=[{'use_sim_time': use_sim_time}],
+        output="screen",
+    )
+
     default_rviz_file = os.path.join(
         get_package_share_directory('aries_moveit'),
         'launch',
@@ -417,6 +431,7 @@ def opaque_func(context, *args, **kwargs):
         move_group_joystick_node,
         arm_preset_pose_node,
         gripper_arc_visualizer_node,
+        gripper_status_overlay_node,
         launch_rviz
     ]
     return entities

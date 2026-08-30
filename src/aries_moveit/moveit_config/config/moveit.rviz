@@ -13,6 +13,11 @@ Visualization Manager:
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: GripperStatus
+      Topic:
+        Value: /gripper_status_markers
+      Value: true
     - Class: moveit_rviz_plugin/MotionPlanning
       Name: MotionPlanning
       Planned Path:

@@ -25,6 +25,11 @@ WHAT THIS SHOWS, AND WHAT IT DOES NOT
     and /tf do cross the link, so a machine that has the aries packages
     installed can display the arm; a bare laptop cannot, and would just log
     resource errors. Rather than half-work, this config leaves the model out.
+
+    The gripper status panel IS included, and is not an exception to that: it
+    is a text marker in arm_gripper_base_link, so it needs /tf and nothing off
+    the filesystem. It draws on a bare laptop where the robot model cannot.
+    It stays empty until the arm stack is up and publishing that frame.
 """
 
 import os

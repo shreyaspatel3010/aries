@@ -822,6 +822,23 @@ def launch_setup(context, *args, **kwargs):
     # back here would be safe for st3215 and still wrong for v2, so it stays
     # out until the v2 tables are re-fitted.
 
+    # Live servo telemetry as an RViz text overlay above the gripper: jaw gap,
+    # joint, TCP, current, voltage, temperature, and whether the servo is near
+    # or past one of its own protection limits. Unlike the arc overlay above it
+    # carries no geometry of its own - it renders whatever the hardware
+    # component publishes on /diagnostics - so it is right on every gripper and
+    # says NO TELEMETRY on the ones that publish nothing.
+    #
+    # Gated on use_gui because it exists only to be looked at; /diagnostics is
+    # published by the hardware component either way.
+    gripper_status_overlay_node = Node(
+        condition=IfCondition(use_gui),
+        package="aries_moveit",
+        executable="gripper_status_overlay.py",
+        name="gripper_status_overlay",
+        output="screen",
+    )
+
     rviz_config = os.path.join(get_package_share_directory("aries_moveit"), "launch", "moveit.rviz")
     rviz_node = Node(
         condition=IfCondition(use_gui),
@@ -855,6 +872,7 @@ def launch_setup(context, *args, **kwargs):
         gamepad_node,
         move_group_joystick_node,
         arm_preset_pose_node,
+        gripper_status_overlay_node,
         rviz_node,
     ]
     if gripper_spawner_event:

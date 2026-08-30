@@ -267,6 +267,20 @@ def generate_launch_description():
     # gripper_type == 'new', which no longer exists. Re-fit the tables to v2
     # before adding the node back.
 
+    # Live servo telemetry as an RViz text overlay above the gripper: jaw gap,
+    # joint, TCP, current, voltage, temperature, and whether the servo is near
+    # or past one of its own protection limits. It renders whatever the
+    # hardware component publishes on /diagnostics and carries no geometry, so
+    # unlike the arc overlay above it needs no per-gripper tables; on a mock
+    # gripper it says NO TELEMETRY.
+    gripper_status_overlay_node = Node(
+        condition=IfCondition(LaunchConfiguration('use_gui')),
+        package="aries_moveit",
+        executable="gripper_status_overlay.py",
+        name="gripper_status_overlay",
+        output="screen",
+    )
+
     # micro-ROS agent: bridges Teensy USB serial to ROS 2 topics
     micro_ros_agent_node = Node(
         package='micro_ros_agent',
@@ -294,5 +308,6 @@ def generate_launch_description():
         delay_arm_spawner,
         delay_gripper_spawner,
         move_group_node,
+        gripper_status_overlay_node,
         rviz_node,
     ])
