@@ -465,6 +465,11 @@ def launch_setup(context, *args, **kwargs):
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
                 "serial_port": LaunchConfiguration("serial_port"),
+                # The SECOND Teensy. Forwarded explicitly, like everything else
+                # here -- this include passes a named dict, so an argument that
+                # is not in it does not reach the moveit launch reliably.
+                "use_science": LaunchConfiguration("use_science"),
+                "science_serial_port": LaunchConfiguration("science_serial_port"),
                 "servo_bus_port": LaunchConfiguration("servo_bus_port"),
                 "servo_bus_baud": LaunchConfiguration("servo_bus_baud"),
                 "servo_id": LaunchConfiguration("servo_id"),
@@ -527,6 +532,10 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
+        DeclareLaunchArgument("use_science", default_value="true",
+                              description="Start the micro-ROS agent for the science board (the second Teensy)."),
+        DeclareLaunchArgument("science_serial_port", default_value=device_str("science.serial_port"),
+                              description="USB-serial port for the science Teensy. Empty until science.serial_port is set in devices.yaml."),
         DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port")),
         DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud")),
         DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id")),

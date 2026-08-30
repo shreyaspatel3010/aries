@@ -206,6 +206,12 @@ packages:
 - `firmware/legacy/`: the retired `.ino` sketches, kept for reference and not
   flashed. `teensy_gripper.ino` was the gripper controller this replaced;
   `legacy_controller.ino` came before that.
+- `firmware/teensy_science_sys/`: **the science board**, a SECOND Teensy on its
+  own USB port with its own micro-ROS agent. Sensors only -- pH, soil moisture,
+  TDS/EC, ORP, soil temperature, BME688 and SCD41 CO2 -- published as one
+  Float32MultiArray that `aries_science` splits into named topics. The two
+  boards cannot be merged: four of the science pins are the drill's motors and
+  load cells. See `firmware/teensy_science_sys/PINOUT.md`.
 
 Building the firmware needs the PlatformIO IDE extension for VS Code — no
 manual library installs, no Arduino IDE, and no separate uploader. Everything

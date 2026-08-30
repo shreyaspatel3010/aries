@@ -35,6 +35,28 @@ gripper:
   # while nothing reaches the servo. `ros2 control list_hardware_components`
   # is the one that tells the truth.
 
+science:
+  # THE SECOND TEENSY. A separate board from the `gripper` one above, on its own
+  # USB port with its own micro-ROS agent -- see firmware/teensy_science_sys.
+  #
+  # THE TWO BOARDS CANNOT BE MERGED. Four of the science board's pins are
+  # something else entirely on the drill board (15 is the feed carriage's PWM,
+  # 18/19 the sample bin's direction pins, 17/16 the sand box load cell, 25 the
+  # auger's PWM), so this is two Teensys by necessity, not by preference.
+  #
+  # NOT YET FILLED IN. The path below is a PLACEHOLDER: no science board was
+  # connected when this entry was written, so its serial number is unknown.
+  # Until it is corrected, `use_science:=true` will not find a board and the
+  # launch skips the second agent with a warning rather than failing.
+  #
+  # To fill it in: plug in the science board ALONE (so there is no doubt which
+  # is which), run `ls /dev/serial/by-id/`, and paste the Teensyduino path here.
+  # Both Teensys enumerate with the same vendor and product ID and differ only
+  # by serial number, which is exactly why this must be a by-id path and never
+  # /dev/ttyACM*: ACM numbering is assignment order, so plugging the two boards
+  # in the other way round swaps them silently.
+  serial_port: ""
+
 rover:
   # SocketCAN interface to the six ODrives. The bitrate has to match the
   # /etc/sudoers.d/rover_can rule, which permits exactly one bring-up line.

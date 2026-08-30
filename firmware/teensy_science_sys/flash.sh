@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Wipe, rebuild and flash the drill / science firmware to the Teensy 4.1.
+# Wipe, rebuild and flash the science firmware to the Teensy 4.1.
 #
 #   ./flash.sh                WIPE the build cache, rebuild from scratch, flash
 #   ./flash.sh --fast         keep the cache, incremental build, flash
@@ -96,7 +96,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT_DIR="$PWD"
 DEVICES_YAML="$PROJECT_DIR/../../src/aries_common/config/devices.yaml"
-DEVICES_BLOCK="gripper"
+DEVICES_BLOCK="science"
 HEX="$PROJECT_DIR/.pio/build/teensy41/firmware.hex"
 MCU="TEENSY41"
 WRITE_ATTEMPTS=5
@@ -370,7 +370,7 @@ if [ -f "$DEVICES_YAML" ]; then
          A by-id path that does not exist is not a clean failure: the gripper
          silently resolves to mock_hardware, and the launch log, list_controllers
          and the checker all still read healthy while nothing reaches the servo.
-         Fix gripper.serial_port in devices.yaml, or pass serial_port:= to the
+         Fix science.serial_port in devices.yaml, or pass serial_port:= to the
          launch. 'ros2 control list_hardware_components' tells the truth."
   else
     info "matches devices.yaml"

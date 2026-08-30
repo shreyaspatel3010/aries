@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>aries_science</name>
+  <version>0.1.0</version>
+  <description>
+    The science module's sensors, published under names instead of array
+    indices. The board itself (firmware/teensy_science_sys, a SECOND Teensy
+    separate from the drill's) sends one Float32MultiArray of ten values on
+    /science/telemetry, in a fixed order that carries no names -- so this
+    package holds the node that splits it into named topics, and the field
+    table that defines what that order is.
+  </description>
+
+  <maintainer email="shreyaspatel517@gmail.com">shreyas</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

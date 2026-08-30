@@ -170,6 +170,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument("use_stacklight", default_value="true"),
         DeclareLaunchArgument("use_load_cells", default_value="true"),
+        DeclareLaunchArgument("use_science", default_value="true"),
         DeclareLaunchArgument("use_drill_driver", default_value="true"),
         DeclareLaunchArgument("load_cell_source", default_value="auto",
                               choices=["auto", "microros", "mock"]),
@@ -203,6 +204,10 @@ def generate_launch_description():
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
                 "gripper_type": LaunchConfiguration("gripper_type"),
                 "finger_type": LaunchConfiguration("finger_type"),
+                # One flag gates both halves of the science module: the agent,
+                # which is started down in aries_moveit's hardware launch, and
+                # the host node included below.
+                "use_science": LaunchConfiguration("use_science"),
                 "hardware_protocol": LaunchConfiguration("hardware_protocol"),
                 "arm_hardware_protocol": LaunchConfiguration("arm_hardware_protocol"),
                 "gripper_hardware_protocol": LaunchConfiguration("gripper_hardware_protocol"),
@@ -323,6 +328,28 @@ def generate_launch_description():
             launch_arguments={
                 "load_cell_source": LaunchConfiguration("load_cell_source"),
             }.items(),
+        ),
+
+        # THE SCIENCE MODULE'S HOST HALF (aries_science). The sensors live on a
+        # SECOND Teensy -- firmware/teensy_science_sys, its own USB port, its
+        # own micro-ROS agent, started by aries_hardware.launch.py alongside
+        # the drill board's. This starts only the node that splits the board's
+        # ten-value telemetry array into named topics.
+        #
+        # It is started whether or not the board is present, deliberately: with
+        # no board it publishes "no telemetry yet" on /science/status once a
+        # second, which is how an operator tells a missing board from a missing
+        # node. The same use_science argument gates the agent over in
+        # aries_hardware.launch.py, so turning it off here turns off both.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_science"),
+                    "launch",
+                    "science.launch.py",
+                ])
+            ),
+            condition=IfCondition(LaunchConfiguration("use_science")),
         ),
 
         # Separate checker.

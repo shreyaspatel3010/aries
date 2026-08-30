@@ -54,26 +54,100 @@ TEENSY_BY_ID_GLOB = "/dev/serial/by-id/*Teensy*-if00"
 
 
 def resolve_gripper_serial(configured: str, detect_timeout: float):
-    """Find the Teensy to talk to. Returns (port_or_None, note_for_the_log).
+    """Find the DRILL Teensy to talk to. Returns (port_or_None, note_for_log).
 
     Waits up to detect_timeout for the device: a Teensy reset re-enumerates over
     USB, which takes 1-2 s, so relaunching straight after a reset loses the race.
     Observed one probe at 17:10:58 with the by-id link appearing at 17:10:59.2 --
     a one-shot check ran the whole session on a simulated gripper.
+
+    THE SINGLE-TEENSY FALLBACK IS NOW CONDITIONAL, and that changed when the
+    science board arrived. This used to take found[0] whenever the configured
+    path was missing, on the reasoning that if exactly one Teensy is plugged in
+    it must be the one meant. That reasoning is sound and its premise stopped
+    being true: there are two boards now, they enumerate with the same vendor
+    and product ID, and they differ only by serial number -- so found[0] is
+    whichever serial sorts first, which is arbitrary.
+
+    Taking it anyway would point the gripper's hardware interface, the drill
+    driver and the stack light at the SCIENCE board, which answers none of
+    those topics. Every one of them would then report a connected-but-silent
+    link, which is the hardest failure on this rover to read.
+
+    So: fall back only when there is exactly one candidate AND it is not the
+    board configured for something else. With two present and neither matching,
+    refuse and say why.
     """
+    other_ports = _other_configured_teensy_ports(exclude="gripper")
+
     deadline = time.monotonic() + detect_timeout
     while True:
         if Path(configured).exists():
             return configured, ""
+
         found = sorted(glob.glob(TEENSY_BY_ID_GLOB))
-        if found:
-            note = f"  -- {configured} is absent, using the Teensy that IS present: {found[0]}"
-            if len(found) > 1:
-                note += f" ({len(found)} Teensys connected: {', '.join(found)})"
-            return found[0], note
+        # Never fall back onto a port another board explicitly claims.
+        candidates = [p for p in found if p not in other_ports]
+
+        if len(candidates) == 1:
+            note = (f"  -- {configured} is absent, using the only unclaimed "
+                    f"Teensy present: {candidates[0]}")
+            return candidates[0], note
+
+        if len(candidates) > 1:
+            return None, (
+                f"  -- {configured} is absent and {len(candidates)} unclaimed "
+                f"Teensys are connected ({', '.join(candidates)}); REFUSING TO "
+                f"GUESS. They differ only by serial number, so picking one "
+                f"risks driving the gripper against the science board. Fix "
+                f"gripper.serial_port in devices.yaml.")
+
         if time.monotonic() >= deadline:
             return None, ""
         time.sleep(0.1)
+
+
+def _other_configured_teensy_ports(exclude: str):
+    """by-id paths that devices.yaml assigns to a Teensy OTHER than `exclude`.
+
+    Used so that a board looking for itself never falls back onto a port
+    another board has claimed. Returns a set; an unset or empty entry
+    contributes nothing.
+    """
+    ports = set()
+    for key in ("gripper.serial_port", "science.serial_port"):
+        if key.split(".")[0] == exclude:
+            continue
+        try:
+            value = device_str(key)
+        except Exception:
+            continue
+        if value:
+            ports.add(value)
+    return ports
+
+
+def resolve_science_serial(configured: str):
+    """Find the SCIENCE Teensy. Returns (port_or_None, note_for_the_log).
+
+    NO FALLBACK AND NO WAIT, deliberately, and both differ from the drill board
+    above. The drill board carries the gripper, the stack light and the drill
+    itself, so it is worth waiting for and worth a careful guess; the science
+    board carries sensors that are read on demand, so a missing one costs
+    telemetry and nothing else.
+
+    More to the point, a wrong guess here is worse than no board: pointing the
+    science agent at the DRILL board gives it a session, an entity set, and no
+    /science/telemetry ever -- while stealing nothing, because both agents can
+    open different ports but not the same one. Silence is the honest outcome.
+    """
+    if not configured:
+        return None, ("  -- science.serial_port is not set in devices.yaml. "
+                      "Plug the science board in ALONE, run "
+                      "`ls /dev/serial/by-id/`, and paste the path there.")
+    if Path(configured).exists():
+        return configured, ""
+    return None, f"  -- {configured} is absent"
 
 
 def resolve_servo_bus(configured: str):
@@ -363,6 +437,15 @@ def launch_setup(context, *args, **kwargs):
     if teensy_port:
         serial_port = teensy_port
 
+    # THE SECOND BOARD. Sensors only; see firmware/teensy_science_sys. Resolved
+    # here so its absence is reported in the same block as everything else's
+    # rather than as a process that quietly never starts.
+    use_science = LaunchConfiguration("use_science").perform(context).lower() == "true"
+    science_port, science_note = (None, "")
+    if use_science:
+        science_port, science_note = resolve_science_serial(
+            LaunchConfiguration("science_serial_port").perform(context))
+
     if gripper_type == "st3215":
         found_port, serial_note = resolve_servo_bus(servo_bus_port)
         if gripper_hardware_protocol in ("auto", "rebel"):
@@ -391,6 +474,19 @@ def launch_setup(context, *args, **kwargs):
                f"go over this link{teensy_note}" if teensy_port
                else "  -- no agent: the DRILL, STACK LIGHT and LOAD CELLS will not "
                     "respond. This is independent of which gripper is fitted.")
+    )
+
+    # The science board gets its own line, and gets one whether or not it was
+    # found. A second board that silently is not there looks identical to a
+    # second board nobody has configured, and both look identical to a launch
+    # that does not know about it at all.
+    science_note_log = LogInfo(
+        msg=f"[science] {science_port if science_port else 'NOT STARTED'}"
+            + (f" -- second micro-ROS agent starting; /science/telemetry goes "
+               f"over this link{science_note}" if science_port
+               else f"  -- no science telemetry.{science_note}"
+                    if use_science
+                    else "  -- disabled with use_science:=false")
     )
 
     urdf_file = PathJoinSubstitution([FindPackageShare("aries"), "urdf", "my_robot.urdf.xacro"])
@@ -587,6 +683,39 @@ def launch_setup(context, *args, **kwargs):
             # re-establish the session.
             respawn=True,
             respawn_delay=2.0,
+        )
+
+    # THE SECOND MICRO-ROS AGENT, for the science board.
+    #
+    # A SEPARATE PROCESS ON A SEPARATE PORT, not a second client on the drill's
+    # agent -- an XRCE agent owns exactly one serial device, so two boards mean
+    # two agents. They share the DDS profile below, which is correct: both need
+    # pinning to the same interface as the rest of the stack, and the file is
+    # per-machine rather than per-board.
+    #
+    # NO respawn=True, UNLIKE THE DRILL'S. That agent is the only path between
+    # /gripper/cmd and a servo, so it is worth restarting aggressively; this one
+    # carries sensors that are read on demand. A science agent that dies costs
+    # telemetry until the next launch, which is a thing an operator can see on
+    # /science/status -- whereas a respawn loop against a board that is not
+    # there is noise in the log of a rover that has real problems to report.
+    science_agent = None
+    if science_port:
+        _sci_fastdds_xml, _ = write_agent_dds_config(require_link=False)
+        science_agent = ExecuteProcess(
+            cmd=[
+                "ros2", "run", "micro_ros_agent", "micro_ros_agent",
+                # 115200 for the same reason as the drill board: the largest
+                # valid speed_t is B4000000, anything above it is rejected by
+                # cfsetospeed with EINVAL which the agent does not check, and
+                # this is USB CDC where the device ignores baud anyway.
+                "serial", "--dev", science_port, "-b", "115200",
+            ],
+            additional_env={
+                "FASTRTPS_DEFAULT_PROFILES_FILE": str(_sci_fastdds_xml),
+                "FASTDDS_DEFAULT_PROFILES_FILE": str(_sci_fastdds_xml),
+            },
+            output="screen",
         )
 
     gripper_controller_spawner = None
@@ -859,6 +988,7 @@ def launch_setup(context, *args, **kwargs):
     nodes = [
         gripper_detect_note,
         teensy_note_log,
+        science_note_log,
         ros2_control_node,
         robot_state_pub,
         wheel_joint_publisher_node,
@@ -881,6 +1011,8 @@ def launch_setup(context, *args, **kwargs):
         nodes.append(hand_guiding_node)
     if micro_ros_agent:
         nodes.append(micro_ros_agent)
+    if science_agent:
+        nodes.append(science_agent)
     return nodes
 
 
@@ -909,6 +1041,8 @@ def generate_launch_description():
             DeclareLaunchArgument("joy_dev", default_value=device_str("joystick.device"), description="Joystick device used by joy_node and the layout normalizer"),
             DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"], description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps"),
             DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port"), description="USB-serial port for the Teensy gripper controller"),
+            DeclareLaunchArgument("use_science", default_value="true", description="Start the micro-ROS agent for the SECOND Teensy, the science board. Harmless when no board is fitted: the agent simply is not started and a note says why."),
+            DeclareLaunchArgument("science_serial_port", default_value=device_str("science.serial_port"), description="USB-serial port for the Teensy science board. Empty until somebody fills in science.serial_port in devices.yaml."),
             DeclareLaunchArgument("servo_bus_port", default_value=device_str("servo_bus.port"), description="Serial port of the ST3215 bus-servo adapter (gripper_type:=st3215 only)"),
             DeclareLaunchArgument("servo_bus_baud", default_value=device_str("servo_bus.baud"), description="Baud rate for the ST3215 bus-servo adapter"),
             DeclareLaunchArgument("servo_id", default_value=device_str("servo_bus.gripper_servo_id"), description="Bus ID of the ST3215 driving the secondary gripper"),

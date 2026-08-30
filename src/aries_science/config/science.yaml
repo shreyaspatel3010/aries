@@ -1,0 +1,76 @@
+# The science module's field table.
+#
+# THIS FILE IS THE NAMES FOR AN ARRAY THAT HAS NONE. The board sends
+# /science/telemetry as a std_msgs/Float32MultiArray of ten floats and nothing
+# else -- no labels, no units, no per-field validity. The ONLY thing tying
+# index 3 to "ORP in millivolts" is that this list is in the same order as
+# TelemetryIndex in firmware/teensy_science_sys/src/main.cpp.
+#
+# SO THE ORDER IS THE WIRE FORMAT. Swap two entries here and the rover reports
+# the pH probe's reading as soil moisture; both numbers stay entirely plausible
+# and nothing anywhere says a word. test_science_telemetry.py reads the
+# firmware's enum directly and fails if the two ever drift apart, which is the
+# only reason that agreement is safe to rely on.
+#
+# `cmd` is the sensor's id in the board's command protocol: the operator sends
+# `id * 10 + 1` to initialise it and `id * 10 + 2` to read it. It is here so
+# that a human reading this file can work out which command to send, and so the
+# node can offer read-by-name. See firmware/teensy_science_sys/protocols.md.
+#
+# THE FOUR BME688 FIELDS SHARE ONE COMMAND (id 5). Reading `52` fills indices
+# 5, 6, 7 and 8 in one go, which is why humidity, pressure and gas have no
+# command of their own.
+
+science_telemetry:
+  ros__parameters:
+
+    telemetry_topic: "/science/telemetry"
+    sensor_cmd_topic: "/science/sensor_cmd"
+
+    # Republished names are prefixed with this.
+    ns: "/science"
+
+    # How long a telemetry message stays believable. The board publishes at
+    # 1 Hz unconditionally while it is connected, so silence for this long
+    # means the board or its agent is gone -- NOT that the sensors are idle.
+    # Three missed publishes.
+    timeout_s: 3.0
+
+    # Status is republished at this rate whether or not telemetry is arriving,
+    # so that "no board" is a thing the operator can see rather than an absence.
+    status_rate_hz: 1.0
+
+    # THE FIELD TABLE. Position in `fields` IS the array index.
+    #
+    # Two levels, matching aries_load_cells' `cells` / `cell.<name>.*` shape:
+    # the list fixes the order, and the per-field block hangs off the name. A
+    # flat list of dicts would read better here and is NOT a valid ROS
+    # parameter type -- parameters are scalars and arrays of scalars, so a
+    # `- {name: ..., unit: ...}` list silently fails to load.
+    fields: ["ph", "soil_moisture", "tds", "orp", "soil_temp",
+             "air_temp", "humidity", "pressure", "gas_resistance", "co2"]
+
+    # `unit` is carried in the status message only; nothing here converts
+    # anything. `cmd` is the sensor id for the board's command protocol --
+    # send id*10+1 to initialise, id*10+2 to read -- or -1 for a field that is
+    # filled as a side effect of another sensor's read.
+    field:
+      ph:             {unit: "pH",   cmd: 0}
+      soil_moisture:  {unit: "%",    cmd: 1}
+      tds:            {unit: "ppm",  cmd: 2}
+      orp:            {unit: "mV",   cmd: 3}
+      soil_temp:      {unit: "degC", cmd: 4}
+      air_temp:       {unit: "degC", cmd: 5}
+      humidity:       {unit: "%RH",  cmd: -1}
+      pressure:       {unit: "hPa",  cmd: -1}
+      gas_resistance: {unit: "ohm",  cmd: -1}
+      co2:            {unit: "ppm",  cmd: 9}
+
+    # PUBLISH NaN THROUGH, rather than dropping the field.
+    #
+    # NaN is the board's way of saying "never read, or the read failed", and it
+    # is a real answer to the question the topic asks. Withholding it instead
+    # would make a sensor that has never been read indistinguishable from a
+    # board that is not there -- which is the one distinction this node exists
+    # to preserve. Set false only if a downstream consumer cannot handle NaN.
+    publish_nan: true
