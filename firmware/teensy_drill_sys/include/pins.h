@@ -102,9 +102,8 @@
 
 // --- Sample-bin linear actuator ---------------------------------------------
 // The bin rides its rails between q = 0 (parked forward of the mast) and
-// q = -0.1304 (back under the auger); see aries/urdf/drill.xacro. Which end it
-// is at matters for reading the bin's own load cell, and the bin has no
-// position sensor -- see PINOUT.md.
+// q = -0.1304 (back under the auger); see aries/urdf/drill.xacro and the
+// aries_load_cells README, which depends on knowing which end it is at.
 //
 // MOVED TO 22 / 19 / 18 ON 2026-08-29, from 28 / 30 / 29 -- the three pins the
 // auger vacated in the same change. 22 is PWM-capable (FlexPWM4_0_A). AS WITH
@@ -119,6 +118,38 @@
 #define BIN_PWM 22
 #define BIN_INA 19
 #define BIN_INB 18
+
+// --- Peristaltic pump --------------------------------------------------------
+// New from the embedded team, 2026-08-30. A DC motor on an H-bridge, driven in
+// millilitres: `pump/state` picks draw / release / home and the firmware runs
+// the motor for however long that volume takes at a measured flow rate. There
+// is no flow sensor, so a commanded volume is a timer, not a measurement.
+//
+// 28 / 29 / 30, VERBATIM FROM UPSTREAM, and they drop straight in.
+//
+// These three used to be the SAMPLE BIN's, and upstream's pin block still has
+// the bin on them too -- `LINACT_PWM 28 / LINACT_INA 30 / LINACT_INB 29`,
+// the same three pins with the direction pair swapped, with both objects
+// constructed and both initialised in their setup(). On their board the bin and
+// the pump share one H-bridge and drive it in opposite directions. It is only
+// harmless here because the bin MOVED to 22 / 19 / 18 on 2026-08-29, which
+// vacated exactly this group.
+//
+// The static_assert at the bottom of this file is what makes that safe to rely
+// on rather than hope about: put the bin back on 28 and the build fails instead
+// of the two mechanisms fighting over a bridge at runtime.
+//
+// 28 is PWM-capable on a Teensy 4.1, which Driver::init_driver() needs -- it
+// calls analogWriteFrequency() on the PWM pin. (The lid servo on 38 does not
+// need that, because the Servo library bit-bangs; a motor driver does.)
+//
+// REMOVED FROM kScanPins in main.cpp, all three. They went into the diagnostic
+// scan when the bin vacated them, and a pin that is both scanned and driven
+// gets configured INPUT_PULLUP by setup() and then taken back as an OUTPUT --
+// with the scan reporting the driver's own switching as a phantom switch.
+#define PUMP_PWM 28
+#define PUMP_INA 29
+#define PUMP_INB 30
 
 // --- Limit switches ---------------------------------------------------------
 // Wired to GND through the switch and read INPUT_PULLUP, so CLOSED reads LOW
@@ -156,7 +187,7 @@
 // across two axes; the firmware has two instances (LIMIT_SWITCH_INSTANCES in
 // drill.h, which caps the ISR router table). Wiring the bin's pair needs that
 // constant raised to 4 and two more routers added. Until then the bin is
-// dead-reckoned from the commanded rate, which drifts from the first slip.
+// dead-reckoned, exactly as the aries_load_cells README describes.
 #define LIMIT_SWITCH1 7  // feed carriage, BOTTOM of travel
 #define LIMIT_SWITCH2 6  // feed carriage, TOP of travel
 
@@ -245,45 +276,27 @@
 // four. Anything written against a shared clock (including an earlier draft of
 // this file) is wrong.
 //
-// CALIBRATED WEIGHTS, NOT RAW COUNTS, SINCE 2026-08-29 -- and this reverses the
-// decision that used to be recorded here. The board published raw converter
-// counts on one `load_cells/raw` array and a host package (aries_load_cells)
-// scaled them from YAML, so that a recalibration was an edit and a relaunch
-// rather than a reflash with the rover open. That package has been REMOVED. The
-// scale factors below are compiled in, the board publishes weights on three
-// separate topics, and taring is a message to the board rather than a ROS
-// service. The old argument still stands and is now simply a cost that has been
-// accepted: changing a number here means a reflash.
+// THE ORDER BELOW IS THE WIRE FORMAT. aries_load_cells expects one topic,
+// `load_cells/raw` (std_msgs/Int32MultiArray), three elements, in the order of
+// `cells` in aries_load_cells/config/load_cells.yaml:
+//     ["sand_box", "stone_box", "drill_container"]
+// The firmware sends no names to check itself against, so swapping two entries
+// makes the sand box report the stone and nothing anywhere notices.
 //
-// SCALE FACTOR IS COUNTS PER UNIT OF WEIGHT, the same sense as
-// HX711::set_scale() -- weight = (counts - zero) / scale. These three values
-// came with the embedded team's firmware; they have NOT been re-derived here,
-// and there is no note anywhere of which unit they are in. Treat the numbers on
-// the wire as provisional until one known mass has been put in each box.
+// RAW COUNTS, not kilograms. Scale and offset live in that package's YAML so a
+// recalibration is an edit and a relaunch, not a reflash with the rover open.
 //
-// TO RECALIBRATE a cell:
-//   1. Empty the box, then  ros2 topic pub --once /<cell>/tare std_msgs/UInt8 "data: 1"
-//   2. Put a KNOWN mass in and read /<cell>/weight
-//   3. new_scale = old_scale * (reading / true_mass)
-//   4. Edit the value here and reflash.
-//
-// THE SIGN IS WHICH WAY THE CELL IS BOLTED IN, not an error. The drill
-// container's factor is negative because that cell reads the opposite way for a
-// positive load; leaving it positive makes a filling bin report a lightening
-// one.
+// DRIVEN. main.cpp constructs one LoadCell per amplifier, in the order above,
+// and publishes their counts on load_cells/raw at 10 Hz. A cell with no
+// amplifier on its pins never blocks the board and never reports zero -- zero
+// is what an empty box reads -- it reports the converter's negative rail, which
+// the host already knows how to call a fault. See PINOUT.md.
 #define HX711_SAND_BOX_DT 17          // front-left deck box, the sand sample
 #define HX711_SAND_BOX_SCK 16
-#define HX711_SAND_BOX_SCALE 20.0f
-
-// `stone_box` in this workspace, `rock_box` in the embedded team's firmware and
-// on the topic name. Same box.
 #define HX711_STONE_BOX_DT 34         // the box behind it, also on the left
 #define HX711_STONE_BOX_SCK 33
-#define HX711_STONE_BOX_SCALE 21.0f
-
 #define HX711_DRILL_CONTAINER_DT 32   // the drill's sample bin
 #define HX711_DRILL_CONTAINER_SCK 31
-#define HX711_DRILL_CONTAINER_SCALE -30.0f
 
 // --- COMPILE-TIME COLLISION CHECK -------------------------------------------
 //
@@ -305,6 +318,7 @@ constexpr unsigned char kMap[] = {
     AUGER_PWM, AUGER_INA, AUGER_INB,
     FEED_PWM, FEED_INA, FEED_INB,
     BIN_PWM, BIN_INA, BIN_INB,
+    PUMP_PWM, PUMP_INA, PUMP_INB,
     LIMIT_SWITCH1, LIMIT_SWITCH2,
     STALIG_G, STALIG_Y, STALIG_R,
     GRIPPER_SERVO, LID_SERVO_SAND_BOX,

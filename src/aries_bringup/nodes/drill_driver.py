@@ -16,8 +16,8 @@ The board speaks duty cycle and millimetres:
     linact/cext        std_msgs/Float32   signed millimetres, the bin
 
 This node is the map between them, and it is a separate node rather than a
-change to either side because its numbers are calibration, not code:
-`rad_per_s_at_full_pwm` and friends are properties of a
+change to either side for the reason aries_load_cells gives for keeping its
+calibration in YAML: `rad_per_s_at_full_pwm` and friends are properties of a
 motor, a gearbox and a battery state of charge, found by running the mechanism
 and watching it. In this file they are an edit and a relaunch - the workspace is
 --symlink-install, so not even a rebuild. Compiled into the firmware, every one

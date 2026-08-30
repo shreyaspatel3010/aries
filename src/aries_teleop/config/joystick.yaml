@@ -20,14 +20,15 @@
 #   Hold LT + D-pad      = drill feed (up/down) and sample bin (left/right)
 #   Hold LT + left stick = auger rotation, either direction
 #   Hold LT + right stick= sand box lid, either direction
+#   Press LT + X         = pump, one dose per press (draw)
 #                          (LB blocks the drill: LB + LT reaches nothing)
 #   Y alone      = sound
 #
 # The drill is on LT, not LB, because LB already means "rover drive" and its
 # left stick is the drive command - LB + left stick would spin the auger and
 # drive the rover at once. LT's only other binding is with the FACE buttons
-# (arm presets), so the d-pad and both sticks are free under it. All four are
-# now taken: feed, bin, auger, lid.
+# (arm presets), so the d-pad, both sticks and X are free under it. All five are
+# now taken: feed, bin, auger, lid, pump.
 #
 # Y is shared three ways, disambiguated by which shoulder button is held: bare
 # Y is the sound, LB+Y is the rover's ODrive recovery, RB+Y is the arm's hand
@@ -316,6 +317,24 @@ drill_joystick:
     # Safe to flip here, unlike invert_motor: the lid has no limit switch and
     # nothing downstream gates on its sign.
     invert_lid: false
+
+    # THE PUMP -- LT + X (button 2), the last free control under LT.
+    #
+    # ONE MESSAGE PER PRESS, not a stream. The pump is a one-shot: the firmware
+    # runs it for however long the commanded volume takes, off an IntervalTimer.
+    # Republishing at 30 Hz the way the four rate axes do would re-arm that
+    # timer on every message, so the pump would run for as long as the button
+    # was held and then one full dose more.
+    #
+    # pump_state_on_press is the value sent, from the firmware's pump/state
+    # contract: 1 release, 2 draw, 3/4 home, 5 home-then-draw, 0 stop. One
+    # button carries one of them; the rest are a `ros2 topic pub --once` away.
+    #
+    # A dose in progress is NOT cancelled by releasing LT -- stopping half way
+    # leaves an unknown volume moved. Send "data: 0" to stop one deliberately.
+    pump_cmd_topic: "/pump/state"
+    pump_button: 2
+    pump_state_on_press: 2
 
     # Zeros keep going out for this long after LT is released, so a single
     # dropped message cannot leave a motor running.

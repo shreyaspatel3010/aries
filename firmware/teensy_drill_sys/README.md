@@ -9,11 +9,12 @@ used to the Arduino IDE and `.ino` files, see [Why it looks
 different](#why-it-looks-different) below.
 
 - **Pin map and wiring:** [`PINOUT.md`](PINOUT.md) — read this before powering
-  the drill. Six pins are still proposals.
+  the drill. Six pins are still proposals, and the pump's three are upstream's
+  numbers rather than anything checked against this loom.
 - **Host side:** `aries_bringup` (`drill_driver.py`, `stacklight.py`),
-  `aries_moveit/teensy_gripper_hardware` (the gripper), `aries_teleop`
-  (`drill_joystick.py`, which drives the feed, bin, auger and lid from the pad).
-  The load cells have no host node any more — the board scales them itself.
+  `aries_moveit/teensy_gripper_hardware` (the gripper), `aries_load_cells`
+  (scales the counts), `aries_teleop` (`drill_joystick.py`, which drives the
+  feed, bin, auger, lid and pump from the pad).
 
 ---
 
@@ -33,18 +34,20 @@ resolves to one.
 | `linact/state` | `UInt8` | in | reliable | 1 extend, 2 retract, 3/4 home, 0 stop |
 | `linact/cext` | `Float32` | in | reliable | Bin travel, signed mm |
 | `sand_box/lid/cmd` | `Float32` | in | reliable | Lid **speed**, −1…1, 0 = stop |
-| `sand_box/tare` | `UInt8` | in | reliable | 1 zero the empty box, 2 zero the lid |
-| `rock_box/tare` | `UInt8` | in | reliable | as above (stone box) |
-| `drill_cont/tare` | `UInt8` | in | reliable | as above (drill bin) |
-| `sand_box/weight` | `Float32` | out | reliable | Net weight, 10 Hz, `NaN` = no reading |
-| `rock_box/weight` | `Float32` | out | reliable | as above (stone box) |
-| `drill_cont/weight` | `Float32` | out | reliable | as above (drill bin) |
+| `pump/state` | `UInt8` | in | reliable | 1 release, 2 draw, 3/4 home, 5 home-then-draw, 0 stop |
+| `load_cells/raw` | `Int32MultiArray` | out | reliable | Three RAW converter counts, 10 Hz, in the order sand box / stone box / bin |
 | `drill/pin_scan` | `UInt64` | out | reliable | Diagnostic: bit N set = pin N reads LOW |
 
-Ten subscriptions and six publishers, against a `colcon.meta` that allows twelve
-and eight. **Check that file before adding an eleventh subscription** — and
-remember that editing it does nothing until the cached micro-ROS library is
-rebuilt, which `./flash.sh` does by default.
+Eight subscriptions and four publishers, against a `colcon.meta` that allows ten
+and five. **Check that file before adding a ninth subscription** — and remember
+that editing it does nothing until the cached micro-ROS library is rebuilt,
+which `./flash.sh` does by default.
+
+**The load cells send counts, not kilograms.** Scale, offset and tare live in
+`aries_load_cells`' YAML on the host, so a recalibration is an edit and a
+relaunch rather than a reflash with the rover open. A cell that is not answering
+sends the converter's negative rail (`-8388608`), never zero — zero is what an
+empty box reads.
 
 ### Three of these names are the workspace's, not this firmware's
 
@@ -167,12 +170,13 @@ speed unset. The link is USB CDC, so the device ignores baud anyway.
 ### Two more things that will bite
 
 **`colcon.meta` is load-bearing.** `RMW_UXRCE_MAX_SUBSCRIPTIONS` defaults to
-**5** in micro_ros_platformio, and this firmware creates **ten**;
-`RMW_UXRCE_MAX_PUBLISHERS` defaults to **4** and it creates **six**. Without the
-raised limits the over-the-line `rclc_*_init` fails, `create_entities()` bails,
-and the board sits in `WAITING_AGENT` forever while USB stays enumerated —
-indistinguishable from an unflashed Teensy. Editing it does nothing until the
-cached library is rebuilt, which a default `./flash.sh` does.
+**5** in micro_ros_platformio, and this firmware creates **eight**;
+`RMW_UXRCE_MAX_PUBLISHERS` defaults to **4** and it creates **four**, raised to
+5 so the next one added does not fail at the ceiling. Without the raised limits
+the over-the-line `rclc_*_init` fails, `create_entities()` bails, and the board
+sits in `WAITING_AGENT` forever while USB stays enumerated — indistinguishable
+from an unflashed Teensy. Editing it does nothing until the cached library is
+rebuilt, which a default `./flash.sh` does.
 
 **Nothing may write to `Serial`.** It is the micro-ROS transport. The only
 status channel this board has is the LED on pin 13:
@@ -239,13 +243,17 @@ as the rest of the firmware, so that whole class of problem is gone.
   switches across two axes; `LIMIT_SWITCH_INSTANCES` is 2 and sizes the ISR
   router table. Until they exist the bin's position is dead-reckoned from the
   commanded rate, and drifts from the first slip.
-- **The three load-cell scale factors have not been verified.** 20.0 / 21.0 /
-  −30.0 came with the embedded team's firmware, with no note of what unit they
-  produce — so the numbers on `*/weight` are provisional until one known mass
-  has been put in each box. `PINOUT.md` has the procedure. The negative one is
-  mounting, not an error.
-- **Every tare is lost on reset.** They live in RAM. A board that reboots
-  mid-task comes back zeroed to whatever was sitting on the cells at boot.
+- **The load cells are not calibrated.** `aries_load_cells/config/load_cells.yaml`
+  now carries 20 / 21 / 30 counts per kg, taken from the embedded team's own
+  firmware constants — but that is roughly five orders of magnitude below what
+  an HX711 at gain 128 on a cell this size should give, so they were either
+  derived against a different setup or never finished. The node says so at
+  startup. One known mass in each box settles it, and fixing it is a YAML edit,
+  not a reflash.
+- **The pump's flow rate is the embedded team's, not ours.** 6.755 mL/s,
+  averaged from three timed volumes. Every dose is that number times a duration
+  — there is no flow sensor — so it drifts with head height, tube wear and
+  battery state. Nothing here has been checked against a measuring cylinder.
 - **The drill driver's calibration is not measured.** `drill_driver.yaml` maps
   rates to duty cycle with placeholders taken from `joystick.yaml`. The drill
   moves; the numbers on the topics are not yet the rates the mechanism is doing.

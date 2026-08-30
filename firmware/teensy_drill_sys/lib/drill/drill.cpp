@@ -291,6 +291,138 @@ int SlewServo::normalized_to_us(float t)
   return (int)(m_min_us + t * (m_max_us - m_min_us));
 }
 
+// Pump ==============================================================================================================
+Pump *Pump::m_instance_pump = nullptr;
+
+Pump::Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2)
+    : Driver(pin_pwm, pin_in1, pin_in2)
+{
+  m_instance_pump = this;
+};
+
+void Pump::init_motor()
+{
+  init_driver();
+}
+
+// FIX 1 of 3. Upstream computed `pwm_dur = req_vol / flowrate` and handed it
+// straight to IntervalTimer::begin(). A req_vol of 0 -- which is what an
+// unset field or a cleared command carries -- makes that 0 us, an interval the
+// timer cannot represent, so it NEVER FIRES. The pump was switched on one line
+// earlier and had nothing left to switch it off: a zero-volume dose ran the
+// pump until somebody cut the power.
+//
+// This is the identical bug LinearActuator had with a 0 mm extension, and it is
+// solved the same way -- return 0 for anything that must not start the motor,
+// and let start_move() refuse to start on a 0.
+uint32_t Pump::move_duration_us(float req_vol) const
+{
+  if (!(req_vol > 0.0f))
+    return 0; // also catches NaN, which compares false against everything
+
+  if (req_vol > m_oem_max_vol)
+    req_vol = m_oem_max_vol;
+
+  return (uint32_t)((req_vol / m_oem_max_flowrate) * 1000.0f * 1000.0f);
+}
+
+void Pump::start_move(int pwm_flowrate, bool dir, uint32_t duration_us)
+{
+  if (duration_us == 0)
+  {
+    // Do NOT switch the pump on. See move_duration_us().
+    stop_motor();
+    return;
+  }
+
+  drive(pwm_flowrate, dir);
+  m_timer.begin(isr_timer_router, duration_us);
+}
+
+// dir=true pushes liquid out, dir=false pulls it in. Named rather than
+// repeated, because `drive(x, false)` three lines apart in two functions is
+// exactly how a pump ends up running the wrong way.
+void Pump::release()
+{
+  start_move(m_pwm_flowrate, true, move_duration_us(m_req_vol));
+}
+
+void Pump::draw()
+{
+  start_move(m_pwm_flowrate, false, move_duration_us(m_req_vol));
+}
+
+void Pump::release(int pwm_flowrate, float req_vol)
+{
+  start_move(pwm_flowrate, true, move_duration_us(req_vol));
+}
+
+void Pump::draw(int pwm_flowrate, float req_vol)
+{
+  start_move(pwm_flowrate, false, move_duration_us(req_vol));
+}
+
+// FIX 3 of 3. Upstream opened this with `m_home_dur = 30;` -- an assignment to
+// a member, not a local -- which discarded the 14.8 s computed in the
+// initialiser and left 30 s in place for every later call. The computed value
+// therefore never ran even once. m_home_dur is a constant now, so there is
+// nothing left to overwrite; see the note on it in drill.h.
+void Pump::home(bool dir)
+{
+  start_move(m_pwm_flowrate, dir,
+             (uint32_t)(m_home_dur * 1000.0f * 1000.0f));
+}
+
+// FIX 2 of 3. Upstream's state 5 was:
+//
+//     pump.home(false);
+//     pump.draw();
+//
+// Two calls, each ending in m_timer.begin(). The second begin() re-arms the
+// SAME IntervalTimer, so it replaced the first before a microsecond of the home
+// had elapsed: the home was dead code and only the draw ever ran. Nothing
+// reported it, because both halves drive the pump in the same direction -- the
+// mechanism just ran for the shorter time.
+//
+// One move, not two chained timers. home(false) and draw() both drive dir=false
+// at the same duty cycle, so running for the sum of their durations is exactly
+// the intended sequence. Chaining would mean calling IntervalTimer::begin()
+// from inside that timer's own ISR, which is a great deal more fragile than
+// adding two numbers.
+void Pump::home_then_draw()
+{
+  const uint32_t home_us = (uint32_t)(m_home_dur * 1000.0f * 1000.0f);
+  const uint32_t draw_us = move_duration_us(m_req_vol);
+
+  if (draw_us == 0)
+  {
+    // A zero dose means there is no draw to append; run the home alone rather
+    // than treating the whole command as a no-op.
+    start_move(m_pwm_flowrate, false, home_us);
+    return;
+  }
+
+  start_move(m_pwm_flowrate, false, home_us + draw_us);
+}
+
+void Pump::stop_motor()
+{
+  m_timer.end();
+  stop_driver();
+}
+
+void Pump::isr_timer_router()
+{
+  if (m_instance_pump != nullptr)
+    m_instance_pump->handle_isr();
+}
+
+void Pump::handle_isr()
+{
+  m_timer.end();
+  stop_driver();
+}
+
 // LidServo ==========================================================================================================
 LidServo *LidServo::m_instance_lid = nullptr;
 
@@ -481,25 +613,13 @@ bool LimitSwitch::is_at_stop() const
   return digitalRead(m_pin_switch) == LOW;
 }
 
-LoadCell::LoadCell(uint8_t pin_dout, uint8_t pin_sck, float scale_factor)
+LoadCell::LoadCell(uint8_t pin_dout, uint8_t pin_sck)
     : m_pin_dout(pin_dout),
       m_pin_sck(pin_sck),
       m_usable(PIN_IS_ASSIGNED(pin_dout) && PIN_IS_ASSIGNED(pin_sck)),
-      m_scale_factor(scale_factor),
       m_raw(0),
       m_has_reading(false),
-      m_last_read_ms(0),
-      m_zero_counts(0.0f),
-      m_lid_counts(0.0f),
-      m_zeroed(false),
-      m_filtered_counts(0.0f),
-      m_buffer_idx(0),
-      m_buffer_fill(0),
-      m_is_stable(false)
-{
-  for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
-    m_recent[i] = 0.0f;
-}
+      m_last_read_ms(0) {};
 
 void LoadCell::init()
 {
@@ -513,42 +633,12 @@ void LoadCell::init()
   // effective rate, because the channel only changes on the NEXT conversion.
   m_hx711.begin(m_pin_dout, m_pin_sck, 128);
 
-  // BOUNDED BOOT ZERO. HX711::tare() would be the obvious call and it is the
-  // one thing this must not do: it averages ten conversions through
-  // wait_ready(), which has no timeout, so an amplifier that answers once and
-  // then stops takes setup() with it -- and setup() runs before the agent is
-  // up, so a board hung here is indistinguishable from one that was never
-  // flashed. Poll instead, take whatever arrives inside the window, and give
-  // up cleanly.
-  const uint32_t deadline = millis() + kInitTimeoutMs;
-  float sum = 0.0f;
-  uint8_t n = 0;
-  while (n < kInitSamples && (int32_t)(millis() - deadline) < 0)
-  {
-    if (m_hx711.is_ready())
-    {
-      const long v = m_hx711.read();
-      sum += (float)v;
-      ++n;
-      m_raw = v;
-      m_has_reading = true;
-      m_last_read_ms = millis();
-    }
-  }
-
-  if (n > 0)
-  {
-    m_filtered_counts = sum / (float)n;
-    m_zero_counts = m_filtered_counts;
-    m_zeroed = true;
-    for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
-      m_recent[i] = m_filtered_counts;
-    m_buffer_fill = kStabilityBufferSize;
-  }
-  // else: no amplifier answered. m_zeroed stays false and the first conversion
-  // update() collects becomes the zero, so a cell plugged in after boot still
-  // starts from a sensible reference instead of reading its whole standing
-  // offset as sample mass.
+  // NO PRIMING READ HERE, deliberately. begin() ends with a read() in some
+  // versions of this library and the obvious next step is to take one more to
+  // have a number in hand -- but setup() runs before the agent connects and
+  // before the motors are known to be stopped, and read() blocks forever on an
+  // amplifier that is not there. The first count arrives from update(), on the
+  // loop, where waiting for it costs nothing.
 }
 
 bool LoadCell::update()
@@ -563,90 +653,24 @@ bool LoadCell::update()
     return false;
 
   m_raw = m_hx711.read();
+  m_has_reading = true;
   m_last_read_ms = millis();
-
-  if (!m_has_reading)
-  {
-    // First conversion ever. Seed the filter with it rather than letting the
-    // EMA crawl up from 0 over the next second, which would otherwise read as
-    // a sample being poured in.
-    m_filtered_counts = (float)m_raw;
-    for (uint8_t i = 0; i < kStabilityBufferSize; ++i)
-      m_recent[i] = m_filtered_counts;
-    m_buffer_fill = kStabilityBufferSize;
-    m_has_reading = true;
-  }
-  else
-  {
-    m_filtered_counts = kEmaAlpha * (float)m_raw + (1.0f - kEmaAlpha) * m_filtered_counts;
-  }
-
-  if (!m_zeroed)
-  {
-    m_zero_counts = m_filtered_counts;
-    m_zeroed = true;
-  }
-
-  m_recent[m_buffer_idx] = m_filtered_counts;
-  m_buffer_idx = (uint8_t)((m_buffer_idx + 1) % kStabilityBufferSize);
-  if (m_buffer_fill < kStabilityBufferSize)
-    ++m_buffer_fill;
-
-  // Peak-to-peak over the window, in WEIGHT units rather than counts: the band
-  // has to mean the same thing on all three cells, and their scale factors
-  // differ by a factor of 1.5 and one of them is negative.
-  float lo = m_recent[0];
-  float hi = m_recent[0];
-  for (uint8_t i = 1; i < m_buffer_fill; ++i)
-  {
-    if (m_recent[i] > hi)
-      hi = m_recent[i];
-    if (m_recent[i] < lo)
-      lo = m_recent[i];
-  }
-  const float span = (m_scale_factor != 0.0f) ? fabsf((hi - lo) / m_scale_factor) : 0.0f;
-  m_is_stable = (m_buffer_fill >= kStabilityBufferSize) && (span < kStableBand);
-
   return true;
 }
 
-void LoadCell::tare_empty()
+int32_t LoadCell::reported(uint32_t now_ms) const
 {
   if (!m_usable || !m_has_reading)
-    return;
-
-  m_zero_counts = m_filtered_counts;
-  m_zeroed = true;
-
-  // The lid zero was measured as a difference from the OLD empty zero, so it
-  // does not survive a new one. Upstream cleared it here for the same reason.
-  m_lid_counts = 0.0f;
-}
-
-void LoadCell::tare_with_lid()
-{
-  if (!m_usable || !m_has_reading)
-    return;
-
-  m_lid_counts = m_filtered_counts - m_zero_counts;
-}
-
-float LoadCell::get_soil_weight() const
-{
-  // A zero scale factor would be a divide by zero and a NaN or an infinity on
-  // the wire; report no reading instead, which is what it is.
-  if (m_scale_factor == 0.0f)
-    return NAN;
-
-  return (m_filtered_counts - m_zero_counts - m_lid_counts) / m_scale_factor;
-}
-
-float LoadCell::reported(uint32_t now_ms) const
-{
-  if (!m_usable || !m_has_reading)
-    return NAN;
+    return kRail;
   if (now_ms - m_last_read_ms > kStaleMs)
-    return NAN;
+    return kRail;
 
-  return get_soil_weight();
+  // The HX711 cannot produce anything outside its 24-bit signed range, so this
+  // clamp is not about the converter. It is about the sentinel: a genuine
+  // reading that happened to land exactly on kRail would be read by the host as
+  // a dead cell. Pushing it one count off is a lie of 1/8388608 of full scale,
+  // and it keeps "reported the rail" meaning exactly one thing.
+  if (m_raw <= kRail)
+    return kRail + 1;
+  return (int32_t)m_raw;
 }

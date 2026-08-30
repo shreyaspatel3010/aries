@@ -224,32 +224,34 @@ The `static_assert` guards `kMap`. It does **not** guard `kScanPins` in
 and reports on `drill/pin_scan`. Those two lists have to stay disjoint and
 nothing anywhere checks that they are.
 
-**They are not disjoint right now.** The 2026-08-29 renumber put the auger on
-8, 9 and 25, and all three are still in the scan list:
+**They are disjoint as of 2026-08-30**, apart from the two limit switches, which
+are in both on purpose (they are reported alongside the free pins for
+comparison, and `LimitSwitch::init()` has already made them `INPUT_PULLUP`):
 
 ```
-static const uint8_t kScanPins[] = {
-    0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 20, 21, 24, 25, 26, 27, 39,
-                    ^  ^                          ^
-            AUGER_INA  AUGER_INB              AUGER_PWM
+kMap      6 7 8 9 13 15 16 17 18 19 22 23 25 28 29 30 31 32 33 34 35 36 37 38 40 41
+kScanPins 0 1 2 3 4 5 6 7 10 11 12 14 20 21 24 26 27 39
+overlap   6 7   <- LIMIT_SWITCH1/2, deliberate
 ```
 
-`setup()` runs the scan's `pinMode(..., INPUT_PULLUP)` loop *before*
-`auger.init_motor()`, so the auger still wins the pin mode and the motor drives
-correctly — this does not break the drill. What it breaks is the diagnostic:
-`pin_scan_state()` goes on reading those three pins every cycle and reports the
-auger's own PWM and direction levels as *something is pulling this pin low*,
-flickering three bits on `drill/pin_scan` whenever the auger turns. That is the
-same trap the lid servo hit on pin 38, and `check_drill_limits.py` reads exactly
-this topic — so the tool this file tells you to trust for finding a switch is
-the tool the collision blinds.
+Getting there took two corrections in two days, in both directions:
 
-**ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE.** Remove 8, 9 and 25;
-add 28, 29 and 30, which the bin's move has freed:
+* The 2026-08-29 renumber moved the auger onto 8, 9 and 25 and left all three in
+  the scan list, while freeing 28, 29 and 30 from the bin and not adding them.
+* The pump then took 28, 29 and 30 on 2026-08-30, so those three had to come
+  straight back out again.
 
-```
-    0, 1, 2, 3, 4, 5, 10, 11, 12, 14, 20, 21, 24, 26, 27, 28, 29, 30, 39,
-```
+**Why it matters, since it never breaks the mechanism.** `setup()` runs the
+scan's `pinMode(..., INPUT_PULLUP)` loop *before* the motors and servos
+initialise, so the driver always wins the pin mode and the hardware works. What
+breaks is the diagnostic: `pin_scan_state()` goes on reading those pins every
+cycle and reports the driver's own switching as *something is pulling this pin
+low* — flickering bits on `drill/pin_scan` whenever that axis moves. That is the
+trap the lid servo hit on pin 38, and `check_drill_limits.py` reads exactly this
+topic, so the tool this file tells you to trust for finding a switch is the tool
+the collision blinds.
+
+**ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE.** Both halves, every time.
 
 ### If a pin is genuinely not wired yet
 
@@ -295,6 +297,56 @@ Until then the bin's position is dead-reckoned from the commanded rate, which
 drifts from the first slip onward. The honest fix: the bin's actuator has its
 own end switch at each end of its stroke — put the forward one on a GPIO and
 publish it.
+
+### The peristaltic pump
+
+New from the embedded team, 2026-08-30, on **28 / 29 / 30 — their numbers,
+unchanged**. `pump/state` (`UInt8`) picks the action: `1` release, `2` draw,
+`3`/`4` home in either direction, `5` home-then-draw, `0` stop.
+
+**Commanded in millilitres, run as a timer.** There is no flow sensor and no
+level sensor. `Pump` converts a volume into a run time at a flow rate the
+embedded team measured — 6.755 mL/s, averaged over 100 mL/15 s, 150 mL/22 s and
+200 mL/29.5 s — so every dose drifts with head height, tube wear and battery
+state exactly as the drill's three axes do. A commanded volume is an estimate,
+not a measurement.
+
+**These three pins were the sample bin's until 2026-08-29.** Upstream's own pin
+block still has the bin on them as well — `LINACT_PWM 28 / LINACT_INA 30 /
+LINACT_INB 29`, the same three pins with the direction pair swapped — with both
+objects constructed and both initialised in their `setup()`. On their board the
+bin and the pump share one H-bridge and drive it in opposite directions. It is
+only harmless here because the bin moved to 22 / 19 / 18 the day before, which
+vacated exactly this group. The `static_assert` in `pins.h` is what makes that
+safe to rely on rather than hope about: put the bin back on 28 and the build
+fails instead of the two mechanisms fighting over a bridge at runtime.
+
+They also came out of `kScanPins` in `main.cpp`, where they had landed when the
+bin vacated them — a pin that is both scanned and driven reports the driver's
+own switching as a phantom switch.
+
+**Three defects were fixed from the delivered class**, each already familiar
+from `LinearActuator`, which `Pump` was copy-pasted from:
+
+1. **A zero volume ran the pump forever.** `req_vol` of 0 made a 0 µs
+   `IntervalTimer` period, which never fires — the pump was switched on one line
+   earlier and had nothing left to switch it off. Guarded by
+   `move_duration_us()`/`start_move()`, exactly as the actuator is.
+2. **State 5 never homed.** `home(false); draw();` re-armed the same timer on
+   the second call, cancelling the first before a microsecond had elapsed, so
+   only the draw ran. It is one combined move now — both halves drive the same
+   direction at the same duty cycle, so summing the durations is exactly the
+   intended sequence and avoids calling `IntervalTimer::begin()` from inside its
+   own ISR.
+3. **`home()` latched its duration.** It opened with `m_home_dur = 30;`, an
+   assignment to a member, discarding the 14.8 s computed in the initialiser —
+   which therefore never ran once. 30 s is kept, as a constant that cannot be
+   overwritten.
+
+**On the pad:** LT + X, one message per press, sending `draw`. Edge-triggered
+rather than streamed — republishing at 30 Hz would re-arm the dose timer on
+every message. A dose in progress is not cancelled by releasing LT; send
+`data: 0` to stop one.
 
 ### The container lid
 
@@ -394,13 +446,11 @@ theoretical. Two things about that table are worth keeping:
 
 ### Load cells
 
-Three HX711 amplifiers — **sand box, stone box, drill bin**. Each has its own
-topic (`sand_box/weight`, `rock_box/weight`, `drill_cont/weight`), so there is
-no element order left to get wrong. The old wire format was a single
-`Int32MultiArray` whose ordering was the *only* thing identifying which box was
-which: swap two entries and the sand box reported the stone, both numbers stayed
-plausible, and nothing anywhere said a word. `rock_box` is the embedded team's
-name for the box this workspace calls `stone_box`.
+Three HX711 amplifiers — **sand box, stone box, drill bin, in that order**,
+which is the element order of `cells` in
+`aries_load_cells/config/load_cells.yaml` and therefore **the wire format**. The
+firmware sends no names to check itself against, so swapping two entries makes
+the sand box report the stone and nothing anywhere notices.
 
 **Each cell has its own clock.** This is *not* the usual one-shared-SCK chain —
 every amplifier gets a private DT/SCK pair, so they can be read independently
@@ -408,43 +458,27 @@ and one dead amplifier cannot stall the others. Six pins, not four. Anything
 written against a shared clock (including an earlier draft of this file) is
 wrong.
 
-**Calibrated on the board, since 2026-08-29 — and this reverses what this file
-used to say.** The board published raw counts and a host package
-(`aries_load_cells`) scaled them from YAML, precisely so that a recalibration
-was an edit and a relaunch rather than a reflash with the rover open. That
-package has been **deleted**. `HX711_*_SCALE` in `pins.h` now holds the scale
-factors, `LoadCell` applies them, and the board publishes weights at 10 Hz,
-RELIABLE. The old argument still stands; it is simply a cost that has been
-accepted.
-
-**Taring is a message, not a service:**
+**Driven.** `main.cpp` constructs one `LoadCell` per amplifier and publishes
+`load_cells/raw` (`std_msgs/Int32MultiArray`, three elements, **raw converter
+counts**) at 10 Hz, RELIABLE. Scale, offset and tare live in `aries_load_cells`'
+YAML, so a recalibration is an edit and a relaunch, not a reflash with the rover
+open — and taring is host-side too, either
 
 ```
-ros2 topic pub --once /sand_box/tare std_msgs/UInt8 "data: 1"   # empty box = zero
-ros2 topic pub --once /sand_box/tare std_msgs/UInt8 "data: 2"   # then: that is the lid
+ros2 service call /load_cells/sand_box/tare std_srvs/srv/Trigger   # reports the new offset
+ros2 topic pub --once /load_cells/sand_box/tare std_msgs/UInt8 "data: 1"
 ```
 
-`1` zeroes the container as it stands — empty it first, this cannot tell a
-tared box from one with a rock in it. `2`, taken afterwards with the lid on,
-records the lid's weight so it is subtracted from every reading. A new `1`
-clears the lid tare, because a lid measured against the old zero means nothing
-against a new one. Both are held in RAM only: **every tare is lost on reset.**
+(`1` empty, `2` with the lid), not something this board does. The service is
+the one to use while calibrating, because only it can hand the offset back for
+pasting into `load_cells.yaml`.
 
-**The three scale factors have not been verified here.** 20.0 / 21.0 / −30.0
-came with the embedded team's firmware and no note of what unit they produce.
-The drill container's is negative because that cell is bolted in the other way
-round — the sign is mounting, not an error. To re-derive one: tare the empty
-box, put a known mass in, read the topic, and set
-`new_scale = old_scale × (reading / true_mass)`. That is a reflash.
-
-**A cell that is not answering reports `NaN`, never zero** — zero is what an
-empty box reads, so a dead amplifier would otherwise look exactly like a box
-somebody had emptied. `NaN` shows up as `nan` in `ros2 topic echo` and cannot
-be averaged into a plausible wrong number. Reading one is also strictly
-non-blocking: `HX711::read()` opens with `wait_ready()`, which spins forever on
-an amplifier holding DOUT high, and this loop is also the auger's watchdog —
-which is also why the boot zero is a bounded `is_ready()` poll rather than
-`HX711::tare()`. The topics stay silent until at least one cell has ever
+**A cell that is not answering reports the converter's negative rail
+(`-8388608`), never zero** — zero is what an empty box reads, so a dead
+amplifier would otherwise look exactly like a box somebody had emptied. Reading
+one is also strictly non-blocking: `HX711::read()` opens with `wait_ready()`,
+which spins forever on an amplifier holding DOUT high, and this loop is also the
+auger's watchdog. The topic stays silent until at least one cell has ever
 answered, so a rover with no cells fitted is quiet rather than permanently
 faulted.
 

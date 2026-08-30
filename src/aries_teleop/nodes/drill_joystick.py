@@ -7,6 +7,7 @@ Mapping (canonical layout, i.e. after joy_layout_normalizer):
     LT + D-pad left/right    sample bin     drill_container_joint  m/s
     LT + left stick up/down  auger          drill_bit_joint        rad/s
     LT + right stick up/down sand box lid   /sand_box/lid/cmd      -1..1
+    LT + X (press)           pump           /pump/state            UInt8
 
 HARDWARE MODEL. Every axis on the real drill is a DC motor - the feed carriage
 turns a lead screw, the auger spins on the head, and the sample bin rides a
@@ -54,6 +55,14 @@ nodes reading two separate gates would otherwise let the rover drive off with
 the auger spinning and the mast down; the arm teleop already yields to LB the
 same way, and the drill now matches it. LB wins whichever order they are
 pressed in, and blocking behaves exactly like releasing LT: every motor off.
+
+THE PUMP IS NOT CANCELLED ON RELEASE, unlike every motor here. It is a
+one-shot: the firmware runs it for the time a commanded volume takes, and
+releasing LT half way through would leave an unknown fraction of a dose
+delivered, which is worse than finishing the one that was asked for. To stop a
+dose in progress, send the stop explicitly:
+
+    ros2 topic pub --once /pump/state std_msgs/UInt8 "data: 0"
 
 Publishing is gated too: a 30 Hz stream of rates while LT is held, then a short
 burst of zeros on release (`stop_hold_sec`, so one dropped message cannot leave
@@ -218,6 +227,23 @@ class DrillJoystick(Node):
         # closes the lid, flip this.
         self.declare_parameter("invert_lid", False)
 
+        # THE PUMP -- LT + X, the one control still free under LT.
+        #
+        # EDGE-TRIGGERED, AND THAT IS THE WHOLE DESIGN. Every other axis here is
+        # a rate republished at 30 Hz while it is held; the pump is a one-shot
+        # that MOVES LIQUID, and the firmware runs it for a fixed duration off a
+        # timer. Streaming this at 30 Hz would restart the dose thirty times a
+        # second for as long as the button was down, each message re-arming the
+        # IntervalTimer, so the pump would run for as long as your thumb was
+        # there and then one dose longer.
+        #
+        # One button can only carry one of the five states, so it sends `draw`.
+        # release, home and home-then-draw stay on the topic:
+        #   ros2 topic pub --once /pump/state std_msgs/UInt8 "data: 1"
+        self.declare_parameter("pump_cmd_topic", "/pump/state")
+        self.declare_parameter("pump_button", 2)
+        self.declare_parameter("pump_state_on_press", 2)
+
         # Keep these in step with drill.xacro's joint limits: they are the
         # mechanical stops, and the limit switches are placed off them. They
         # are repeated rather than read from the URDF so this node can run
@@ -305,6 +331,10 @@ class DrillJoystick(Node):
         self.lid_max_speed = float(g("lid_max_speed").value)
         self.lid_sign = -1.0 if bool(g("invert_lid").value) else 1.0
 
+        self.pump_button = int(g("pump_button").value)
+        self.pump_state_on_press = int(g("pump_state_on_press").value)
+        self.pump_was_pressed = False
+
         margin = float(g("limit_margin").value)
         self.motor = LimitSwitchedAxis(
             joint=str(g("motor_joint").value),
@@ -351,6 +381,7 @@ class DrillJoystick(Node):
         self.pub_container = self.create_publisher(Float64, str(g("container_cmd_topic").value), 10)
         self.pub_bit = self.create_publisher(Float64, str(g("bit_cmd_topic").value), 10)
         self.pub_lid = self.create_publisher(Float32, str(g("lid_cmd_topic").value), 10)
+        self.pub_pump = self.create_publisher(UInt8, str(g("pump_cmd_topic").value), 10)
 
         self.create_subscription(Joy, joy_topic, self._joy_cb, 10)
         self.create_subscription(JointState, joint_states_topic, self._joint_state_cb, 10)
@@ -362,8 +393,8 @@ class DrillJoystick(Node):
         self.get_logger().info(
             f"Drill joystick ready. Hold LT/axis {self.modifier_axis}: "
             f"d-pad up/down = feed, d-pad left/right = bin, "
-            f"left stick up/down = auger, right stick up/down = sand box lid. "
-            f"Released = every motor off."
+            f"left stick up/down = auger, right stick up/down = sand box lid, "
+            f"X = pump draw. Released = every motor off."
         )
 
     # -- helpers -----------------------------------------------------------
@@ -459,6 +490,22 @@ class DrillJoystick(Node):
             self._axis(msg, self.bit_axis), self.bit_deadzone)
         self.command_lid = self._deadzone(
             self._axis(msg, self.lid_axis), self.lid_deadzone)
+
+        # THE PUMP: one message on the PRESS EDGE, published from here rather
+        # than from the 30 Hz timer. See the parameter block for why streaming
+        # it would re-arm the dose thirty times a second.
+        #
+        # Gated on LT and on LB exactly like everything else, and the gate is
+        # read here rather than in _timer_cb because a press is an instant, not
+        # a state: `stale` cannot apply to a message that has just arrived.
+        pressed = self._button(msg, self.pump_button) == 1
+        if (pressed and not self.pump_was_pressed
+                and self.modifier_held and not self.blocked):
+            self.pub_pump.publish(UInt8(data=self.pump_state_on_press))
+            self.get_logger().info(
+                f"pump: sent state {self.pump_state_on_press} "
+                f"({'draw' if self.pump_state_on_press == 2 else 'see pump/state'})")
+        self.pump_was_pressed = pressed
 
     # -- output ------------------------------------------------------------
     def _timer_cb(self):

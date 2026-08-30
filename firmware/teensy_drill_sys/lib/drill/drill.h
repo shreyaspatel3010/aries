@@ -122,6 +122,88 @@ private:
   void handle_isr();
 };
 
+// PERISTALTIC PUMP -- new from the embedded team, 2026-08-30. A DC motor on an
+// H-bridge like the other three, but commanded in MILLILITRES rather than
+// millimetres: it runs open-loop for however long that volume takes at the
+// measured flow rate. There is no flow sensor and no level sensor, so a
+// commanded volume is a TIMER, not a measurement, and it drifts with head
+// height, tube wear and battery state exactly as the drill's axes do.
+//
+// draw() pulls liquid in, release() pushes it out. home() runs it long enough
+// to clear the whole tube in whichever direction it is given.
+//
+// THREE THINGS WERE FIXED FROM THE DELIVERED CLASS, all of them shapes that had
+// already bitten LinearActuator, which this was copy-pasted from. Each is
+// called out at its implementation in drill.cpp:
+//
+//   1. A zero volume armed an IntervalTimer with a 0 us period, which never
+//      fires -- so the pump was switched on and never switched off.
+//   2. State 5 ("home then draw") called home() and draw() back to back. The
+//      second m_timer.begin() replaced the first immediately, so the home never
+//      ran at all.
+//   3. home() assigned m_home_dur = 30, permanently discarding the computed
+//      value for the rest of the session.
+class Pump : private Driver
+{
+public:
+  // Re-exported through PRIVATE inheritance, as on the other three axes, so
+  // main.cpp's led_update() can ask whether this axis has its pins.
+  using Driver::usable;
+
+  Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2);
+  void init_motor();
+
+  void release();
+  void draw();
+  void release(int pwm_flowrate, float req_vol);
+  void draw(int pwm_flowrate, float req_vol);
+
+  // Clear the tube in the given direction. Fixed duration -- there is nothing
+  // to sense arrival against.
+  void home(bool dir);
+
+  // home() in the DRAW direction and then draw(), as one continuous run.
+  //
+  // Upstream expressed this as two calls and it did not work; see note 2 above
+  // and the implementation. It is one move here because both halves drive the
+  // same direction at the same duty cycle, so the combined run is exactly
+  // equivalent to the intended sequence and needs no timer chaining -- and
+  // chaining would mean calling IntervalTimer::begin() from inside its own ISR.
+  void home_then_draw();
+
+  void stop_motor();
+
+private:
+  // Millilitres per second at full duty, averaged over three timed volumes
+  // measured by the embedded team: 100 mL/15 s, 150 mL/22 s, 200 mL/29.5 s.
+  // Works out at 6.755 mL/s. Their numbers, not re-measured here.
+  static constexpr float m_oem_max_flowrate =
+      (((100.0f / 15.0f) + (150.0f / 22.0f) + (200.0f / 29.5f)) / 3.0f); // [mL/s]
+
+  // Ceiling on a single commanded volume. The tube does not hold more than
+  // this, so a larger request is a mistake rather than a longer run -- and
+  // without a clamp a wild number is an arbitrarily long unattended pump.
+  static constexpr float m_oem_max_vol = 200.0f; // [mL]
+
+  int m_pwm_flowrate = 255; // 100% duty-cycle for max power
+  float m_req_vol = 75.0f;  // [mL] default dose
+
+  // HOW LONG A HOME RUNS. Upstream computed 100 mL / 6.755 mL/s = 14.8 s in the
+  // initialiser and then threw it away with `m_home_dur = 30;` on the first
+  // line of home(), so 30 s is what the mechanism has actually been doing. Kept
+  // at 30 s deliberately, as a constant that cannot be overwritten, rather than
+  // silently changing the behaviour to the value that never ran.
+  static constexpr float m_home_dur = 30.0f; // [s]
+
+  uint32_t move_duration_us(float req_vol) const;
+  void start_move(int pwm_flowrate, bool dir, uint32_t duration_us);
+
+  IntervalTimer m_timer;
+  static Pump *m_instance_pump;
+  static void isr_timer_router();
+  void handle_isr();
+};
+
 // Servo Classes ===================================================================================================
 // A slew-rate-limited POSITIONAL hobby servo on a normalised 0..1 range. Only
 // the gripper jaws use it. The sand box lid used to as well, and does not any
@@ -280,24 +362,19 @@ private:
 };
 
 // Load Cell Class ====================================================================================================
-// ONE HX711 AMPLIFIER, WITH ITS CALIBRATION. Three of these are constructed in
-// main.cpp -- sand box, stone (rock) box, drill bin -- and each publishes its
-// own weight on its own topic.
+// ONE HX711 AMPLIFIER. Three of these are constructed in main.cpp -- sand box,
+// stone box, drill bin -- and their counts go out together on load_cells/raw.
 //
-// CALIBRATION LIVES HERE NOW, AND THAT IS A CHANGE. This board used to publish
-// raw 24-bit converter counts on one load_cells/raw array and let a host
-// package (aries_load_cells) turn them into kilograms from YAML. That package
-// has been removed: the scale factors are compiled in from pins.h and taring is
-// a message to this board. The trade is deliberate and it has a cost -- a
-// recalibration is now a reflash rather than an edit and a relaunch -- so the
-// scale factors are kept in pins.h next to the pins, where they are easy to
-// find, rather than buried in this class.
+// RAW CONVERTER COUNTS, AND NOTHING ELSE. No tare, no scale, no grams. The
+// host half (aries_load_cells) owns the calibration, in that package's YAML, on
+// purpose: a recalibration is then an edit and a relaunch rather than a reflash
+// with the rover open. That is also why there is no tare_*() here -- taring is
+// `ros2 service call /load_cells/<cell>/tare`, and a second tare living in the
+// firmware would silently fight it.
 //
-// TWO TARES, NOT ONE, because a sample container is weighed with its lid on.
-//   tare_empty()     the container as it stands right now is zero
-//   tare_with_lid()  whatever has been ADDED since tare_empty() is the lid
-// get_soil_weight() then subtracts both, so the number on the wire is the
-// sample and nothing else.
+// EACH CELL HAS ITS OWN CLOCK. Not the usual one-shared-SCK chain: every
+// amplifier gets a private DT/SCK pair, so this class owns its HX711 outright
+// and one dead amplifier cannot stall the others. See pins.h.
 //
 // NON-BLOCKING, WHICH IS THE WHOLE REASON THIS IS NOT JUST HX711::read().
 // HX711::read() opens with wait_ready(), which spins until DOUT falls -- and an
@@ -306,29 +383,11 @@ private:
 // motion gate, that is not a stalled sensor, it is a cutting tool that nothing
 // can stop any more. update() polls is_ready() and returns without touching the
 // bus when the answer is no, so a missing cell costs one digitalRead.
-//
-// For the same reason this class does NOT call HX711::tare() or
-// HX711::read_average(). Both loop on wait_ready() internally with no timeout
-// of their own, so a cell that answers once at boot and then dies mid-average
-// hangs setup() forever. Every zero reference here is accumulated through the
-// same bounded is_ready() poll.
-//
-// EACH CELL HAS ITS OWN CLOCK. Not the usual one-shared-SCK chain: every
-// amplifier gets a private DT/SCK pair, so this class owns its HX711 outright
-// and one dead amplifier cannot stall the others. See pins.h.
 class LoadCell
 {
 public:
-  // scale_factor is COUNTS PER UNIT OF WEIGHT, the same sense as
-  // HX711::set_scale(). Its SIGN is which way the cell is bolted in; a cell
-  // mounted the other way up reads negative for a positive load and wants a
-  // negative factor. See pins.h for the three values and where they came from.
-  LoadCell(uint8_t pin_dout, uint8_t pin_sck, float scale_factor = 1.0f);
+  LoadCell(uint8_t pin_dout, uint8_t pin_sck);
 
-  // Collects a bounded zero reference: polls is_ready() for at most
-  // kInitTimeoutMs and averages up to kInitSamples conversions. If the
-  // amplifier never answers, the zero is deferred to the first conversion
-  // update() ever sees, and nothing blocks.
   void init();
 
   // Call every loop. True when a fresh conversion was collected on THIS call,
@@ -343,58 +402,38 @@ public:
   bool update();
 
   // False when either pin is PIN_UNASSIGNED, exactly as the motor drivers use
-  // it. An unusable cell never touches a pin and never reports a number.
+  // it. An unusable cell never touches a pin and always reports the rail.
   bool usable() const { return m_usable; }
 
   // True once this amplifier has ever produced a conversion -- i.e. there is
-  // really an HX711 on those two pins.
+  // really an HX711 on those two pins. main.cpp does not publish the array at
+  // all until at least one cell can say yes, so a rover with no cells fitted
+  // stays quiet instead of reporting three permanent faults.
   bool has_reading() const { return m_has_reading; }
 
-  // ZERO THE CONTAINER. Whatever is on the cell right now becomes 0. Empty the
-  // container first: this cannot tell a tared box from a box with a rock in it.
-  // Also clears any lid tare, because a lid weight measured against the old
-  // zero means nothing against a new one.
-  void tare_empty();
-
-  // ZERO THE LID. Call it with the lid ON and the container otherwise empty,
-  // AFTER tare_empty(). The difference from the empty zero is taken to be the
-  // lid, and is subtracted from every subsequent reading.
-  void tare_with_lid();
-
-  void set_scale(float scale_factor) { m_scale_factor = scale_factor; }
-  float get_scale() const { return m_scale_factor; }
-
-  // The last conversion, in raw 24-bit signed counts, before any scaling or
-  // taring. Not published; kept for bench work.
+  // The last conversion, in raw 24-bit signed counts.
   long raw() const { return m_raw; }
 
-  // Net weight: the filtered reading, scaled, less the empty and lid zeros.
-  float get_soil_weight() const;
-
-  // Whether the last five filtered readings sit inside kStableBand of each
-  // other -- i.e. nothing is currently being poured in, and the number is
-  // worth writing down. Never used to WITHHOLD a sample; see main.cpp.
-  bool is_stable() const { return m_is_stable; }
-
-  // WHAT TO PUT ON THE WIRE, which is not always get_soil_weight().
+  // WHAT TO PUT ON THE WIRE for this cell, which is not always raw().
   //
   // A cell that has stopped converting must not keep publishing its last
-  // number, and it must not publish zero either: ZERO IS WHAT AN EMPTY BOX
-  // READS, so a silently dead amplifier would look exactly like a box somebody
-  // had emptied. It reports NaN instead -- which `ros2 topic echo` shows as
-  // nan, is not a weight anything can act on by mistake, and cannot be
-  // averaged into a plausible wrong kilogram.
-  //
-  // This is the one piece of the old raw-counts design worth keeping. It used
-  // the converter's negative rail for the same purpose, because the wire
-  // format was an integer; Float32 can say "no reading" honestly.
-  float reported(uint32_t now_ms) const;
+  // number, and it must not publish zero either: zero is what an EMPTY BOX
+  // reads, so a silently dead amplifier would look exactly like a box somebody
+  // had emptied. It reports the converter's negative rail instead, which
+  // aries_load_cells already treats as "unplugged, wired backwards or crushed"
+  // (raw_min in load_cells.yaml) and turns into a NaN weight plus a named
+  // fault, rather than a confident wrong kilogram.
+  int32_t reported(uint32_t now_ms) const;
+
+  // -(1 << 23). The HX711 is a 24-bit signed converter and this is the bottom
+  // of its range; it is `raw_min` in aries_load_cells/config/load_cells.yaml
+  // and the two have to agree for the fault path above to fire.
+  static constexpr int32_t kRail = -8388608L;
 
 private:
   uint8_t m_pin_dout;
   uint8_t m_pin_sck;
   bool m_usable;
-  float m_scale_factor;
 
   HX711 m_hx711;
 
@@ -402,35 +441,10 @@ private:
   bool m_has_reading;
   uint32_t m_last_read_ms;
 
-  // Zero references, in RAW COUNTS rather than scaled units, so that changing
-  // the scale factor does not silently invalidate a tare taken under the old
-  // one.
-  float m_zero_counts;
-  float m_lid_counts;
-  bool m_zeroed;
-
-  // Exponentially-weighted mean of the raw counts. The HX711 at 10 SPS is
-  // noisy enough that an untouched box wanders visibly; this is upstream's
-  // filter, kept, and it is why get_soil_weight() reads the filtered value and
-  // not m_raw.
-  float m_filtered_counts;
-  static constexpr float kEmaAlpha = 0.25f;
-
-  // Peak-to-peak stability window over the last five filtered readings.
-  static constexpr uint8_t kStabilityBufferSize = 5;
-  float m_recent[kStabilityBufferSize];
-  uint8_t m_buffer_idx;
-  uint8_t m_buffer_fill;
-  bool m_is_stable;
-  static constexpr float kStableBand = 0.5f;
-
-  // Bounded boot zero -- see init().
-  static constexpr uint32_t kInitTimeoutMs = 400;
-  static constexpr uint8_t kInitSamples = 10;
-
-  // How long a latched reading stays believable. Five missed conversions at
+  // How long a latched count stays believable. Five missed conversions at
   // 10 SPS -- long enough that ordinary jitter never trips it, short enough
-  // that a cable pulled mid-task shows up within half a second.
+  // that a cable pulled mid-task shows up within half a second. The host's own
+  // timeout_s of 2.0 s is the coarser backstop for the whole board going away.
   static constexpr uint32_t kStaleMs = 500;
 };
 

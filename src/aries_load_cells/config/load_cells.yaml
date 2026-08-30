@@ -1,0 +1,241 @@
+# The rover's three load cells.
+#
+#   sand_box         front-left deck box, the sand sample
+#   stone_box        the box behind it, also on the left, the stone sample
+#   drill_container  the drill's sample bin
+#
+# All three hang off the drill/science Teensy -- the one board that also runs the
+# gripper servo, the stack light and the drill -- and arrive over the micro-ROS
+# link that aries_hardware.launch.py already starts. There is no second board and
+# nothing to add to devices.yaml.
+#
+# WHAT YOU SEE
+#   /load_cells/sand_box/weight            std_msgs/Float32, kilograms
+#   /load_cells/sand_box/raw               std_msgs/Int32, converter counts
+#   /load_cells/stone_box/weight           "
+#   /load_cells/stone_box/raw              "
+#   /load_cells/drill_container/weight     what the bin's cell reads right now
+#   /load_cells/drill_container/raw        "
+#   /load_cells/drill_container/valid      std_msgs/Bool - is that a sample mass?
+#   /load_cells/drill_container/weight_held  last reading taken while valid
+#   /load_cells/status                     std_msgs/String, JSON, all of it
+#
+#   ros2 service call /load_cells/tare std_srvs/srv/Trigger    zero all three
+#   ros2 service call /load_cells/sand_box/tare std_srvs/srv/Trigger
+#
+# ALL THREE READ CONTINUOUSLY, at publish_rate_hz, whatever the rover is doing:
+# while a box is being filled, while the bin travels, while the auger cuts.
+# Nothing here waits for the rover to hold still. `drill_container/valid` LABELS
+# the bin's number, it does not withhold it.
+#
+# A weight of `nan` means no reading - a stale link, or a cell at its
+# converter's rail - published at the same steady rate rather than the topic
+# falling silent, because a topic that stops looks like a node that died. It
+# does NOT mean zero: zero is what an empty box reads.
+#
+# THE FIRMWARE PUBLISHES
+#
+#     load_cells/raw   std_msgs/Int32MultiArray, three elements, in the order
+#                      of `cells` below, at 10 Hz
+#
+# declared with no leading slash under an empty namespace, exactly as
+# stacklight_subscription is, which resolves to /load_cells/raw. RAW COUNTS,
+# not kilograms: the calibration below is then a YAML edit and a relaunch
+# rather than a reflash, and the Teensy stays a thing that reads ADCs.
+#
+# RELIABLE on both ends. The subscription here uses default rclpy QoS, which is
+# reliable, and the firmware publisher matches it. A best-effort publisher
+# against a reliable subscriber is an incompatible pair: DDS makes no match,
+# both sides list the topic and nothing is ever delivered.
+#
+# A CELL THAT IS NOT REPORTING SENDS raw_min, NOT ZERO. An amplifier that is
+# unplugged, dead, or whose last conversion is over 500 ms old arrives as
+# -8388608 and falls into the rail fault below. Zero is what an EMPTY BOX
+# reads, so the firmware never uses it to mean "no reading".
+#
+# The topic stays silent until at least one amplifier answers, so a rover with
+# no cells fitted gets the "no counts yet" message rather than three standing
+# faults.
+#
+# One publisher and not three: the three cells are polled on one pass of the
+# firmware's loop and belong in one message. If it ever ends up with three
+# separate std_msgs/Int32 publishers, list them in `raw_topics`.
+#
+# To see the topics with no Teensy attached:
+#     ros2 launch aries_load_cells load_cells.launch.py load_cell_source:=mock
+
+load_cells:
+  ros__parameters:
+    # ORDER IS THE WIRE FORMAT. This is the element order of the firmware's
+    # Int32MultiArray, and the firmware sends no names to check itself
+    # against. Swap two entries here and the sand box reports the stone.
+    cells: ["sand_box", "stone_box", "drill_container"]
+    topic_namespace: "load_cells"
+
+    # auto     use the firmware when it is publishing; otherwise advertise the
+    #          topics, publish nothing, and say so in the log. The rover value.
+    # microros the same, and complains louder about silence.
+    # mock     synthetic counts, no hardware. Never reached by accident: `auto`
+    #          does not fall back to it, because a made-up weight that looks
+    #          exactly like a real one is the worst thing this file could ship.
+    source: "auto"
+    raw_topic: "/load_cells/raw"
+    # The three-publisher alternative, paired to `cells` by position. Empty
+    # means raw_topic above.
+    raw_topics: [""]
+    # An HX711 chain runs at 10 SPS by default, so this is several missed
+    # conversions rather than one.
+    timeout_s: 2.0
+
+    publish_rate_hz: 10.0
+    status_rate_hz: 2.0
+
+    # -- CALIBRATION -------------------------------------------------------
+    # scale is COUNTS PER KILOGRAM.
+    #
+    # THESE THREE NUMBERS CAME FROM THE EMBEDDED TEAM'S FIRMWARE, NOT FROM A
+    # MEASUREMENT MADE HERE. They are the SAND_BOX_SF / ROCK_BOX_SF /
+    # DCONT_BOX_SF constants in their drill firmware, where they were compiled
+    # in and fed to HX711::set_scale(). They are used here because a number
+    # somebody derived on the bench beats the 1.0 placeholder that stood here
+    # before, and because they are the only figures anyone has.
+    #
+    # TREAT THEM AS PROVISIONAL, AND DO NOT READ THE UNIT OFF THIS FILE. There
+    # is no note anywhere of what mass unit they were derived in, and 20 counts
+    # per kilogram is FIVE ORDERS OF MAGNITUDE below what an HX711 at gain 128
+    # on a cell this size should give -- expect six figures. So either they are
+    # counts per gram against a very different amplifier setup, or they were
+    # never finished. The weights will be self-consistent and repeatable; they
+    # are not yet trustworthy in absolute terms. One known mass in each box
+    # settles it, and step 3 below is the whole job.
+    #
+    # This is exactly the edit-and-relaunch this package exists for: correcting
+    # a number here is a text change, not a reflash with the rover open.
+    #
+    # To calibrate one cell:
+    #   1. Empty it, then    ros2 service call /load_cells/<cell>/tare std_srvs/srv/Trigger
+    #      and paste the offset it logs into `offset` below. (The topic form,
+    #      `ros2 topic pub --once /load_cells/<cell>/tare std_msgs/UInt8 "data: 1"`,
+    #      does the same thing but cannot hand you the number back.)
+    #   2. Put a known mass on it and read the counts:
+    #        ros2 topic echo /load_cells/<cell>/raw
+    #   3. scale = (counts_with_mass - offset) / mass_in_kg
+    #   4. If the weight comes out negative, set invert: true rather than
+    #      making scale negative - the sign is which way the cell is bolted in,
+    #      and it belongs somewhere a reader will look for it.
+    cell:
+      sand_box:
+        # From the embedded team's SAND_BOX_SF. Provisional - see above.
+        scale: 20.0       # counts per kg
+        offset: 0.0       # counts with the box empty - `tare` gives you this
+        invert: false
+        # A moving average over this many conversions. Eight at 10 SPS is 0.8 s
+        # of lag, which is nothing on a box being filled by hand and takes the
+        # jitter off the last digit.
+        filter_samples: 8
+        # The converter's rails. A reading that reaches one is a cell that is
+        # unplugged or crushed, and is reported as a fault rather than
+        # converted into a confident enormous number.
+        raw_min: -8388608.0
+        raw_max: 8388607.0
+      stone_box:
+        # From the embedded team's ROCK_BOX_SF (`rock_box` is their name for
+        # this box). Provisional - see above.
+        scale: 21.0
+        offset: 0.0
+        invert: false
+        filter_samples: 8
+        raw_min: -8388608.0
+        raw_max: 8388607.0
+      drill_container:
+        # From the embedded team's DCONT_BOX_SF, which is NEGATIVE (-30.0):
+        # this cell reads the other way round for a positive load, because of
+        # how it is bolted in. Carried here as a positive scale plus
+        # invert: true, which is where this package keeps that sign - see step
+        # 4 above. Provisional - see above.
+        scale: 30.0
+        offset: 0.0
+        invert: true
+        # The same as the boxes', deliberately. This cell is bolted to the
+        # drill frame and the frame rings, which argues for a longer average --
+        # but this reading has to stay LIVE while the bin travels and while the
+        # drill cuts, and at 10 SPS every sample here is 100 ms of lag between
+        # the load changing and the topic showing it. Eight is 0.8 s, which is
+        # honest for a mass being poured; sixteen smeared it.
+        #
+        # The ringing is dealt with where it does not cost latency: the settle
+        # window below disqualifies the number for `valid` while the frame is
+        # still ringing, without ever holding the number back.
+        filter_samples: 8
+        raw_min: -8388608.0
+        raw_max: 8388607.0
+
+    # -- THE DRILL BIN'S GATE ----------------------------------------------
+    # The bin rides its rails between q = 0, parked forward of the mast, and
+    # q = -0.1304, back under the auger (drill.xacro). The cell is under the
+    # PARKED position: the bin sits on it at one end of that stroke, and at the
+    # other end the cell is holding nothing at all.
+    #
+    # An unloaded cell does not read "no data" - it reads ZERO, which is also
+    # what a parked-and-empty bin reads. Unqualified, the operator would watch
+    # the bin empty itself the moment it slid under the auger to collect, and
+    # fill back up on the way out. `valid` is that qualification and
+    # `weight_held` is the last number taken while it held.
+    #
+    # NONE OF THIS STOPS THE READING. drill_container/weight keeps publishing
+    # at publish_rate_hz throughout - through the travel, through the cut. The
+    # settings below decide what `valid` says about that number, nothing more.
+    container_cell: "drill_container"
+
+    # WHERE THE BIN IS, dead-reckoned from these rate commands. It has to be
+    # dead-reckoned: the actuator is a DC motor with no encoder, and on the
+    # real rover publish_wheel_joints.py publishes every drill joint at a
+    # constant 0.0 so MoveIt has a complete robot state. Gate on THAT and the
+    # answer is "parked" forever - including while the bin is under the auger,
+    # so the check would pass at exactly the moment it is wrong.
+    container_rate_topic: "/aries/drill_container_joint/cmd_vel"
+
+    # Keep in step with drill.xacro. These are the mechanical stops.
+    container_parked_position: 0.0
+    container_lower: -0.1304
+    container_upper: 0.0
+    # How close to parked still counts as seated. The bin's feet are wider
+    # than 5 mm, so it is genuinely still on the cell here.
+    container_parked_tolerance: 0.005
+    # Where the bin is assumed to be at startup. Parked is the stowed position
+    # and a linear actuator of this kind does not backdrive, so it is where it
+    # was left - but it IS an assumption. Running the bin into the parked end
+    # re-datums the estimate, because the integrator clamps at the stop.
+    container_initial_position: 0.0
+
+    # THE HONEST FIX, not yet wired. The bin's actuator has its own end switch
+    # at each end of its stroke. Put the forward one on a GPIO, publish a
+    # std_msgs/Bool, and name it here: it overrides the dead reckoning
+    # completely and re-datums it on every trip to the park end. Same shape as
+    # the stack light's estop_topics, and empty for the same reason - the sense
+    # line does not exist yet.
+    parked_switch_topic: ""
+    parked_switch_active_high: true
+
+    # A MEASURED bin position, if a real drill driver ever publishes one.
+    # Deliberately empty: see the note on publish_wheel_joints.py above.
+    container_joint_states_topic: ""
+    container_joint: "drill_container_joint"
+
+    # Quiet time after the bin stops moving, and after the auger stops, before
+    # a reading counts. A bin still rocking on its rails is not a sample mass,
+    # and neither is a frame still ringing from the cut.
+    container_settle_s: 1.5
+    auger_rate_topic: "/aries/drill_bit_joint/cmd_vel"
+    rate_epsilon: 1.0e-6
+    # Rate topics go silent when idle - drill_joystick.py sends its zeros and
+    # stops publishing. Silence is not a moving axis.
+    rate_timeout_s: 1.0
+
+    # -- MOCK --------------------------------------------------------------
+    # Only reached with source: "mock". Kilograms per cell, in `cells` order.
+    mock_kg: [0.35, 0.72, 0.12]
+    # In KILOGRAMS, not counts. Counts are only a mass once `scale` above is
+    # calibrated, and against the 1.0 placeholder a noise in counts comes out
+    # as tens of kilograms of jitter.
+    mock_noise_kg: 0.002
