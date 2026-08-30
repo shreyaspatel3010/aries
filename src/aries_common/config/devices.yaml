@@ -34,6 +34,11 @@ gripper:
   # the launch log, list_controllers and the checker all still read healthy
   # while nothing reaches the servo. `ros2 control list_hardware_components`
   # is the one that tells the truth.
+  #
+  # THAT OLD BOARD IS NOW THE SCIENCE BOARD -- 16739090 appears again under
+  # `science:` below. So a stale 16739090 here is no longer merely a dead path:
+  # it would point the gripper, the drill and the stack light at a board that
+  # is answering as the science module.
 
 science:
   # THE SECOND TEENSY. A separate board from the `gripper` one above, on its own
@@ -44,18 +49,27 @@ science:
   # 18/19 the sample bin's direction pins, 17/16 the sand box load cell, 25 the
   # auger's PWM), so this is two Teensys by necessity, not by preference.
   #
-  # NOT YET FILLED IN. The path below is a PLACEHOLDER: no science board was
-  # connected when this entry was written, so its serial number is unknown.
-  # Until it is corrected, `use_science:=true` will not find a board and the
-  # launch skips the second agent with a warning rather than failing.
+  # FILLED IN 2026-08-30, from the board connected on its own at the time.
   #
-  # To fill it in: plug in the science board ALONE (so there is no doubt which
-  # is which), run `ls /dev/serial/by-id/`, and paste the Teensyduino path here.
-  # Both Teensys enumerate with the same vendor and product ID and differ only
-  # by serial number, which is exactly why this must be a by-id path and never
-  # /dev/ttyACM*: ACM numbering is assignment order, so plugging the two boards
-  # in the other way round swaps them silently.
-  serial_port: ""
+  # THIS IS THE BOARD THAT USED TO BE THE GRIPPER/DRILL TEENSY. Serial 16739090
+  # is the number recorded a few lines up as the drill board's until it was
+  # swapped for 20379650 on 2026-08-26 -- so the old board has been repurposed
+  # as the science board rather than a new one being fitted. Worth knowing for
+  # two reasons:
+  #
+  #   * It may still be carrying drill firmware. A board flashed with
+  #     teensy_drill_sys answers /gripper/state and drill/limits and publishes
+  #     no /science/telemetry at all, which looks exactly like a science board
+  #     that is not working. Flash it: firmware/teensy_science_sys/flash.sh
+  #   * If 16739090 is ever plugged in expecting the DRILL, it will now be
+  #     claimed by the science agent instead. The launch refuses to guess
+  #     between two unclaimed Teensys precisely because of this.
+  #
+  # Always the by-id path. Both boards enumerate with the same vendor and
+  # product ID (16c0:0483) and differ only by serial number, so /dev/ttyACM*
+  # would be assignment order -- plug the two in the other way round and they
+  # swap silently.
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
 
 rover:
   # SocketCAN interface to the six ODrives. The bitrate has to match the

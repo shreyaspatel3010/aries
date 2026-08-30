@@ -185,8 +185,64 @@ run_pio_quiet() {
 # DEV="$(teensy_serial_dev)" inside a poll loop, and under `set -e` a non-zero
 # command substitution aborts the whole script -- which it did, right after a
 # successful write, while simply waiting for the board to come back.
+# THE BOARD THIS PROJECT IS FOR, not merely a board.
+#
+# This used to be `ls /dev/serial/by-id/ | grep -i teensy | head -1`, which was
+# correct while the rover had one Teensy and became dangerous the moment it had
+# two: `head -1` is alphabetical, so with both connected BOTH flash scripts
+# resolve to whichever serial number sorts first. Running the drill's flash.sh
+# with both plugged in would then overwrite the SCIENCE board with drill
+# firmware, silently, and the only hint was a post-flash warning that fires
+# after the write.
+#
+# Order of preference:
+#   1. the by-id path devices.yaml gives THIS block, if it is present
+#   2. the only Teensy present, if exactly one is present and no other block
+#      claims it -- this keeps a board with an unrecorded serial flashable
+#   3. nothing. With several unclaimed boards there is no answer worth guessing.
+#
+# Must always exit 0 even when it finds nothing: it is called as
+# DEV="$(teensy_serial_dev)" inside a poll loop, and under `set -e` a non-zero
+# command substitution aborts the whole script -- which it did once, right after
+# a successful write, while simply waiting for the board to come back.
 teensy_serial_dev() {
-  ls /dev/serial/by-id/ 2>/dev/null | grep -i teensy | head -1 || true
+  local configured base all dev other claimed unclaimed count
+
+  configured="$(devices_serial_port "$DEVICES_BLOCK")"
+  if [ -n "$configured" ]; then
+    base="${configured##*/}"
+    if [ -e "/dev/serial/by-id/$base" ]; then
+      printf '%s' "$base"
+      return 0
+    fi
+  fi
+
+  all="$(ls /dev/serial/by-id/ 2>/dev/null | grep -i teensy || true)"
+  [ -n "$all" ] || return 0
+
+  unclaimed=""
+  count=0
+  while IFS= read -r dev; do
+    [ -n "$dev" ] || continue
+    claimed=0
+    for other in $(devices_other_serial_ports "$DEVICES_BLOCK"); do
+      [ "${other##*/}" = "$dev" ] && claimed=1
+    done
+    if [ "$claimed" -eq 0 ]; then
+      unclaimed="$dev"
+      count=$((count + 1))
+    fi
+  done <<EOT
+$all
+EOT
+
+  [ "$count" -eq 1 ] && printf '%s' "$unclaimed"
+  return 0
+}
+
+# Only for the error message: how many Teensys are plugged in at all.
+teensy_count() {
+  ls /dev/serial/by-id/ 2>/dev/null | grep -ic teensy || true
 }
 in_bootloader() { lsusb -d 16c0:0478 >/dev/null 2>&1; }
 
@@ -217,6 +273,20 @@ devices_serial_port() {
       exit
     }
   ' "$DEVICES_YAML" 2>/dev/null || true
+}
+
+# by-id paths that devices.yaml assigns to a DIFFERENT block than $1.
+#
+# Used so this script never flashes a board another project owns. Same idea as
+# _other_configured_teensy_ports() in aries_moveit's hardware launch, and here
+# for the same reason: the two Teensys share a vendor and product ID and differ
+# only by serial number.
+devices_other_serial_ports() {
+  local blk
+  for blk in gripper science; do
+    [ "$blk" = "$1" ] && continue
+    devices_serial_port "$blk"
+  done
 }
 
 
@@ -300,6 +370,15 @@ if in_bootloader; then
 else
   DEV="$(teensy_serial_dev)"
   if [ -z "$DEV" ]; then
+    if [ "$(teensy_count)" -gt 0 ]; then
+      die "found $(teensy_count) Teensy device(s), but none of them is this
+       project's board and more than one is unclaimed — REFUSING TO GUESS.
+       The two boards differ only by serial number, so flashing the wrong one
+       would overwrite the other project's firmware.
+         connected: $(ls /dev/serial/by-id/ 2>/dev/null | grep -i teensy | tr '\n' ' ')
+         wanted:    $(devices_serial_port "$DEVICES_BLOCK")
+       Fix gripper.serial_port in devices.yaml, or unplug the other board."
+    fi
     die "no Teensy found — neither a serial device nor the HalfKay bootloader.
        Check the USB cable, then press the physical button on the board to
        force it into the bootloader and run this again."
