@@ -304,6 +304,22 @@ New from the embedded team, 2026-08-30, on **28 / 29 / 30 — their numbers,
 unchanged**. `pump/state` (`UInt8`) picks the action: `1` release, `2` draw,
 `3`/`4` home in either direction, `5` home-then-draw, `0` stop.
 
+**`pump/purge` (`Float32`) is the reverse run that empties the tube**, added
+2026-08-31 on this rover's side rather than upstream's. It takes **seconds**,
+not millilitres, and that unit is the point: a purge pushes air as readily as
+liquid, and the 6.755 mL/s below was measured on liquid, so a millilitre figure
+here would be arithmetic dressed up as a measurement. `≤ 0` and `NaN` stop the
+pump instead of starting it, which makes the one topic both the run and its
+abort — the operator is watching the tube, and the moment it runs clear is when
+they want it off. Clamped to 120 s, four times a full-tube clear.
+
+It drives the **release** direction (`Pump::kDirPurge`, which is `kDirRelease`).
+`pump/state` `3` is the same move at a fixed 30 s and predates it; the topic
+exists because emptying a line is a watched operation and 30 s is rarely the
+number you want. If the bench shows this pump head plumbed so that *draw* is the
+direction that clears the line, `kDirPurge` is the entire fix — one constant in
+`drill.h`, nothing else in the class moves.
+
 **Commanded in millilitres, run as a timer.** There is no flow sensor and no
 level sensor. `Pump` converts a volume into a run time at a flow rate the
 embedded team measured — 6.755 mL/s, averaged over 100 mL/15 s, 150 mL/22 s and

@@ -339,27 +339,57 @@ void Pump::start_move(int pwm_flowrate, bool dir, uint32_t duration_us)
   m_timer.begin(isr_timer_router, duration_us);
 }
 
-// dir=true pushes liquid out, dir=false pulls it in. Named rather than
+// kDirRelease pushes liquid out, kDirDraw pulls it in. Named rather than
 // repeated, because `drive(x, false)` three lines apart in two functions is
-// exactly how a pump ends up running the wrong way.
+// exactly how a pump ends up running the wrong way. They were bare `true` and
+// `false` here until purge() arrived and made it three functions.
 void Pump::release()
 {
-  start_move(m_pwm_flowrate, true, move_duration_us(m_req_vol));
+  start_move(m_pwm_flowrate, kDirRelease, move_duration_us(m_req_vol));
 }
 
 void Pump::draw()
 {
-  start_move(m_pwm_flowrate, false, move_duration_us(m_req_vol));
+  start_move(m_pwm_flowrate, kDirDraw, move_duration_us(m_req_vol));
 }
 
 void Pump::release(int pwm_flowrate, float req_vol)
 {
-  start_move(pwm_flowrate, true, move_duration_us(req_vol));
+  start_move(pwm_flowrate, kDirRelease, move_duration_us(req_vol));
 }
 
 void Pump::draw(int pwm_flowrate, float req_vol)
 {
-  start_move(pwm_flowrate, false, move_duration_us(req_vol));
+  start_move(pwm_flowrate, kDirDraw, move_duration_us(req_vol));
+}
+
+// REVERSE RUN TO EMPTY THE TUBE. Seconds, not millilitres -- see the note in
+// drill.h: a purge moves air as readily as liquid and the flow rate was
+// measured on liquid, so millilitres here would be arithmetic pretending to be
+// a measurement.
+//
+// The guard is deliberately the same shape as move_duration_us(): `!(x > 0)`
+// rather than `x <= 0`, so NaN -- which compares false against everything, and
+// which is what a Float32 carrying a bad parse holds -- lands in the stop
+// branch instead of falling through into an unbounded run. That is FIX 1 from
+// the delivered class, in the one place where getting it wrong means a pump
+// running with nobody expecting it to be.
+void Pump::purge(float seconds)
+{
+  if (!(seconds > 0.0f))
+  {
+    // A zero, a negative, or a NaN STOPS. This topic is its own abort: the
+    // operator watching the tube run clear should not have to switch topics to
+    // end the run early.
+    stop_motor();
+    return;
+  }
+
+  if (seconds > m_purge_max_s)
+    seconds = m_purge_max_s;
+
+  start_move(m_pwm_flowrate, kDirPurge,
+             (uint32_t)(seconds * 1000.0f * 1000.0f));
 }
 
 // FIX 3 of 3. Upstream opened this with `m_home_dur = 30;` -- an assignment to
@@ -398,11 +428,11 @@ void Pump::home_then_draw()
   {
     // A zero dose means there is no draw to append; run the home alone rather
     // than treating the whole command as a no-op.
-    start_move(m_pwm_flowrate, false, home_us);
+    start_move(m_pwm_flowrate, kDirDraw, home_us);
     return;
   }
 
-  start_move(m_pwm_flowrate, false, home_us + draw_us);
+  start_move(m_pwm_flowrate, kDirDraw, home_us + draw_us);
 }
 
 void Pump::stop_motor()

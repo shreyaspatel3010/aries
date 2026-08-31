@@ -64,6 +64,15 @@ dose in progress, send the stop explicitly:
 
     ros2 topic pub --once /pump/state std_msgs/UInt8 "data: 0"
 
+EMPTYING THE TUBE IS NOT ON THE PAD, and cannot be without taking a binding off
+something else: under LT, X is this node's pump draw and Y / A / B are the arm's
+three pose presets, so all four face buttons are spoken for. It is a topic:
+
+    ros2 topic pub --once /pump/purge std_msgs/Float32 "data: 20.0"   # 20 s
+    ros2 topic pub --once /pump/purge std_msgs/Float32 "data: 0.0"    # cut short
+
+Seconds, in the reverse (release) direction, clamped to 120 s by the firmware.
+
 Publishing is gated too: a 30 Hz stream of rates while LT is held, then a short
 burst of zeros on release (`stop_hold_sec`, so one dropped message cannot leave
 a motor running), then silence. An idle drill leaves its command topics free

@@ -127,6 +127,9 @@
 // the motor for however long that volume takes at a measured flow rate. There
 // is no flow sensor, so a commanded volume is a timer, not a measurement.
 //
+// `pump/purge` (Float32 SECONDS) is the reverse run that empties the tube. Same
+// bridge, same pins, opposite direction to a draw -- see Pump::kDirPurge.
+//
 // 28 / 29 / 30, VERBATIM FROM UPSTREAM, and they drop straight in.
 //
 // These three used to be the SAMPLE BIN's, and upstream's pin block still has

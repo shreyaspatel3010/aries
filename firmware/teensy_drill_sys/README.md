@@ -35,13 +35,14 @@ resolves to one.
 | `linact/cext` | `Float32` | in | reliable | Bin travel, signed mm |
 | `sand_box/lid/cmd` | `Float32` | in | reliable | Lid **speed**, −1…1, 0 = stop |
 | `pump/state` | `UInt8` | in | reliable | 1 release, 2 draw, 3/4 home, 5 home-then-draw, 0 stop |
+| `pump/purge` | `Float32` | in | reliable | **Seconds** of reverse run to empty the tube. ≤ 0 and NaN stop; clamped to 120 s |
 | `load_cells/raw` | `Int32MultiArray` | out | reliable | Three RAW converter counts, 10 Hz, in the order sand box / stone box / bin |
 | `drill/pin_scan` | `UInt64` | out | reliable | Diagnostic: bit N set = pin N reads LOW |
 
-Eight subscriptions and four publishers, against a `colcon.meta` that allows ten
-and five. **Check that file before adding a ninth subscription** — and remember
-that editing it does nothing until the cached micro-ROS library is rebuilt,
-which `./flash.sh` does by default.
+Nine subscriptions and four publishers, against a `colcon.meta` that allows ten
+and five. **There is one subscription slot left.** Check that file before adding
+an eleventh — and remember that editing it does nothing until the cached
+micro-ROS library is rebuilt, which `./flash.sh` does by default.
 
 **The load cells send counts, not kilograms.** Scale, offset and tare live in
 `aries_load_cells`' YAML on the host, so a recalibration is an edit and a

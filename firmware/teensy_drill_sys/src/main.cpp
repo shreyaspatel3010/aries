@@ -29,6 +29,9 @@
 //   sand_box/lid/cmd           Float32  lid SPEED, -1..1, 0=stop       lid_servo
 //   pump/state                 UInt8    1=release 2=draw 3/4=home      pump
 //                                       5=home-then-draw, 0=stop
+//   pump/purge                 Float32  SECONDS of reverse run to      pump
+//                                       empty the tube; <=0 and NaN
+//                                       stop, clamped to 120 s
 //   load_cells/raw             Int32MultiArray  three RAW converter    load_cell_*
 //                                       counts, 10 Hz, in the order
 //                                       sand box / stone box / bin
@@ -180,6 +183,14 @@ LinearActuator bin_actuator(BIN_PWM, BIN_INA, BIN_INB);
 // height, tube wear and battery state, exactly as the drill's three axes do.
 rcl_subscription_t pump_cmd_sub;
 std_msgs__msg__UInt8 pump_cmd_msg;
+
+// SECOND TOPIC ON ONE MECHANISM, for the same reason the sample bin has two:
+// pump/state is a UInt8 menu and a purge needs a NUMBER -- how many seconds to
+// run -- which does not fit in a menu entry. The bin split state/cext the same
+// way. Everything either topic starts, pump/state 0 still stops.
+rcl_subscription_t pump_purge_sub;
+std_msgs__msg__Float32 pump_purge_msg;
+
 Pump pump(PUMP_PWM, PUMP_INA, PUMP_INB);
 
 rcl_subscription_t stalig_cmd_sub;
@@ -482,10 +493,24 @@ void pump_cmd_callback(const void *msin)
   }
 }
 
+// REVERSE RUN, to clear the tube. One Float32 of SECONDS; see Pump::purge()
+// for why this is a duration and not a volume, and why a 0 stops rather than
+// starting a default-length run.
+//
+// This is the same direction pump/state 1 and 3 drive. 3 is the fixed 30 s
+// version of it -- this topic exists because emptying a line is watched, and
+// the operator wants to say how long and then cut it short.
+void pump_purge_callback(const void *msin)
+{
+  const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msin;
+  pump.purge(msg->data);
+}
+
 void stalig_state_cmd_callback(const void *msin);
 void gservo_cmd_callback(const void *msin);
 void lid_cmd_callback(const void *msin);
 void pump_cmd_callback(const void *msin);
+void pump_purge_callback(const void *msin);
 
 static bool create_entities()
 {
@@ -604,24 +629,35 @@ static bool create_entities()
     return false;
   entities_stage = 11;
 
-  // EIGHT subscriptions. RMW_UXRCE_MAX_SUBSCRIPTIONS defaults to 5 in
+  // RELIABLE, for the same reason as pump/state above and one more: this
+  // topic's 0 is how a purge in progress is CUT SHORT. A dropped stop leaves
+  // the pump running for the rest of a duration the operator has already
+  // decided is too long.
+  if (RCL_RET_OK != rclc_subscription_init_default(
+                        &pump_purge_sub, &node,
+                        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "pump/purge"))
+    return false;
+  entities_stage = 12;
+
+  // NINE subscriptions. RMW_UXRCE_MAX_SUBSCRIPTIONS defaults to 5 in
   // micro_ros_platformio, so this needs the raised limit in colcon.meta at the
   // project root (currently 10) -- without it the sixth init above fails and
   // the board is dead. That file is part of the build, not a convenience, and
-  // it is the file to check before adding a ninth.
+  // THERE IS EXACTLY ONE SLOT LEFT: a tenth subscription is the last one that
+  // fits, and an eleventh needs that number raised first.
   // RELIABLE, unlike /gripper/state: this is an edge, not a stream. Losing the
   // sample where a switch closes is losing the whole message.
   if (RCL_RET_OK != rclc_publisher_init_default(
                         &drill_limits_pub, &node,
                         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "drill/limits"))
     return false;
-  entities_stage = 12;
+  entities_stage = 13;
 
   if (RCL_RET_OK != rclc_publisher_init_default(
                         &pin_scan_pub, &node,
                         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt64), "drill/pin_scan"))
     return false;
-  entities_stage = 13;
+  entities_stage = 14;
 
   // RELIABLE, AND THAT IS NOT A PREFERENCE. The rate argues for best effort --
   // 10 Hz, newest supersedes -- but aries_load_cells subscribes with
@@ -646,15 +682,15 @@ static bool create_entities()
                         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray),
                         "load_cells/raw"))
     return false;
-  entities_stage = 14;
+  entities_stage = 15;
 
-  // EIGHT HANDLES, one per subscription -- the pump made it eight.
+  // NINE HANDLES, one per subscription -- pump/purge made it nine.
   // rclc_executor_add_subscription past the end of this array returns an error
   // nothing here checks, and the extra subscription is then simply never spun:
   // its topic exists, matches, and silently delivers nothing.
-  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 8, &allocator))
+  if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 9, &allocator))
     return false;
-  entities_stage = 15;
+  entities_stage = 16;
 
   rclc_executor_add_subscription(&executor, &gservo_cmd_sub, &gservo_cmd_msg,
                                  &gservo_cmd_callback, ON_NEW_DATA);
@@ -672,6 +708,8 @@ static bool create_entities()
                                  &lid_cmd_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &pump_cmd_sub, &pump_cmd_msg,
                                  &pump_cmd_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &pump_purge_sub, &pump_purge_msg,
+                                 &pump_purge_callback, ON_NEW_DATA);
   return true;
 }
 
@@ -684,14 +722,16 @@ static void destroy_entities()
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
   // Reverse creation order.
-  if (entities_stage >= 15)
+  if (entities_stage >= 16)
     rclc_executor_fini(&executor);
-  if (entities_stage >= 14)
+  if (entities_stage >= 15)
     IGNORE_RC(rcl_publisher_fini(&load_cells_raw_pub, &node));
-  if (entities_stage >= 13)
+  if (entities_stage >= 14)
     IGNORE_RC(rcl_publisher_fini(&pin_scan_pub, &node));
-  if (entities_stage >= 12)
+  if (entities_stage >= 13)
     IGNORE_RC(rcl_publisher_fini(&drill_limits_pub, &node));
+  if (entities_stage >= 12)
+    IGNORE_RC(rcl_subscription_fini(&pump_purge_sub, &node));
   if (entities_stage >= 11)
     IGNORE_RC(rcl_subscription_fini(&pump_cmd_sub, &node));
   if (entities_stage >= 10)

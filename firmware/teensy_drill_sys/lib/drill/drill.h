@@ -130,7 +130,8 @@ private:
 // height, tube wear and battery state exactly as the drill's axes do.
 //
 // draw() pulls liquid in, release() pushes it out. home() runs it long enough
-// to clear the whole tube in whichever direction it is given.
+// to clear the whole tube in whichever direction it is given, and purge() is
+// that reverse run with the duration chosen by the caller instead of fixed.
 //
 // THREE THINGS WERE FIXED FROM THE DELIVERED CLASS, all of them shapes that had
 // already bitten LinearActuator, which this was copy-pasted from. Each is
@@ -162,6 +163,26 @@ public:
   // to sense arrival against.
   void home(bool dir);
 
+  // REVERSE RUN, to empty the tube. Drives the pump in the RELEASE direction
+  // -- the opposite of draw() -- for a number of SECONDS rather than a volume,
+  // and that unit is the point rather than an oversight: a purge pushes
+  // whatever is in the line, air included, and m_oem_max_flowrate was measured
+  // on liquid. Converting a millilitre figure through it would dress a guess up
+  // as a measurement. There is nothing to sense the tube emptying against, so a
+  // purge is exactly as long as it is told to be.
+  //
+  // seconds <= 0, and NaN, STOP the pump rather than starting it. That makes
+  // the one topic both the run and its abort, which matters here: the operator
+  // is watching the tube, and the moment it runs clear is when they want it
+  // off. A default-constructed message therefore stops -- the safe direction.
+  //
+  // Clamped to m_purge_max_s. Nothing about this command knows how long a tube
+  // is, so an unclamped number is an unattended pump.
+  //
+  // home(true) is the fixed-duration version of the same move and predates
+  // this: pump/state 3 is a 30 s purge with no way to say otherwise.
+  void purge(float seconds);
+
   // home() in the DRAW direction and then draw(), as one continuous run.
   //
   // Upstream expressed this as two calls and it did not work; see note 2 above
@@ -185,8 +206,27 @@ private:
   // without a clamp a wild number is an arbitrarily long unattended pump.
   static constexpr float m_oem_max_vol = 200.0f; // [mL]
 
+  // WHICH WAY ROUND THE BRIDGE EACH ACTION DRIVES. Named because the pump is
+  // the one mechanism on this board where a flipped direction is invisible
+  // until liquid is on the floor: nothing here can sense flow, so a backwards
+  // draw looks exactly like a working one that drew nothing.
+  static constexpr bool kDirRelease = true; // pushes liquid out of the tube
+  static constexpr bool kDirDraw = false;   // pulls liquid in from the tank
+
+  // A purge runs the release direction, because release is the direction that
+  // empties. IF THE BENCH SAYS OTHERWISE -- if this pump head is plumbed so
+  // that draw is the one that clears the line -- this constant is the entire
+  // fix, and nothing else in the class needs to move.
+  static constexpr bool kDirPurge = kDirRelease;
+
   int m_pwm_flowrate = 255; // 100% duty-cycle for max power
   float m_req_vol = 75.0f;  // [mL] default dose
+
+  // Ceiling on a commanded purge. Four times m_home_dur, which is what it
+  // takes to clear the whole tube -- long enough for a line far longer than
+  // this rover's, short enough that a typed 6000 is a two-minute run and not
+  // an afternoon. Same role m_oem_max_vol plays for a dose.
+  static constexpr float m_purge_max_s = 120.0f; // [s]
 
   // HOW LONG A HOME RUNS. Upstream computed 100 mL / 6.755 mL/s = 14.8 s in the
   // initialiser and then threw it away with `m_home_dur = 30;` on the first
