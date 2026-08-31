@@ -77,8 +77,8 @@ def generate_launch_description():
     finger_type_arg = DeclareLaunchArgument(
         'finger_type',
         default_value='bucket',
-        choices=['bucket', 'maintenance', 'probe'],
-        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
+        choices=['bucket', 'maintenance'],
+        description='Swappable fingertip: "bucket" (scoops) or "maintenance" (flat jaws); must match what is bolted on'
     )
 
     hardware_protocol_arg = DeclareLaunchArgument(
@@ -494,8 +494,8 @@ def generate_launch_description():
             'hardware_protocol': hardware_protocol,
             # Forwarded so MoveIt builds the SAME robot as Gazebo and
             # robot_state_publisher. Omitting these let move_group fall back to
-            # the xacro default (finger_type=probe) and, because it publishes its
-            # own robot_description, overwrite the correct model on that topic.
+            # the xacro defaults and, because it publishes its own
+            # robot_description, overwrite the correct model on that topic.
             'gripper_type': gripper_type,
             'finger_type': finger_type,
             'use_sim_time': use_sim_time,

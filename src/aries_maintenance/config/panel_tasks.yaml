@@ -12,6 +12,26 @@ panel_operator:
     # Standoff planning remains collision-aware. The final straight stroke must
     # intentionally contact the switch, and the panel has no MoveIt ACM entry.
     contact_avoid_collisions: false
+    # THESE THREE ARE STILL THE RETIRED v2 GRIPPER'S NUMBERS and they have not
+    # been re-derived for the ST3215 maintenance fingers (added 2026-08-31, see
+    # aries/urdf/gripper_st3215.xacro). Do not run the panel against a real
+    # console on them: every offset below is measured from gripper_tcp, and the
+    # ST3215 jaws sit in a different place.
+    #
+    #   v2 maintenance tip contact     215.0 mm   ->  offset 0.065
+    #   v2 closed leading surface      233.7 mm   ->  offset 0.084
+    #   v2 closed position             q = -0.03
+    #
+    #   st3215 maintenance jaw tip     207.8 mm   ->  offset 0.0578
+    #   st3215 clamping face centroid  158.8 mm   ->  offset 0.0088
+    #   st3215 closed position         q = +0.07, at which the jaws hold
+    #                                  0.595 mm - they cannot be driven shut
+    #
+    # The jaw tip and the closed position are geometry and are quoted above.
+    # tool_contact_offset_m is NOT geometry: the ST3215 finger clamps over its
+    # whole 93 mm face rather than at one tip, so where along it a knob should
+    # be gripped is a task choice, and it wants a bench check with the panel in
+    # front of the arm before it is written down.
     # Maintenance fingertip contact (215 mm) minus gripper_tcp (150 mm).
     tool_contact_offset_m: 0.065
     # Closed-finger leading surface (233.7 mm) minus gripper_tcp (150 mm).

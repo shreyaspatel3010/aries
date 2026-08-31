@@ -235,7 +235,7 @@ address (two machines on a switch).
 correct as the arguments given to it:
 
 ```bash
-ros2 launch aries_comms base_station.launch.py finger_type:=probe
+ros2 launch aries_comms base_station.launch.py finger_type:=maintenance
 ```
 
 A base station showing bucket fingers while the rover carries the probe tips is

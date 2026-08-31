@@ -48,8 +48,8 @@ def generate_launch_description():
     finger_type_arg = DeclareLaunchArgument(
         'finger_type',
         default_value='bucket',
-        choices=['bucket', 'maintenance', 'probe'],
-        description='Swappable fingertip: "bucket", "maintenance", or "probe"'
+        choices=['bucket', 'maintenance'],
+        description='Swappable fingertip: "bucket" (scoops) or "maintenance" (flat jaws); must match what is bolted on'
     )
     
     use_gui_arg = DeclareLaunchArgument(

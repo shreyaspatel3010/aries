@@ -1021,7 +1021,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
             DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"], description="Which gripper is bolted to the flange. Only the ST3215 rack-and-pinion exists; v2 and the older four-bars are retired to aries/urdf/legacy/. Accepted-and-narrowed because a dozen launch files pass it down."),
-            DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"], description="Swappable fingertip mesh (new/v2 gripper)"),
+            DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance"], description="Swappable fingertip mesh; must match the pair bolted to the racks"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),
             DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Global hardware protocol passed to xacro (arm+gripper)"),
             DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "st3215", "mock_hardware", "gazebo"], description="Hardware protocol for gripper backend. 'auto' resolves to st3215 when the bus-servo adapter is present, else mock_hardware. 'rebel' is gone with the Teensy gripper - the Teensy itself still runs the drill, stack light and load cells."),

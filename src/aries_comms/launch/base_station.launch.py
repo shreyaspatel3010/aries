@@ -361,7 +361,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "finger_type", default_value="bucket",
-            choices=["bucket", "maintenance", "probe"],
+            choices=["bucket", "maintenance"],
             description="MUST match the rover. Wrong tips look plausible and "
                         "plan against the wrong collision model.",
         ),

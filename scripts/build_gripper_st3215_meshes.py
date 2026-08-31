@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Split the ST3215 rack-and-pinion gripper CAD export into per-link URDF meshes.
 
-Source asset (repo root):
-    new_gripper.glb    whole assembly, one flat list of solids in one frame
+Source assets (repo root):
+    new_gripper.glb                     whole assembly, one flat list of solids
+                                        in one frame, wearing the bucket scoops
+    Maintenance Gripper Finger L.stl    the alternative fingertip pair, exported
+    Maintenance Gripper Finger R.stl    per part with no assembly context
+
+The fingertips are SWAPPABLE and the xacro branches on finger_type, so this
+script emits a full set of numbers per pair rather than assuming the one the
+assembly happens to be wearing.  The loose pairs carry no assembly frame at all;
+fit_fingertip_pair() lands them by matching their bolt face against the bucket's,
+which also derives which side each part belongs on.  See its docstring - getting
+that backwards is close to invisible.
 
 The 2026-08-28 19:28 re-export merged the original 20 solids down to 8 BY PRINT
 COLOUR, not by link - the same trap igus.glb set.  Nothing moved, but the
@@ -36,6 +46,34 @@ import trimesh
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(REPO, "src", "aries", "meshes", "gripper_st3215")
 SRC = os.path.join(REPO, "new_gripper.glb")
+
+# --------------------------------------------------------------------------
+# Swappable fingertips
+# --------------------------------------------------------------------------
+# The bucket scoops come out of the assembly GLB above, but every OTHER
+# fingertip arrives as its own pair of STLs exported from the part file, each
+# on its own CAD datum with no assembly context.  Those are listed here.
+#
+# The exported names are kept EXACTLY as CAD writes them, spaces and all, so a
+# re-export drops in without a rename step that someone will forget.
+#
+# NOTHING ABOUT THEIR PLACEMENT IS HAND-ENTERED.  fit_fingertip() below lands
+# each one by matching its bolt-face outline against the bucket's, which is the
+# same rack interface, so the offsets and - more importantly - which side each
+# part belongs on are re-derived on every run.  See its docstring for why a
+# bounding box or an ICP is the wrong tool for that job.
+FINGER_SRC = {
+    "maintenance": (os.path.join(REPO, "Maintenance Gripper Finger L.stl"),
+                    os.path.join(REPO, "Maintenance Gripper Finger R.stl")),
+}
+
+# The two rigid placements a fingertip can have on the rack.  A physical part
+# cannot be mirrored, so the only freedom is whether it bolts down as drawn or
+# turned end for end; the maintenance pair uses one of each.
+FINGER_PLACEMENTS = (
+    ("as drawn", np.eye(4)),
+    ("turned 180 deg about Z", trimesh.transformations.rotation_matrix(np.pi, [0, 0, 1])),
+)
 
 # --------------------------------------------------------------------------
 # CAD frame -> arm_gripper_base_link
@@ -212,6 +250,124 @@ def collision_bands(mesh, n_bands, samples=300000):
                          hi - lo])
         out.append((c, size))
     return out
+
+
+def mount_face(mesh):
+    """The bolt face outline: the unique (x, y) vertices on the mesh's lowest Z.
+
+    Every fingertip bolts to the flat top of its rack, so this face is the one
+    feature that is identical across the whole fingertip family - same outline,
+    same two counterbored bosses, same pair of locating notches.  It is
+    therefore the datum, and it is returned sorted so two faces can be compared
+    row for row.
+    """
+    v = mesh.vertices
+    face = v[v[:, 2] < v[:, 2].min() + 1e-6]
+    u = np.unique(np.round(face[:, :2], 6), axis=0)
+    return u[np.lexsort((u[:, 1], u[:, 0]))]
+
+
+def bolt_fit(raw, rot, reference):
+    """Translation and residual landing ``raw`` rotated by ``rot`` on ``reference``.
+
+    Both bolt faces are the same point set, so the centroid offset IS the
+    translation and the residual afterwards either vanishes or it does not.
+    """
+    m = raw.copy()
+    m.apply_transform(rot)
+    face, ref = mount_face(m), mount_face(reference)
+    if face.shape != ref.shape:
+        return None, float("inf")
+    dxy = ref.mean(axis=0) - face.mean(axis=0)
+    residual = np.abs(face + dxy - ref).max()
+    shift = np.array([dxy[0], dxy[1],
+                      reference.vertices[:, 2].min() - m.vertices[:, 2].min()])
+    return trimesh.transformations.translation_matrix(shift) @ rot, residual
+
+
+def clamping_plane(mesh):
+    """Which shank plane carries the flat clamping face: 'lo' (-X) or 'hi' (+X).
+
+    The shank planes are the two X extremes of the bolt face, i.e. the flat
+    sides of the 32 mm block every fingertip in this family starts as.  One of
+    them is the jaw's working face and is very nearly solid; the other is the
+    back, which is always relieved - scooped out on the bucket, swept away into
+    the hook on the maintenance finger.  So the larger planar area is the
+    working face, by a factor of 1.5 or better on every part measured so far.
+    """
+    v = mesh.vertices
+    bolt = v[v[:, 2] < v[:, 2].min() + 1e-6][:, 0]
+    tris = mesh.vertices[mesh.faces]
+    def planar_area(x):
+        return mesh.area_faces[np.all(np.abs(tris[:, :, 0] - x) < 1e-5, axis=1)].sum()
+    lo, hi = planar_area(bolt.min()), planar_area(bolt.max())
+    if min(lo, hi) > 0.7 * max(lo, hi):
+        raise SystemExit("the two shank planes carry the same area - this part has "
+                         "no working face to tell its handedness from")
+    return "lo" if lo > hi else "hi"
+
+
+def fit_fingertip_pair(raws, references, tol=5e-6):
+    """Land a fingertip pair, deriving which side each part goes on.
+
+    ``raws`` is {name: mesh} straight off disk, ``references`` is
+    {"left": tip, "right": tip} already fitted.  Returns
+    {side: (name, placed mesh, placement label, transform)}.
+
+    THE FILENAME IS NOT EVIDENCE.  A part exported as "... L.stl" is labelled by
+    whoever exported it, and a swapped pair is close to invisible: both halves
+    have the same silhouette from the front, so it renders as a working gripper
+    whose jaws present their backs to each other.  Two independent features
+    decide it instead, and they answer different halves of the question:
+
+      the BOLT FACE fixes which way round the part bolts down.  Its outline is
+      mirror-symmetric in X, so it says nothing at all about the side - a pure
+      X translation lands it on either rack - but its two locating notches sit
+      0.250 mm off the outline's own midline, so of the two ways to turn a part
+      about Z exactly one matches to the micron and the other misses by 0.500
+      mm.  That also pins the X, Y and Z offsets outright.
+
+      the CLAMPING FACE then fixes the side, by having to point at the other
+      jaw.  See clamping_plane().
+
+    Neither alone is enough and neither is a tolerance to be relaxed: loosen the
+    bolt-face fit past a few microns and both turns pass, and the part goes on
+    upside down.
+    """
+    fits = {}
+    for name, raw in sorted(raws.items()):
+        turns = []
+        for label, rot in FINGER_PLACEMENTS:
+            _, residual = bolt_fit(raw, rot, references["left"])
+            if residual <= tol:
+                turns.append((label, rot, residual))
+        if not turns:
+            raise SystemExit(
+                f"{name}: neither turn lands its bolt face on the rack. Either it is "
+                f"not a fingertip for this gripper, or the mount interface changed - "
+                f"in which case the bucket is wrong too and the whole family needs "
+                f"re-deriving.")
+        if len(turns) > 1:
+            raise SystemExit(f"{name}: the bolt face fits both turns; the 0.250 mm "
+                             f"notch asymmetry is gone from the export")
+        label, rot, residual = turns[0]
+
+        turned = raw.copy()
+        turned.apply_transform(rot)
+        side = "left" if clamping_plane(turned) == "hi" else "right"
+        if side in fits:
+            raise SystemExit(f"{name} and {fits[side][0]} both land on the {side} rack "
+                             f"- this is two copies of one hand, not a pair")
+
+        transform, residual = bolt_fit(raw, rot, references[side])
+        mesh = raw.copy()
+        mesh.apply_transform(transform)
+        fits[side] = (name, mesh, label, transform, residual)
+
+    missing = set(references) - set(fits)
+    if missing:
+        raise SystemExit(f"no part landed on the {', '.join(sorted(missing))} rack")
+    return fits
 
 
 def travel_limit(jaw, mount, direction, cell=0.001):
@@ -413,17 +569,102 @@ def main():
     print(f"  jaw span            z = {tip_l.vertices[:, 2].min() * 1e3:.1f} to {lip_z * 1e3:.1f} mm")
     print(f"  flat shank face at  x = {shank[:, 0].max() * 1e3:+.3f} mm at q = 0")
 
+    # --- swappable fingertips -------------------------------------------
+    # Everything above measures the bucket, which is the fingertip the assembly
+    # was exported with.  Each alternative pair is landed on the same rack here
+    # and measured the same way, because the xacro branches on finger_type and
+    # needs a full set of numbers per branch - a fingertip that reuses the
+    # bucket's inertia or its collision boxes is worse than no fingertip at
+    # all, since it looks right in every view.
+    exports = [("st3215_base.stl", base),
+               ("st3215_pinion.stl", pinion),
+               ("st3215_rack_left.stl", rack_l),
+               ("st3215_rack_right.stl", rack_r),
+               ("st3215_bucket_left.stl", tip_l),
+               ("st3215_bucket_right.stl", tip_r)]
+    references = {"left": tip_l, "right": tip_r}
+
+    for family, paths in sorted(FINGER_SRC.items()):
+        print()
+        print("=" * 72)
+        print(f"FINGERTIP  {family.upper()}   (finger_type:={family})")
+        print("=" * 72)
+        raws = {}
+        for path in paths:
+            if not os.path.exists(path):
+                sys.exit(f"missing {path}")
+            # process=True merges the duplicated STL vertices, without which
+            # nothing is watertight and every volume and inertia is garbage.
+            raws[os.path.basename(path)] = trimesh.load(path, process=True)
+        fits = fit_fingertip_pair(raws, references)
+
+        for side in ("left", "right"):
+            name, mesh, label, transform, residual = fits[side]
+            t = transform[:3, 3]
+            print(f"  {side:5s} <- {name}")
+            print(f"          {label}, then {t[0] * 1e3:+.3f} {t[1] * 1e3:+.3f} "
+                  f"{t[2] * 1e3:+.3f} mm   (bolt face residual {residual * 1e6:.2f} um)")
+            print(f"          watertight {mesh.is_watertight}   volume "
+                  f"{mesh.volume * 1e6:.2f} cm^3   {len(mesh.faces)} faces")
+
+        f_l, f_r = fits["left"][1], fits["right"][1]
+
+        # THE CONTACT ANGLE IS A PROPERTY OF THE FINGER, NOT OF THE GRIPPER.
+        # The bucket's scoops nest, so their lips meet at the +0.07 rad this
+        # stack calls closed.  A flat-faced finger has nothing that reaches
+        # past the shank plane, so it meets later - possibly past the joint
+        # limit, in which case "closed" is a gap and everything that converts a
+        # width into an angle has to know that.
+        opening = f_r.bounds[0][0] - f_l.bounds[1][0]
+        q_touch = opening / (2.0 * PITCH_R)
+        gap_at_closed = opening - 2.0 * Q_CLOSED * PITCH_R
+        print()
+        print(f"  facing surfaces     {opening * 1e3:+.4f} mm apart at q = 0")
+        print(f"  jaws touch at       q = {q_touch:+.5f} rad"
+              f"   (bucket: {Q_CLOSED:+.3f})")
+        print(f"  gap at q = {Q_CLOSED:+.2f}      {gap_at_closed * 1e3:+.4f} mm"
+              + ("   <- NEVER TOUCHES within the joint limit"
+                 if q_touch > Q_CLOSED + 1e-9 else ""))
+        print(f"  jaw span            z = {f_l.bounds[0][2] * 1e3:.1f} to "
+              f"{f_l.bounds[1][2] * 1e3:.1f} mm")
+        print(f"  xacro:  gap [m] = {2.0 * PITCH_R:.8f} * ({q_touch:.6f} - q)")
+
+        print()
+        print("  INERTIALS  (1050 kg/m^3)")
+        for side in ("left", "right"):
+            mesh = fits[side][1]
+            report(f"    gripper_bucket_{side}_link  [{family}]",
+                   mesh, mesh.volume * PLASTIC)
+
+        print()
+        print("  COLLISION BOXES  (mesh collision generates no contacts here)")
+        for side in ("left", "right"):
+            print(f"    {side}")
+            for i, (c, sz) in enumerate(collision_bands(fits[side][1], 4)):
+                print(f"      band{i}  xyz {c[0]:+.5f} {c[1]:+.5f} {c[2]:+.5f}"
+                      f"   size {sz[0]:.4f} {sz[1]:.4f} {sz[2]:.4f}")
+
+        # Does this fingertip run out of stroke before the bucket does?  It
+        # bolts to the same rack, so the answer is only ever "no" while its
+        # footprint through the mount's end walls stays inside the bucket's.
+        d_f = min(travel_limit(trimesh.util.concatenate([rack_l, f_l]), mount, -1),
+                  travel_limit(trimesh.util.concatenate([rack_r, f_r]), mount, +1))
+        print()
+        print(f"  opening travel      {d_f * 1e3:.1f} mm per jaw before fouling"
+              f"   (bucket {d_max * 1e3:.1f} mm)")
+        if d_f < d_max - 5e-4:
+            print("    ^ SHORTER THAN THE BUCKET - gripper_st3215.yaml's measured "
+                  "stroke does not apply to this finger")
+
+        for side in ("left", "right"):
+            exports.append((f"st3215_{family}_{side}.stl", fits[side][1]))
+
     if args.report:
         print("\n--report: nothing written")
         return
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    for fname, mesh in (("st3215_base.stl", base),
-                        ("st3215_pinion.stl", pinion),
-                        ("st3215_rack_left.stl", rack_l),
-                        ("st3215_rack_right.stl", rack_r),
-                        ("st3215_bucket_left.stl", tip_l),
-                        ("st3215_bucket_right.stl", tip_r)):
+    for fname, mesh in exports:
         path = os.path.join(OUT_DIR, fname)
         mesh.export(path)
         print(f"  wrote {os.path.relpath(path, REPO)}  ({len(mesh.faces)} faces)")

@@ -51,7 +51,7 @@ layer, with three defaults flipped for remote operation:
 Everything `full_hardware.launch.py` accepts still works:
 
 ```bash
-ros2 launch aries_comms rover_field.launch.py finger_type:=probe downlink_profile:=lean
+ros2 launch aries_comms rover_field.launch.py finger_type:=maintenance downlink_profile:=lean
 ```
 
 Standing next to the robot with the pad in the rover's USB port instead:

@@ -238,3 +238,69 @@ def test_unknown_finger_falls_back_to_bucket():
 def test_finger_selection_is_case_and_whitespace_tolerant():
     assert fourbar.set_finger('  PROBE ') == 'probe'
     assert fourbar.active_finger() == 'probe'
+
+
+# ---------------------------------------------------------------------------
+# The ST3215's own fingertips
+# ---------------------------------------------------------------------------
+# These select 'st3215' themselves, over the fixture above. It resets both
+# selections afterwards, so they still cannot leak.
+
+
+def test_the_st3215_fingers_share_a_slope_and_differ_by_an_offset():
+    """One mechanism, two fingertips. The rack sets the slope - 2 * 10.02676 mm
+    of gap per radian - and the fingertip sets only where that line crosses
+    zero, because all it changes is how far the two halves reach toward each
+    other. A finger that changed the slope would mean the rack ratio was wrong.
+    """
+    fourbar.set_gripper('st3215')
+    slopes, offsets = [], []
+    for finger in ('bucket', 'maintenance'):
+        fourbar.set_finger(finger)
+        # Per radian of OPENING, so the sign is positive.
+        slopes.append(fourbar.gap_from_q(-2.0) - fourbar.gap_from_q(-1.0))
+        offsets.append(fourbar.gap_from_q(0.0))
+    assert slopes[0] == pytest.approx(slopes[1], abs=1e-9)
+    assert slopes[0] == pytest.approx(2 * fourbar.ST3215_PITCH_R, abs=1e-9)
+    # The maintenance jaws stand 0.595 mm further apart at every angle.
+    assert offsets[1] - offsets[0] == pytest.approx(0.000595, abs=1e-5)
+
+
+def test_the_maintenance_finger_cannot_be_commanded_shut():
+    """Its faces meet at +0.0997, past the +0.07 joint limit, so any gap under
+    0.595 mm is unreachable. q_from_gap must answer with the closest angle the
+    servo CAN reach rather than one that would be rejected as out of bounds."""
+    fourbar.set_gripper('st3215')
+    fourbar.set_finger('maintenance')
+    _, q_closed = fourbar.q_limits()
+    for gap in (0.0, 0.0002, 0.0005):
+        assert fourbar.q_from_gap(gap) == pytest.approx(q_closed, abs=1e-9)
+    assert fourbar.gap_from_q(q_closed) == pytest.approx(0.000595, abs=1e-5)
+
+
+def test_the_st3215_contact_height_follows_the_fitted_finger():
+    """Constant in q on this gripper - the jaws translate - but NOT constant
+    across fingertips: the bucket contacts at its lip and the flat jaw over a
+    face centred 49 mm lower. Anything placing a grasp reads this."""
+    fourbar.set_gripper('st3215')
+    heights = {}
+    for finger in ('bucket', 'maintenance'):
+        fourbar.set_finger(finger)
+        heights[finger] = fourbar.contact_offset_z(0.0)
+        # Still flat in q, which is what separates this gripper from the v2.
+        assert fourbar.contact_offset_z(-4.0) == pytest.approx(heights[finger], abs=1e-12)
+    assert heights['bucket'] - heights['maintenance'] == pytest.approx(0.049, abs=0.002)
+
+
+def test_a_gripper_switch_revalidates_the_fitted_finger():
+    """'probe' is a v2 tip and no ST3215 pair was cut for it. Selecting it on
+    the v2 and then switching grippers must not leave the st3215 answering gap
+    questions from a fingertip it cannot be wearing - which it would do
+    silently, since every call still returns a plausible number."""
+    fourbar.set_gripper('v2')
+    assert fourbar.set_finger('probe') == 'probe'
+    fourbar.set_gripper('st3215')
+    assert fourbar.active_finger() == 'bucket'
+    # And it cannot be selected once the st3215 is fitted.
+    assert fourbar.set_finger('probe') == 'bucket'
+

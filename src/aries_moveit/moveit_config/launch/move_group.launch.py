@@ -27,13 +27,14 @@ def opaque_func(context, *args, **kwargs):
     namespace = LaunchConfiguration("namespace")
     hardware_protocol = LaunchConfiguration('hardware_protocol')
     # The fingertip and gripper MUST reach the xacro below. Without them this
-    # launch built its robot_description from the xacro DEFAULTS
-    # (finger_type=probe), while my_robot.launch.py built Gazebo's from the
-    # requested finger. Because move_group runs with publish_robot_description,
-    # its model then overwrote the correct one on /robot_description -- so
-    # `finger_type:=bucket` showed probe fingers in RViz and, worse, MoveIt
-    # planned and collision-checked against a fingertip the robot did not have
-    # (the contact point differs by up to 23 mm between the three jaws).
+    # launch built its robot_description from the xacro DEFAULTS, while
+    # my_robot.launch.py built Gazebo's from the requested finger. Because
+    # move_group runs with publish_robot_description, its model then overwrote
+    # the correct one on /robot_description -- so the requested fingertip showed
+    # the default one in RViz and, worse, MoveIt planned and collision-checked
+    # against a fingertip the robot did not have (the bucket and maintenance
+    # jaws differ by 18 mm of reach per side, and they do not meet at the same
+    # angle).
     gripper_type = LaunchConfiguration('gripper_type')
     finger_type = LaunchConfiguration('finger_type')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -378,7 +379,11 @@ def opaque_func(context, *args, **kwargs):
         namespace=namespace,
         name="gripper_arc_visualizer",
         parameters=[{'use_sim_time': use_sim_time,
-                     'gripper_type': gripper_type}],
+                     'gripper_type': gripper_type,
+                     # Same reason as gripper_type: the two fingertips meet at
+                     # different angles and 49 mm apart in Z, so an unforwarded
+                     # finger draws a contact point the jaws never reach.
+                     'finger_type': finger_type}],
         output="screen",
     )
 

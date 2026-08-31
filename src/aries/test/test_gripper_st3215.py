@@ -80,9 +80,39 @@ def build(gripper_type="st3215", **args):
     return ET.fromstring(out.stdout)
 
 
+# The fingertips that physically bolt to the racks. Both are built and checked
+# here because a fingertip is the one part of this gripper that changes without
+# anything else in the stack noticing: same link names, same joints, same
+# controllers, different jaw.
+FINGERS = ("bucket", "maintenance")
+
+
 @pytest.fixture(scope="module")
 def st3215():
     return build("st3215", hardware_protocol="mock_hardware")
+
+
+@pytest.fixture(scope="module")
+def maintenance():
+    return build("st3215", hardware_protocol="mock_hardware", finger_type="maintenance")
+
+
+def fingertip(root, side):
+    return next(ln for ln in root.findall("link")
+                if ln.get("name") == f"gripper_bucket_{side}_link")
+
+
+def inner_edges(root):
+    """Each jaw's collision edge facing the other jaw, at q = 0."""
+    edges = {}
+    for side, sign in (("left", -1), ("right", +1)):
+        faces = []
+        for c in fingertip(root, side).findall("collision"):
+            cx = float(c.find("origin").get("xyz").split()[0])
+            sx = float(c.find("geometry/box").get("size").split()[0])
+            faces.append(cx + sign * -sx / 2.0)
+        edges[side] = max(faces) if sign < 0 else min(faces)
+    return edges
 
 
 def joint(root, name):
@@ -217,19 +247,27 @@ def test_gazebo_widens_the_limits_off_the_hard_stop():
 # Things that fail silently in this stack
 # ---------------------------------------------------------------------------
 
-def test_the_fingertips_collide_as_boxes(st3215):
+@pytest.mark.parametrize("finger_type", FINGERS)
+def test_the_fingertips_collide_as_boxes(finger_type):
     """In this gz-sim / DART-bullet build a <mesh> collision generates NO
     contacts against another <mesh>, so a fingertip with mesh collision passes
-    straight through everything it is asked to grip. The visual stays a mesh."""
+    straight through everything it is asked to grip. The visual stays a mesh.
+
+    Checked per fingertip: this is exactly the sort of thing a new pair gets
+    right in the visual and wrong in the collision, and nothing looks amiss
+    until the jaws close through the object."""
+    root = build("st3215", hardware_protocol="mock_hardware", finger_type=finger_type)
     for side in ("left", "right"):
-        link = next(ln for ln in st3215.findall("link")
-                    if ln.get("name") == f"gripper_bucket_{side}_link")
+        link = fingertip(root, side)
         cols = link.findall("collision")
         assert cols, "the fingertip has no collision geometry at all"
         for c in cols:
             assert c.find("geometry/box") is not None, (
                 f"gripper_bucket_{side}_link collision is not a box")
-        assert link.find("visual/geometry/mesh") is not None
+        mesh = link.find("visual/geometry/mesh")
+        assert mesh is not None
+        assert f"st3215_{finger_type}_{side}.stl" in mesh.get("filename"), (
+            f"finger_type:={finger_type} is showing {mesh.get('filename')}")
 
 
 def test_the_jaws_nest_and_that_pair_is_acm_disabled(st3215):
@@ -246,17 +284,7 @@ def test_the_jaws_nest_and_that_pair_is_acm_disabled(st3215):
     (Gazebo needs no equivalent: SDF self_collide defaults to false and nothing
     in aries_gazebo.xacro turns it on, so intra-model contacts are off.)
     """
-    inner = {}
-    for side, sign in (("left", -1), ("right", +1)):
-        link = next(ln for ln in st3215.findall("link")
-                    if ln.get("name") == f"gripper_bucket_{side}_link")
-        edges = []
-        for c in link.findall("collision"):
-            cx = float(c.find("origin").get("xyz").split()[0])
-            sx = float(c.find("geometry/box").get("size").split()[0])
-            edges.append(cx + sign * -sx / 2.0)     # the edge facing the axis
-        inner[side] = max(edges) if sign < 0 else min(edges)
-
+    inner = inner_edges(st3215)
     travel = Q_CLOSED * PITCH_R                      # each jaw's closing travel
     overlap = (inner["left"] + travel) - (inner["right"] - travel)
     assert overlap == pytest.approx(0.0024, abs=5e-4), (
@@ -269,6 +297,168 @@ def test_the_jaws_nest_and_that_pair_is_acm_disabled(st3215):
         "the nesting jaw pair is not disabled in the ACM"
 
 
+# ---------------------------------------------------------------------------
+# The swappable fingertip
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_finger_type_is_a_hard_error():
+    """Same failure mode as an unknown gripper_type, one level down: with no
+    branch taken the racks carry no jaws at all, xacro still succeeds, and an
+    arm that stops at the racks reads in RViz as meshes that did not load.
+
+    'probe' is the case that matters, because it was a valid finger_type for
+    two years on the v2 and is still written in old command lines."""
+    for bogus in ("probe", "bogus"):
+        out = subprocess.run(["xacro", str(URDF), f"finger_type:={bogus}"],
+                             capture_output=True, text=True, env=_ament_env())
+        assert out.returncode != 0, f"finger_type:={bogus} was accepted"
+        assert "finger_type_must_be_bucket_or_maintenance" in out.stderr
+
+
+def test_the_maintenance_jaws_do_not_reach_each_other(maintenance):
+    """THIS FINGER DOES NOT CLOSE, and that is the geometry, not a bug.
+
+    The bucket's scoops nest, so their lips arrive exactly at the +0.07 rad this
+    stack calls closed. The maintenance jaws are flat with nothing reaching past
+    the shank plane, so they would need +0.0997 - past the joint limit - and
+    stop 0.595 mm apart at full close.
+
+    Asserted because both ways of "fixing" it are worse than the gap. Trimming
+    the boxes until they touch makes the sim hold objects the real gripper drops;
+    re-datuming q per finger so +0.07 means contact again silently invalidates
+    gripper_st3215.yaml's closed_steps and every cached pose. The number is
+    small, so it is the kind of thing that gets rounded away by someone who does
+    not know it is load-bearing."""
+    inner = inner_edges(maintenance)
+    travel = Q_CLOSED * PITCH_R
+    gap = (inner["right"] - travel) - (inner["left"] + travel)
+    assert gap == pytest.approx(0.000595, abs=1e-4), (
+        f"the maintenance jaws sit {gap * 1e3:.3f} mm apart at the closed pose, "
+        f"expected 0.595. Negative means they are modelled through each other, "
+        f"which the bucket may do (its lips nest) and this pair may not.")
+
+
+def test_the_two_fingertips_are_actually_different(st3215, maintenance):
+    """Guards the copy-paste: a new branch that keeps the bucket's numbers builds,
+    loads, renders and plans, and is wrong by 18 mm of reach per side.
+
+    Every quantity checked here differs in the CAD, so any one of them still
+    matching is the tell."""
+    for side in ("left", "right"):
+        bucket_link, maint_link = fingertip(st3215, side), fingertip(maintenance, side)
+
+        b_mesh = bucket_link.find("visual/geometry/mesh").get("filename")
+        m_mesh = maint_link.find("visual/geometry/mesh").get("filename")
+        assert b_mesh != m_mesh, f"{side}: both fingers load {b_mesh}"
+
+        b_mass = float(bucket_link.find("inertial/mass").get("value"))
+        m_mass = float(maint_link.find("inertial/mass").get("value"))
+        assert abs(b_mass - m_mass) > 1e-4, (
+            f"{side}: both fingers weigh {b_mass} kg; the solid maintenance "
+            f"section is 8 g heavier per jaw than the bucket's shell")
+
+        def widest(link):
+            return max(float(c.find("geometry/box").get("size").split()[0])
+                       for c in link.findall("collision"))
+        assert widest(bucket_link) == pytest.approx(0.0500, abs=1e-4)
+        assert widest(maint_link) == pytest.approx(0.0320, abs=1e-4), (
+            f"{side}: the maintenance jaw is 32 mm wide the whole way up - the "
+            f"shank width - which is why it reaches where the scoop cannot")
+
+        # ixz changes SIGN between the families: the bucket flares away from the
+        # axis as it rises, the maintenance hook curls toward it. A mirrored or
+        # copied constant gets this backwards and nothing renders differently.
+        b_ixz = float(bucket_link.find("inertial/inertia").get("ixz"))
+        m_ixz = float(maint_link.find("inertial/inertia").get("ixz"))
+        assert b_ixz * m_ixz < 0, (
+            f"{side}: ixz is {b_ixz:+.3e} on the bucket and {m_ixz:+.3e} on the "
+            f"maintenance finger; these must have opposite signs")
+
+
+@pytest.mark.parametrize("finger_type", FINGERS)
+def test_a_finger_swap_changes_nothing_but_the_jaws(finger_type):
+    """The drop-in promise, one level below gripper_type.
+
+    Link names, joint names and the driver's limits are what the SRDF, the ACM,
+    the controllers, gamepad.yaml and the gazebo bridge all address. A fingertip
+    that renamed or re-limited any of them would need a matching edit in each,
+    and the ones that only warn would be found in the field."""
+    ref = build("st3215", hardware_protocol="mock_hardware", finger_type="bucket")
+    root = build("st3215", hardware_protocol="mock_hardware", finger_type=finger_type)
+    assert links(root) == links(ref)
+    assert {j.get("name") for j in root.findall("joint")} == \
+           {j.get("name") for j in ref.findall("joint")}
+    for name in ("gripper_gear_left_joint", "gripper_rack_left_joint",
+                 "gripper_rack_right_joint"):
+        a = joint(root, name).find("limit")
+        b = joint(ref, name).find("limit")
+        assert a.attrib == b.attrib, f"{finger_type} moved {name}'s limits"
+
+
+def test_the_grasp_stack_knows_where_each_finger_meets():
+    """fourbar.py answers "what angle holds this width", and the answer moves
+    with the fingertip. If it did not, every grip on the maintenance jaws would
+    be commanded 0.595 mm too wide - inside the noise of a single measurement,
+    and exactly the size of the parts this finger exists to pick up."""
+    import sys
+    sys.path.insert(0, str(SRC / "aries_vision_grasp"))
+    from aries_vision_grasp import fourbar
+
+    assert fourbar.set_gripper("st3215") == "st3215"
+    try:
+        for finger in FINGERS:
+            assert fourbar.set_finger(finger) == finger, (
+                f"{finger} is not an accepted fingertip for the st3215")
+            for gap in (0.005, 0.030, 0.060):
+                assert fourbar.gap_from_q(fourbar.q_from_gap(gap)) == pytest.approx(gap, abs=1e-6)
+
+        fourbar.set_finger("bucket")
+        assert fourbar.gap_from_q(Q_CLOSED) == pytest.approx(0.0, abs=1e-9)
+        bucket_z = fourbar.contact_offset_z(0.0)
+
+        fourbar.set_finger("maintenance")
+        assert fourbar.gap_from_q(Q_CLOSED) == pytest.approx(0.000595, abs=1e-5), \
+            "the maintenance finger is being given the bucket's closed gap"
+        # Asking for a grip it cannot hold must answer with the closest angle it
+        # CAN reach, not with one past the joint limit.
+        assert fourbar.q_from_gap(0.0) == pytest.approx(Q_CLOSED, abs=1e-9)
+        assert fourbar.contact_offset_z(0.0) < bucket_z - 0.040, \
+            "the flat jaws contact 49 mm below the bucket's lip"
+
+        # 'probe' was a v2 tip; no st3215 pair was ever cut for it, and taking
+        # it silently would answer every gap question with the wrong curve.
+        assert fourbar.set_finger("probe") == fourbar.DEFAULT_FINGER
+    finally:
+        fourbar.set_gripper("st3215")
+        fourbar.set_finger("bucket")
+
+
+def test_the_visualizer_and_the_grasp_stack_agree_on_both_fingers():
+    """gripper_arc_visualizer.py cannot import fourbar (that package is
+    COLCON_IGNOREd), so it carries its own copy of the per-finger table. It
+    draws where the operator is told the jaws will meet, so a drift here is a
+    marker pointing at a place the gripper never goes."""
+    import ast
+    import sys
+    sys.path.insert(0, str(SRC / "aries_vision_grasp"))
+    from aries_vision_grasp import fourbar
+
+    viz = (SRC / "aries_moveit" / "moveit_config" / "scripts"
+           / "gripper_arc_visualizer.py").read_text()
+    tree = ast.parse(viz)
+    copy = next((ast.literal_eval(node.value) for node in ast.walk(tree)
+                 if isinstance(node, ast.Assign)
+                 and any(getattr(t, "id", None) == "ST3215_FINGERS" for t in node.targets)), None)
+    assert copy is not None, "ST3215_FINGERS is gone from gripper_arc_visualizer.py"
+    assert set(copy) == set(fourbar.ST3215_FINGERS), \
+        "the visualizer and fourbar.py know different fingertips"
+    for finger, (q_touch, contact_z) in fourbar.ST3215_FINGERS.items():
+        assert copy[finger][0] == pytest.approx(q_touch, abs=1e-9), \
+            f"the touch angle for {finger} drifted in gripper_arc_visualizer.py"
+        assert copy[finger][1] == pytest.approx(contact_z, abs=1e-9), \
+            f"the contact height for {finger} drifted in gripper_arc_visualizer.py"
+
+
 def test_the_camera_offset_is_this_mount_s(st3215):
     """The bracket is modelled in no base mesh, so the offset comes from the
     camera holes in the mount casting: 65.274 mm out in +Y. The retired v2 mount
@@ -279,9 +469,9 @@ def test_the_camera_offset_is_this_mount_s(st3215):
     assert y != pytest.approx(0.047439, abs=1e-4), "this is the retired v2 mount's offset"
 
 
-@pytest.mark.parametrize("gripper_type", ["st3215"])
-def test_every_referenced_mesh_exists(gripper_type):
-    root = build(gripper_type, hardware_protocol="mock_hardware")
+@pytest.mark.parametrize("finger_type", FINGERS)
+def test_every_referenced_mesh_exists(finger_type):
+    root = build("st3215", hardware_protocol="mock_hardware", finger_type=finger_type)
     missing = []
     for mesh in root.iter("mesh"):
         fn = mesh.get("filename")

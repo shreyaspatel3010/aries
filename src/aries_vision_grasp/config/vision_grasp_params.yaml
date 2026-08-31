@@ -150,15 +150,18 @@ vision_grasp_node:
 
     # Four-bar contact/supervisor (gap/contact tables live in
     # aries_vision_grasp/fourbar.py).
-    # Which swappable fingertip is physically mounted: bucket, maintenance or
-    # probe. This MUST match the finger_type the URDF was launched with. The
-    # three fingers share the four-bar pivots but not their jaw geometry — the
-    # maintenance and probe jaws close ~30 mm further out and reach a much
-    # narrower gap at the same joint angle — so a mismatch places the attached
-    # probe collision mesh off the real probe and every plan then fails with
-    # START_STATE_IN_COLLISION. The contact heights below are the bucket's
-    # calibrated values; for the other fingers the node derives its own.
-    finger_type: probe
+    # Which swappable fingertip is physically mounted. This MUST match the
+    # finger_type the URDF was launched with, and the set depends on the fitted
+    # gripper: bucket or maintenance on the st3215, plus probe on the retired
+    # v2. A mismatch places the attached probe collision mesh off the real
+    # probe and every plan then fails with START_STATE_IN_COLLISION.
+    #
+    # On the st3215 the two pairs share the racks but not where they meet: the
+    # maintenance jaws are flat and touch at q=+0.0997, past the +0.07 joint
+    # limit, so a full close holds 0.595 mm and its contact sits 49 mm below
+    # the bucket's lip. The contact heights below are the bucket's calibrated
+    # values; for any other finger the node derives its own.
+    finger_type: bucket
     fourbar_contact_y_offset_m: 0.001
     fourbar_contact_z_open_m: 0.1342
     fourbar_contact_z_closed_m: 0.2180

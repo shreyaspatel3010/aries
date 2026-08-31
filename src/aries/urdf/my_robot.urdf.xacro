@@ -9,14 +9,20 @@
 
        gripper_type is still DECLARED because a dozen launch files pass it down
        and an undeclared arg is a hard error, but 'st3215' is the only accepted
-       value and every launch file's choices= is narrowed to it. finger_type is
-       likewise accepted and ignored: it selected between v2's three swappable
-       fingertips, and this gripper has one CAD'd pair of scoops with no
-       fingertip interface. -->
+       value and every launch file's choices= is narrowed to it.
+
+       finger_type IS LIVE AGAIN as of 2026-08-31. It was accepted and ignored
+       for a day, while the ST3215 had only the one CAD'd pair of scoops; the
+       maintenance fingers now bolt to the same racks, so it selects between
+       them again. It no longer accepts 'probe': that was a v2 fingertip and no
+       ST3215 pair has been cut for it. -->
   <xacro:arg name="gripper_type" default="st3215"/>
   <xacro:property name="gripper_type" value="$(arg gripper_type)"/>
-  <!-- Swappable fingertip - 'bucket', 'maintenance', or 'probe' -->
-  <xacro:arg name="finger_type" default="probe"/>
+  <!-- Physically swappable fingertip - 'bucket' or 'maintenance'. It must match
+       the pair actually bolted to the rover's racks: they differ by 18 mm of
+       reach per side and by where the jaws meet, so the wrong one here plans
+       grasps against a gripper that is not fitted. See gripper_st3215.xacro. -->
+  <xacro:arg name="finger_type" default="bucket"/>
   <xacro:property name="finger_type" value="$(arg finger_type)"/>
   <!-- Hardware protocol - 'mock_hardware', 'gazebo', or 'rebel' -->
   <xacro:arg name="hardware_protocol" default="gazebo"/>

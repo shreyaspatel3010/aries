@@ -54,17 +54,24 @@
 
             travel per radian = 21 * 3.0000 / (2 * pi) = 10.02676 mm
 
-        STROKE.  0 to 85.1 mm of jaw gap, against v2's 0 to 83 mm - comparable,
-        over more than twice the joint travel for it.
+        STROKE.  0 to 85.1 mm of jaw gap on the bucket fingers, 0.6 to 85.7 on
+        the maintenance pair, against v2's 0 to 83 mm - comparable, over more
+        than twice the joint travel for it.
 
-          jaw gap [mm] against q [rad], exactly linear
-            q      +0.07   0.00  -0.50  -1.00  -2.00  -3.00  -4.00  -4.18
-            gap      0.0    1.4   11.4   21.5   41.5   61.6   81.6   85.1
+          jaw gap [mm] against q [rad], exactly linear.  Both rows are the same
+          mechanism - 2 * 10.02676 mm per radian - offset by where each
+          fingertip's two halves actually meet.
 
-          jaw faces meet at z = 207.8 mm from arm_gripper_base_link (the lip);
-          the flat shank faces run z = 115 to 155 mm.
+            q             +0.07   0.00  -0.50  -1.00  -2.00  -3.00  -4.00  -4.18
+            bucket          0.0    1.4   11.4   21.5   41.5   61.6   81.6   85.1
+            maintenance     0.6    2.0   12.0   22.1   42.1   62.2   82.2   85.7
 
-        THREE THINGS TO KNOW BEFORE TRUSTING A COMMANDED ANGLE
+          bucket        lips meet at z = 207.8 mm from arm_gripper_base_link;
+                        the flat shank faces run z = 115 to 155 mm.
+          maintenance   one flat face per jaw, z = 115 to 207.8 mm, and they
+                        never meet - see point 4.
+
+        FOUR THINGS TO KNOW BEFORE TRUSTING A COMMANDED ANGLE
 
         1. -1.57 IS NOT THE SAME POSE ON THE TWO GRIPPERS.  It is v2's hard
            stop and its full 83 mm; here it is a 32.9 mm gap with two thirds of
@@ -81,7 +88,22 @@
            which is measured at the shank faces, and stop short of +0.07 on
            anything it actually means to hold.
 
-        3. THE STROKE NEARLY FILLS THE SERVO'S SINGLE TURN.  q spans +0.07 to
+        3. WHICH FINGERTIP IS FITTED CHANGES WHERE ZERO GAP IS.  finger_type
+           picks the pair, and it is the one thing about this gripper that
+           swaps without anything else in the stack noticing: same link names,
+           same joints, same controllers.
+
+           On the maintenance finger the jaws are FLAT and have nothing
+           reaching past the shank plane, so they would meet at q = +0.0997 -
+           past the joint limit.  A full close leaves them 0.595 mm apart and
+           they cannot be driven further.  That is why the row above starts at
+           0.6 rather than 0.0, and it is not a modelling slack to be trimmed
+           out: q's zero stays on the CAD pose so that closed_steps survives a
+           finger swap and a cached pose still means the same jaw position on
+           either pair.  aries_vision_grasp/fourbar.py carries the touch angle
+           per finger; anything else sizing a grip must too.
+
+        4. THE STROKE NEARLY FILLS THE SERVO'S SINGLE TURN.  q spans +0.07 to
            -4.291 = 4.361 rad = 250 deg = 2843 of the ST3215's 4096 steps, out
            of a usable 3995 (50..4045).  So the zero is NOT free to sit
            anywhere: closed_steps must be at least 2893 with invert false.  On
@@ -208,12 +230,14 @@
          carried at the ST3215's datasheet 60 g and combined with the mount by
          parallel axis, so the base tensor is not a uniform-density one.
 
-         TOTAL 797 g, against v2's 458 g. Most of that is the mount casting -
-         404 cm^3 of modelled solid, 424 g at this density - and the two 104
-         cm^3 scoops. If the real parts are printed at a normal infill the true
-         figure will be well under this; the density is deliberately the
-         conservative one, and it is the number the ReBeL's payload budget
-         should be checked against. -->
+         TOTAL 797 g with the bucket fingers and 815 g with the maintenance
+         pair, against v2's 458 g. Most of that is the mount casting - 404 cm^3
+         of modelled solid, 424 g at this density - and the two 104 cm^3 scoops;
+         the maintenance jaws are 113 cm^3 each because their section is solid
+         where the scoop is a shell. If the real parts are printed at a normal
+         infill the true figure will be well under this; the density is
+         deliberately the conservative one, and it is the number the ReBeL's
+         payload budget should be checked against. -->
     <xacro:macro name="gripper_inertial" params="mass cx cy cz ixx iyy izz ixy:=0 ixz:=0 iyz:=0">
         <inertial>
             <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
@@ -328,14 +352,57 @@
                 ixy="-8.5631e-06" ixz="-5.1487e-06" iyz="-1.8410e-06"/>
 
     <!-- ==================== fingertips ==================== -->
-    <!-- Bolted to their racks, so these joints are fixed - there is no
+    <!-- SWAPPABLE.  finger_type picks the pair that is physically bolted to the
+         racks; every number below comes from
+         scripts/build_gripper_st3215_meshes.py, which lands each pair on the
+         rack by matching its bolt face and prints exactly this table.
+
+           bucket        clamshell scoops, the pair the assembly was CAD'd with.
+                         Handed: the right lip runs 3.000 mm wider than the left
+                         so they close into one bowl.  For scooping and for
+                         anything round.
+           maintenance   flat parallel jaws.  The clamping face is one plane
+                         running the full 93 mm of the jaw, so the grip is a
+                         line contact at any height rather than a point at the
+                         lip - which is what panel handles, levers and breakers
+                         want.  Handed too, but only just: see the build script.
+
+         THEY DO NOT SHARE A CLOSED POSE, and that is the one thing a finger
+         swap changes that nothing else in the stack can see:
+
+           bucket        lips meet at q = +0.070.  "Closed" is closed.
+           maintenance   faces meet at q = +0.0997, which is PAST the joint
+                         limit.  At the +0.070 this stack calls closed the jaws
+                         are still 0.595 mm apart, and they cannot be driven
+                         further.
+
+         So on the maintenance finger a commanded gap is 0.595 mm wider than the
+         object it was sized for.  aries_vision_grasp/fourbar.py carries that
+         per finger; anything else converting a width into an angle must too.
+
+         q's ZERO IS THE CAD POSE, NOT THE FINGERTIP, deliberately: it is why
+         gripper_st3215.yaml's closed_steps survives a finger swap and a pose
+         cached with one pair still means the same jaw position with the other.
+         The cost is the gap above.  Measure closed_steps with the BUCKET
+         fitted - it is the pair whose stall lands on q = +0.070.
+
+         Bolted to their racks, so these joints are fixed - there is no
          fingertip degree of freedom to cancel the way v2's -1.0 mimic cancels
          its bar. They are separate links only so that gripper_bucket_*_link
          keeps addressing the jaw the way it does on v2: that is the name the
-         ACM, the grasp stack and the held-probe check all use.
+         ACM, the grasp stack and the held-probe check all use, and it keeps it
+         WHICHEVER FINGER IS FITTED.  Renaming it per finger_type would mean an
+         SRDF, an ACM and a bridge config per finger for no gain.
 
          Their frames are arm_gripper_base_link's frame at q = 0, so every
          number below reads directly in base coordinates at the zero pose.
+
+         EVERY VALUE IS PER SIDE, none is mirrored from the other.  The two
+         halves of a pair are not mirror images - the bucket's lips are handed
+         and the maintenance pair is two slightly different parts - and a
+         mirrored constant is not merely imprecise here: ixz changes SIGN
+         between the two finger families, because the bucket flares away from
+         the axis as it rises and the maintenance hook curls toward it.
 
          COLLISION IS BOXES, AND IT HAS TO STAY THAT WAY. In this gz-sim /
          DART-bullet stack a <mesh> collision generates NO contacts against
@@ -343,39 +410,43 @@
          GImpact-vs-GImpact yields no manifold, which is why the v2 fingers
          passed through everything they were asked to operate. Four boxes per
          tip, z-bands tiling the mesh end to end so there is no gap, x/y from a
-         300k-point surface sampling. The scoop bands are SOLID where the real
-         part is a shell - the same conservative trade gripper_v2.xacro makes,
+         300k-point surface sampling. The bands are SOLID where the real part is
+         a shell or a hook - the same conservative trade gripper_v2.xacro makes,
          and for the same reason: nothing in these worlds is scooped as
          particles. -->
-    <xacro:macro name="fingertip" params="side sx b0x b3x b3sx">
+    <xacro:macro name="fingertip" params="side mass cx cy cz ixx iyy izz ixy ixz iyz
+                                          b0x b12x b12sx bsy b3x b3sx">
         <link name="gripper_bucket_${side}_link">
-            <xacro:gripper_inertial mass="0.1091" cx="${sx * 0.02098}" cy="-0.00083" cz="0.15027"
-                                    ixx="1.0192e-04" iyy="8.3559e-05" izz="5.4152e-05"
-                                    ixz="${sx * 8.0858e-06}"/>
+            <xacro:gripper_inertial mass="${mass}" cx="${cx}" cy="${cy}" cz="${cz}"
+                                    ixx="${ixx}" iyy="${iyy}" izz="${izz}"
+                                    ixy="${ixy}" ixz="${ixz}" iyz="${iyz}"/>
             <visual>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
                 <geometry>
-                    <mesh filename="${mesh_location}/gripper_st3215/st3215_bucket_${side}.stl"/>
+                    <mesh filename="${mesh_location}/gripper_st3215/st3215_${finger_type}_${side}.stl"/>
                 </geometry>
                 <material name="">
                     <color rgba="1 1 1 1"/>
                 </material>
             </visual>
+            <!-- band0 is the bolt block, which is the same 32 x 77.5 mm shank on
+                 every fingertip in the family - that is the interface the build
+                 script lands them on. -->
             <collision name="tip_band0">
-                <origin xyz="${sx * 0.01700} -0.00100 0.12660" rpy="0 0 0"/>
+                <origin xyz="${b0x} -0.00100 0.12660" rpy="0 0 0"/>
                 <geometry><box size="0.0320 0.0775 0.0232"/></geometry>
             </collision>
             <collision name="tip_band1">
-                <origin xyz="${sx * 0.02600} -0.00075 0.14980" rpy="0 0 0"/>
-                <geometry><box size="0.0500 0.0600 0.0232"/></geometry>
+                <origin xyz="${b12x} -0.00075 0.14980" rpy="0 0 0"/>
+                <geometry><box size="${b12sx} ${bsy} 0.0232"/></geometry>
             </collision>
             <collision name="tip_band2">
-                <origin xyz="${sx * 0.02600} -0.00075 0.17300" rpy="0 0 0"/>
-                <geometry><box size="0.0500 0.0600 0.0232"/></geometry>
+                <origin xyz="${b12x} -0.00075 0.17300" rpy="0 0 0"/>
+                <geometry><box size="${b12sx} ${bsy} 0.0232"/></geometry>
             </collision>
             <collision name="tip_band3">
-                <origin xyz="${sx * b3x} -0.00075 0.19620" rpy="0 0 0"/>
-                <geometry><box size="${b3sx} 0.0600 0.0232"/></geometry>
+                <origin xyz="${b3x} -0.00075 0.19620" rpy="0 0 0"/>
+                <geometry><box size="${b3sx} ${bsy} 0.0232"/></geometry>
             </collision>
         </link>
 
@@ -386,12 +457,53 @@
         </joint>
     </xacro:macro>
 
-    <!-- The top band is where the handedness shows: the right lip is 43.0 mm
-         wide against the left's 40.0, which is what lets the two nest. Do not
-         "tidy" them to match. -->
-    <xacro:fingertip side="left"  sx="-1" b0x="0.01700" b3x="0.02101" b3sx="0.0400"/>
-    <xacro:fingertip side="right" sx="1"  b0x="0.01700" b3x="0.01951" b3sx="0.0430"/>
+    <!-- The scoops.  Band3 is where the handedness shows: the right lip is
+         43.0 mm wide against the left's 40.0, which is what lets the two nest,
+         and at q = +0.07 those two boxes overlap by 2.4 mm.  That overlap is
+         correct geometry, which is why aries.srdf disables this pair.  Do not
+         "tidy" the widths to match. -->
+    <xacro:if value="${finger_type == 'bucket'}">
+        <xacro:fingertip side="left"
+                         mass="0.1091" cx="-0.02098" cy="-0.00083" cz="0.15027"
+                         ixx="1.0192e-04" iyy="8.3559e-05" izz="5.4152e-05"
+                         ixy="3.0378e-08" ixz="8.0858e-06" iyz="-2.3689e-07"
+                         b0x="-0.01700" b12x="-0.02600" b12sx="0.0500" bsy="0.0600"
+                         b3x="-0.02101" b3sx="0.0400"/>
+        <xacro:fingertip side="right"
+                         mass="0.1095" cx="0.02092" cy="-0.00054" cz="0.15046"
+                         ixx="1.0322e-04" iyy="8.4868e-05" izz="5.4431e-05"
+                         ixy="8.0138e-08" ixz="-7.6890e-06" iyz="-1.7559e-08"
+                         b0x="0.01700" b12x="0.02600" b12sx="0.0500" bsy="0.0600"
+                         b3x="0.01952" b3sx="0.0430"/>
+    </xacro:if>
 
+    <!-- The flat jaws.  No nesting and no overlap at closed: the two faces stay
+         0.595 mm apart because they cannot be driven together (see above), so
+         these boxes never meet.  They are 32 mm wide the whole way up, the
+         shank width, so this pair is 18 mm narrower per side than the scoops -
+         it reaches into places the bucket cannot, and it holds 8 g more per
+         jaw because the section is solid rather than a shell. -->
+    <xacro:if value="${finger_type == 'maintenance'}">
+        <xacro:fingertip side="left"
+                         mass="0.1181" cx="-0.01580" cy="-0.00082" cz="0.15379"
+                         ixx="1.0147e-04" iyy="8.3624e-05" izz="3.7650e-05"
+                         ixy="-9.6587e-09" ixz="-5.5230e-06" iyz="-2.6080e-07"
+                         b0x="-0.01700" b12x="-0.01700" b12sx="0.0320" bsy="0.0440"
+                         b3x="-0.01368" b3sx="0.0254"/>
+        <xacro:fingertip side="right"
+                         mass="0.1189" cx="0.01590" cy="-0.00058" cz="0.15395"
+                         ixx="1.0201e-04" iyy="8.4198e-05" izz="3.7985e-05"
+                         ixy="-2.3087e-08" ixz="5.2565e-06" iyz="6.1955e-08"
+                         b0x="0.01700" b12x="0.01700" b12sx="0.0320" bsy="0.0440"
+                         b3x="0.01383" b3sx="0.0257"/>
+    </xacro:if>
+
+    <!-- A finger_type with no branch above would leave the gripper with no jaws
+         at all, and an arm that ends at the racks reads in RViz as a mesh that
+         failed to load. Fail at build time instead. -->
+    <xacro:if value="${finger_type not in ('bucket', 'maintenance')}">
+        <xacro:finger_type_must_be_bucket_or_maintenance/>
+    </xacro:if>
     <!-- ==================== TCP ==================== -->
     <!-- Held at gripper_v2's 0.15 m so the SRDF chain and every cached pose
          stay valid across a gripper swap. It is a reference frame, not the

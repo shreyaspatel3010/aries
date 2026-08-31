@@ -36,9 +36,10 @@ def generate_launch_description():
             default_value='bucket',
             choices=['bucket', 'maintenance', 'probe'],
             description='Fingertip physically mounted on the gripper. Must match '
-                        'the finger_type the URDF was launched with — the three '
-                        'jaws differ enough that a mismatch mis-places the '
-                        'attached probe collision mesh by about 30 mm.',
+                        'the finger_type the URDF was launched with. "probe" is '
+                        'a retired-v2 tip only; the st3215 takes bucket or '
+                        'maintenance, and they neither meet at the same angle '
+                        'nor contact at the same height.',
         ),
         DeclareLaunchArgument(
             'params_file',

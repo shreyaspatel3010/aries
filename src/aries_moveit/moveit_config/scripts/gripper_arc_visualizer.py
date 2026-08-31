@@ -56,8 +56,19 @@ Q_CLOSE = 0.07
 # src/aries/test/test_gripper_st3215.py cross-checks all three.
 ST3215_PITCH_R = 0.01002676
 ST3215_Q_OPEN = -4.17
+# The commandable closed end, which is NOT where every fingertip's jaws meet.
 ST3215_Q_CLOSE = 0.07
-ST3215_CONTACT_Z = 0.2078
+
+# Per fitted fingertip: (angle at which the jaws actually touch, contact
+# height).  The bucket's scoop lips arrive exactly at the joint limit; the
+# maintenance finger's flat faces would need +0.0997 and so stop 0.595 mm
+# apart, which is worth drawing rather than rounding away - it is the whole
+# reason a "closed" command on that finger does not close.
+ST3215_FINGERS = {
+    "bucket": (0.070000, 0.2078),
+    "maintenance": (0.099683, 0.1588),
+}
+ST3215_DEFAULT_FINGER = "bucket"
 
 
 def _interp(x, xs, ys):
@@ -87,6 +98,10 @@ class GripperArcVisualizer(Node):
         # share the joint name and the closed angle but nothing else, so a
         # mismatch draws a confident overlay in the wrong place.
         self.declare_parameter("gripper_type", "st3215")
+        # Which fingertip is bolted on. MUST match the URDF's finger_type: the
+        # two pairs meet at different angles and 49 mm apart in Z, so the wrong
+        # one draws a contact point the jaws never visit.
+        self.declare_parameter("finger_type", "bucket")
         self.declare_parameter("publish_rate_hz", 10.0)
         # Jaw midpoint sits ~25.9 mm off the base link centreline in +y.
         self.declare_parameter("contact_y_offset_m", 0.001)
@@ -103,6 +118,10 @@ class GripperArcVisualizer(Node):
         self.gripper_type = str(self.get_parameter("gripper_type").value).strip().lower()
         if self.gripper_type not in ("v2", "st3215"):
             self.gripper_type = "st3215"
+        self.finger_type = str(self.get_parameter("finger_type").value).strip().lower()
+        if self.finger_type not in ST3215_FINGERS:
+            self.finger_type = ST3215_DEFAULT_FINGER
+        self.q_touch, self.contact_z_m = ST3215_FINGERS[self.finger_type]
         self.samples = max(int(self.get_parameter("arc_samples").value), 8)
         self._refresh_tunables()
 
@@ -143,19 +162,20 @@ class GripperArcVisualizer(Node):
     def contact_z(self, q):
         """Height of the jaw contact midpoint at joint angle q.
 
-        Constant on the ST3215: its jaws translate. The four-bar's climbs 86 mm
+        Constant on the ST3215: its jaws translate, so the only thing that
+        moves it is which fingertip is fitted. The four-bar's climbs 86 mm
         between open and closed, which is what the grey midpoint path draws.
         """
         if self.gripper_type == "st3215":
-            return ST3215_CONTACT_Z + self.z_off
+            return self.contact_z_m + self.z_off
         return _interp(q, Q_MID, Z_MID) + self.z_off
 
     def jaw_points(self, q):
         """Left and right jaw contact points at joint angle q."""
         if self.gripper_type == "st3215":
             q = min(max(q, ST3215_Q_OPEN), ST3215_Q_CLOSE)
-            half_gap = ST3215_PITCH_R * (ST3215_Q_CLOSE - q)
-            z = ST3215_CONTACT_Z + self.z_off
+            half_gap = ST3215_PITCH_R * (self.q_touch - q)
+            z = self.contact_z_m + self.z_off
         else:
             half_gap = 0.5 * _interp(q, Q_GAP, GAP)
             z = _interp(q, Q_MID, Z_MID) + self.z_off

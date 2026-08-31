@@ -98,6 +98,14 @@
                  2026-08-22: stacklight.xacro added a 0.15 kg link on the rear
                  deck, taken out of here the same way, so the other links total
                  53.4657953866879 and this was 90 - that = 36.5342046133121.
+
+                 2026-08-31: the residual is still taken against the BUCKET
+                 fingertip, as it says above. finger_type:=maintenance fits a
+                 solid-section jaw instead of a shelled scoop and adds 18.4 g
+                 over the pair, so that build totals 90.0184 kg. Left alone
+                 deliberately: making a chassis residual depend on which
+                 fingertip is bolted on would put a gripper decision inside
+                 base_link, for 0.02% of the rover.
                  The tensor is NOT rescaled for it: 0.15 kg is 0.4% of this
                  mass, comfortably inside the accuracy of an aggregate whose
                  COM is already stated above as an approximation, and rescaling

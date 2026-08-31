@@ -518,7 +518,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
         DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"]),
-        DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance", "probe"]),
+        DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),
         DeclareLaunchArgument("gripper_hardware_protocol", default_value="auto", choices=["auto", "st3215", "mock_hardware", "gazebo"]),

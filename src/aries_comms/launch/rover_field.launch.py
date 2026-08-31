@@ -77,7 +77,7 @@ WHAT THIS CHANGES AGAINST full_hardware.launch.py
 Every other argument full_hardware.launch.py takes still works and reaches it
 unchanged -- finger_type, hardware protocols, camera serials, IMU, CAN:
 
-    ros2 launch aries_comms rover_field.launch.py finger_type:=probe
+    ros2 launch aries_comms rover_field.launch.py finger_type:=maintenance
     ros2 launch aries_comms rover_field.launch.py downlink_profile:=lean
 
 Not because they are re-listed here, but because an included launch file shares

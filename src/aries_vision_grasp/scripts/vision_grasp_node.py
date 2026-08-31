@@ -1346,7 +1346,8 @@ class VisionGraspNode(Node):
         if self.finger_type != requested_finger.strip().lower():
             self.get_logger().error(
                 f'finger_type="{requested_finger}" is not one of '
-                f'{list(fourbar.FINGER_TYPES)}; falling back to '
+                f'{list(fourbar.FINGERS_FOR.get(self.gripper_type, ()))} for the '
+                f'{self.gripper_type} gripper; falling back to '
                 f'"{self.finger_type}" geometry. A wrong finger here places the '
                 f'attached probe mesh about 30 mm off the real probe.')
 
@@ -1360,15 +1361,27 @@ class VisionGraspNode(Node):
         # changes behaviour when a different finger is actually selected.
         if self.gripper_type == 'st3215':
             # The jaws translate, so contact does not move in Z at all and
-            # there is nothing to interpolate between open and closed.
+            # there is nothing to interpolate between open and closed. Which
+            # height it sits at, and where the jaws meet, ARE properties of the
+            # fitted fingertip.
             q_open, _ = fourbar.q_limits()
             derived = fourbar.contact_offset_z(q_open)
+            q_touch, _ = fourbar.ST3215_FINGERS[self.finger_type]
             self.get_logger().info(
-                f'[Gripper] st3215 rack-and-pinion: contact z is constant at '
-                f'{derived*1000:.0f} mm (the four-bar climbs 86 mm between open and '
-                f'closed; this one does not), stroke {fourbar.gap_from_q(q_open)*1000:.0f} mm, '
-                f'q range {q_open:+.3f} to {fourbar.ST3215_Q_CLOSED:+.3f}. '
-                f'finger_type is ignored.')
+                f'[Gripper] st3215 rack-and-pinion, {self.finger_type} fingers: '
+                f'contact z is constant at {derived*1000:.0f} mm (the four-bar '
+                f'climbs 86 mm between open and closed; this one does not), '
+                f'stroke {fourbar.gap_from_q(q_open)*1000:.0f} mm, '
+                f'q range {q_open:+.3f} to {fourbar.ST3215_Q_CLOSED:+.3f}.')
+            if q_touch > fourbar.ST3215_Q_CLOSED + 1e-9:
+                # Not a fault, and not something to correct for by pushing
+                # harder: the servo cannot go past the joint limit. It is
+                # stated because "closed" not closing looks like a fault.
+                self.get_logger().warn(
+                    f'[Gripper] the {self.finger_type} jaws meet at q={q_touch:+.4f}, '
+                    f'past the {fourbar.ST3215_Q_CLOSED:+.2f} limit, so a full close '
+                    f'leaves them {fourbar.gap_from_q(fourbar.ST3215_Q_CLOSED)*1000:.2f} mm '
+                    f'apart. Grasp widths below that cannot be held.')
             self.fourbar_contact_z_open_m = derived
             self.fourbar_contact_z_closed_m = derived
         elif self.finger_type != fourbar.DEFAULT_FINGER:

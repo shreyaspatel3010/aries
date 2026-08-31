@@ -28,6 +28,19 @@
 #     as the motor straining, and it was measured once at 482 steps (7.4 mm per
 #     jaw) of difference between the two.
 #
+#     MEASURE IT WITH THE BUCKET FINGERS FITTED. The stall this reading finds is
+#     the two JAWS meeting, so it is a property of the fingertip as much as of
+#     the servo clocking - and q = +0.07 is defined as the angle at which the
+#     BUCKET's scoop lips meet. The maintenance jaws are flat and would stall
+#     about 19 steps later, so reading this with them on re-datums the whole q
+#     axis by 0.03 rad and quietly shifts the open end, the gap table and the
+#     SRDF `open` state with it.
+#
+#     With the maintenance fingers on, the jaws therefore stop 0.595 mm apart at
+#     full close and cannot be driven further. That is expected - see the
+#     fingertip section of aries/urdf/gripper_st3215.xacro - and it is why the
+#     grasp stack carries a touch angle per finger rather than one constant.
+#
 # open_stop_steps
 #     Torque off, back-drive to the open stop by hand, read it. The open end is
 #     a hard mechanical stop rather than jaws meeting, so the hand figure is the

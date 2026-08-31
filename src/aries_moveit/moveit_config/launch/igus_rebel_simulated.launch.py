@@ -52,10 +52,10 @@ def generate_launch_description():
         'use_sim_time',
         default_value='true',
         description='Use sim time if true')
-    # Same omission that made `finger_type:=bucket` show probe fingers from
-    # my_robot.launch.py: without these the xacro falls back to its own defaults
-    # (finger_type=probe) and MoveIt plans against a fingertip the robot does not
-    # have. The contact point differs by up to 23 mm between the three jaws.
+    # Same omission that once made `finger_type:=maintenance` show bucket
+    # fingers from my_robot.launch.py: without these the xacro falls back to its
+    # own defaults and MoveIt plans against a fingertip the robot does not have.
+    # The two jaws differ by 18 mm of reach per side and by where they meet.
     gripper_type_arg = DeclareLaunchArgument(
         'gripper_type',
         default_value='st3215',
@@ -66,7 +66,7 @@ def generate_launch_description():
     finger_type_arg = DeclareLaunchArgument(
         'finger_type',
         default_value='bucket',
-        choices=['bucket', 'maintenance', 'probe'],
+        choices=['bucket', 'maintenance'],
         description='Swappable fingertip; must match the mounted jaw')
     hardware_protocol = LaunchConfiguration('hardware_protocol')
     gripper_type = LaunchConfiguration('gripper_type')
