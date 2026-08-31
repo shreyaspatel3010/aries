@@ -86,6 +86,10 @@
 #include "drill.h"
 #include "emg.h"
 #include "pins.h"
+// TEMPORARY, until the USB bus-servo adapter is replaced -- see the header.
+// This include, the object below, and the two calls in setup()/loop() are the
+// whole of it in this file.
+#include "servobus.h"
 
 // --- Tunables ---------------------------------------------------------------
 
@@ -326,8 +330,18 @@ static bool load_cells_present = false;
 //
 // ADD THE PIN YOU FREE, AND REMOVE THE PIN YOU TAKE. Nothing checks this; the
 // static_assert in pins.h covers kMap only, not this list.
+// TEMPORARY bus-servo bridge; see lib/servobus/servobus.h.
+static ServoBus servo_bus;
+
 static const uint8_t kScanPins[] = {
-    0, 1, 2, 3, 4, 5, 10, 11, 12, 14, 20, 21, 24, 26, 27, 39,
+    // 1 was here until the gripper took it (pins.h: ST3215_BUS / GRIPPER_SERVO
+    // both live there now). A scanned pin is configured INPUT_PULLUP by
+    // setup(); whatever claims it then takes it back, and the scan reports its
+    // traffic as a phantom switch.
+    //
+    // 23 CAME BACK on 2026-09-01, when the four-bar servo moved off it to pin
+    // 1: "add the pin you free, and remove the pin you take".
+    0, 2, 3, 4, 5, 10, 11, 12, 14, 20, 21, 23, 24, 26, 27, 39,
     // The two the switches are SUPPOSED to be on, reported alongside for
     // comparison. Already INPUT_PULLUP via LimitSwitch::init().
     LIMIT_SWITCH1, LIMIT_SWITCH2,
@@ -886,7 +900,13 @@ static void led_update()
   const bool pins_incomplete =
       !auger.usable() || !feed_motor.usable() || !bin_actuator.usable() ||
       !pump.usable() ||
-      !gservo.usable() || !lid_servo.usable() ||
+      // The four-bar's servo counts ONLY in a build that has it. Under
+      // GRIPPER_KIND_ST3215 its pin is deliberately PIN_UNASSIGNED (pins.h),
+      // which is not a missing number -- it is a gripper that is not fitted.
+      // Without this the board would fast-blink "a pin is unassigned" forever
+      // in the normal build, which is the LED crying wolf.
+      (PIN_IS_ASSIGNED(GRIPPER_SERVO) && !gservo.usable()) ||
+      !lid_servo.usable() ||
       !switch_feed_bottom.usable() || !switch_feed_top.usable();
 
   uint32_t period = 0;
@@ -960,6 +980,17 @@ void setup()
   load_cells_raw_msg.layout.dim.capacity = 0;
   load_cells_raw_msg.layout.data_offset = 0;
 
+  // Opens Serial1 half-duplex on ST3215_BUS and measures whether the UART
+  // echoes. Here and NOT beside the other set_microros_serial_transports()
+  // call, which is the reconnect path: re-probing there would put a stray byte
+  // on the bus every time the agent drops, possibly mid-transaction.
+  //
+  // Before the transport line on purpose. It touches only Serial1 and
+  // SerialUSB1, and doing it in setup() means the bridge works whether or not
+  // an agent ever connects -- which is the state a bench st3215_test.py run
+  // happens in.
+  servo_bus.init();
+
   set_microros_serial_transports(Serial);
 
   // No blocking handshake here either. The loop's state machine does the
@@ -985,6 +1016,11 @@ void loop()
   // it exists for is the one case it would not cover.
   gservo.update();
   lid_servo.update(LID_COMMAND_TIMEOUT_MS);
+
+  // Also regardless of agent state, and for the same reason as those two: the
+  // bench talks to the servo bus with no agent running at all. Costs one
+  // SerialUSB1.available() when nobody is using it.
+  servo_bus.poll();
 
   // Also regardless of agent state, for two reasons. The counts are wanted the
   // instant the link comes up rather than 100 ms later, and -- the one that

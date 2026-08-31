@@ -12,7 +12,12 @@
 // TEENSY 4.1 CONSTRAINTS THIS MAP RESPECTS
 //   - Pin 13 is LED_BUILTIN. main.cpp blinks it as the agent-status and
 //     unassigned-pin indicator, so nothing else may claim it.
-//   - Pins 0 and 1 are Serial1 RX/TX. Left free.
+//   - Pins 0 and 1 are Serial1 RX/TX. PIN 1 IS THE GRIPPER PIN, whichever
+//     gripper is fitted: ST3215_BUS (Serial1 half duplex) or GRIPPER_SERVO
+//     (hobby-servo pulses), chosen at build time -- see "WHICH GRIPPER IS
+//     BOLTED ON" below. Pin 0 is still free, and has to stay that way while
+//     the bus build exists, because Serial1.begin() would claim it in any mode
+//     but half duplex.
 //   - Every digital pin on a Teensy 4.x is interrupt-capable, so the limit
 //     switches are not constrained to a special subset the way they would be
 //     on an AVR.
@@ -206,6 +211,34 @@
 #define STALIG_Y 36
 #define STALIG_R 35
 
+// --- WHICH GRIPPER IS BOLTED ON ---------------------------------------------
+//
+// BOTH GRIPPERS LIVE ON PIN 1. Only one is ever on the flange, so they share
+// the pin rather than each holding one hostage:
+//
+//   GRIPPER_KIND_ST3215  pin 1 = Serial1 half duplex, the bus servo (default)
+//   GRIPPER_KIND_V2      pin 1 = a hobby-servo pulse train, the four-bar
+//
+// They CANNOT coexist -- one is a UART, the other a bit-banged pulse train on
+// the same pad -- so this is a build-time choice, selected in platformio.ini.
+// Swapping grippers already means unbolting hardware and rewiring (the ST3215
+// wants 12 V on its bus, the four-bar 5 V), so a reflash costs nothing extra.
+// It is one PIN they share, never one connector.
+//
+// HOW THE UNSELECTED ONE IS DISABLED: its pin becomes PIN_UNASSIGNED. That is
+// this file's existing idiom, not a new mechanism -- SlewServo's constructor
+// sets m_usable from PIN_IS_ASSIGNED and every method early-returns when it is
+// false (drill.cpp:224), and the collision check below already exempts
+// PIN_UNASSIGNED. So main.cpp needs no conditionals at all: the object still
+// exists, still subscribes, and simply drives nothing.
+#if defined(GRIPPER_KIND_ST3215) && defined(GRIPPER_KIND_V2)
+#error "Define only one of GRIPPER_KIND_ST3215 / GRIPPER_KIND_V2 -- they share pin 1."
+#endif
+#if !defined(GRIPPER_KIND_ST3215) && !defined(GRIPPER_KIND_V2)
+// Default is what is actually fitted. Override in platformio.ini.
+#define GRIPPER_KIND_ST3215 1
+#endif
+
 // --- Servos -----------------------------------------------------------------
 // MOVED TO 23 on 2026-08-26. Was pin 9 in both retired sketches
 // (teensy_gripper.ino and legacy_controller.ino) and for the whole life of this
@@ -216,7 +249,70 @@
 // 23 had been the bin actuator's proposed PWM until this change. PIN 9 IS NOT A
 // SPARE ANY MORE: since 2026-08-29 it is AUGER_INB, so an old-loom gripper lead
 // now feeds a direction input on the auger's H-bridge.
-#define GRIPPER_SERVO 23
+// MOVED TO 1 ON 2026-09-01, sharing the pin with the bus servo -- see "WHICH
+// GRIPPER IS BOLTED ON" above. PIN 23 IS NOW FREE and has gone back into
+// kScanPins in main.cpp, as freeing a pin requires.
+//
+// A board wired to the 23 loom drives nothing on the gripper until the lead is
+// moved to pin 1. That is the same hazard as the 2026-08-26 move off pin 9,
+// and it bites in the same way: silently.
+#if defined(GRIPPER_KIND_V2)
+#define GRIPPER_SERVO 1
+#else
+#define GRIPPER_SERVO PIN_UNASSIGNED
+#endif
+
+// --- ST3215 bus servo (secondary gripper) -----------------------------------
+// The single-wire half-duplex TTL bus the ST3215 gripper servo answers on, at
+// 1 Mbaud. NOT the same thing as GRIPPER_SERVO above: that is a hobby servo
+// taking a PWM pulse train, this is a packet protocol on a shared data line.
+//
+// 1 IS SERIAL1 TX, AND THAT IS THE POINT. In single-wire half-duplex the LPUART
+// drives and reads the SAME pin, and the pin it uses is TX. So the bus wire
+// goes to 1, and pin 0 -- Serial1's RX -- is not part of this and stays free.
+//
+//     Serial1.begin(1000000, SERIAL_8N1_HALF_DUPLEX);
+//
+// HALF DUPLEX IS NOT OPTIONAL, but on Serial1 the reason is the bus, not this
+// board: an ST3215 has one data wire, and a full-duplex UART would drive it
+// while trying to listen on a separate pin that does not exist. It is worth
+// knowing that Serial1 is the forgiving choice here -- on Serial6 the same
+// mistake would have been silent and destructive, because Serial6's RX pin is
+// 25, which is AUGER_PWM. Verified in the core rather than assumed: the entire
+// RX-pin configuration block sits inside `if (!half_duplex_mode_)`
+// (cores/teensy4/HardwareSerial.cpp:145-152), so half-duplex never touches the
+// RX pad, and full duplex claims it.
+//
+// THE COLLISION CHECK AT THE BOTTOM OF THIS FILE CANNOT SEE A UART'S RX PIN. It
+// compares the numbers written down here, and Serial1.begin() would take pin 0
+// without any #define naming it. Harmless today because pin 0 is free -- but if
+// pin 0 is ever given a job, this bus is the thing that silently collides with
+// it, and the build will not say so.
+//
+// The core enables the pad's internal ~22k pull-up in half-duplex mode
+// (HardwareSerial.cpp:154-157; only cleared for TXINVERT, which we do not ask
+// for). That is weak for 1 Mbaud over a harness -- add an external 2.2k-4.7k
+// pull-up to the bus logic rail if the line looks slow on a scope.
+//
+// REMOVED FROM kScanPins IN main.cpp, as taking any pin requires. A pin that is
+// both scanned and driven gets configured INPUT_PULLUP by setup() and then
+// taken back by the UART, with the scan reporting the bus traffic as a phantom
+// switch -- the same trap the lid servo on 38 and the pump pins hit. The two
+// lists have to stay disjoint and nothing checks that they are.
+//
+// NOT WIRED YET. Unlike pins 14, 21, 24 and 27 -- see the limit-switch note
+// above -- pin 1 was NOT among those measured resting low on this harness, so
+// nothing is known to be on it. Meter it before connecting anyway.
+//
+// LEVEL. A Teensy 4.1 pin is 3.3 V and is NOT 5 V tolerant. Measure the idle
+// voltage on the servo's signal line before wiring it to this pin: 3.3 V is a
+// direct connection, 5 V needs a bidirectional level shifter. The servo's 12 V
+// supply must NEVER reach the Teensy -- only signal and a shared ground.
+#if defined(GRIPPER_KIND_ST3215)
+#define ST3215_BUS 1
+#else
+#define ST3215_BUS PIN_UNASSIGNED
+#endif
 
 // Lid of the FRONT-LEFT deck container -- the sand sample box, which the rest
 // of the workspace calls `sand_box` (aries_load_cells/config/load_cells.yaml:
@@ -327,6 +423,10 @@ constexpr unsigned char kMap[] = {
     LIMIT_SWITCH1, LIMIT_SWITCH2,
     STALIG_G, STALIG_Y, STALIG_R,
     GRIPPER_SERVO, LID_SERVO_SAND_BOX,
+    // ST3215_BUS is Serial1 TX. Serial1's RX pin (0) is not listed here
+    // because nothing names it -- half duplex never claims it. See the
+    // ST3215_BUS comment above.
+    ST3215_BUS,
     HX711_SAND_BOX_DT, HX711_SAND_BOX_SCK,
     HX711_STONE_BOX_DT, HX711_STONE_BOX_SCK,
     HX711_DRILL_CONTAINER_DT, HX711_DRILL_CONTAINER_SCK,

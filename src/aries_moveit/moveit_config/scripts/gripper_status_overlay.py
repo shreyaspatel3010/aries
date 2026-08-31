@@ -55,6 +55,7 @@ from rclpy.node import Node
 
 import tf2_ros
 
+from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
@@ -75,11 +76,28 @@ class GripperStatusOverlay(Node):
     def __init__(self):
         super().__init__("gripper_status_overlay")
 
-        # Where the panel hangs. The gripper base frame means it follows the
-        # arm; the offset lifts it clear of the jaws so it does not sit inside
-        # the mesh at every pose.
-        self.declare_parameter("frame_id", "arm_gripper_base_link")
-        self.declare_parameter("offset_xyz", [0.0, 0.0, 0.16])
+        # WHERE THE PANEL HANGS.
+        #
+        # base_link, the ROVER body, since 2026-08-31. It was
+        # arm_gripper_base_link, which made the text ride along with the jaws --
+        # readable when working close in, but it swung across the view with
+        # every arm move and, at some poses, ended up behind the robot or
+        # inside a mesh.
+        #
+        # Anchoring on the rover also costs fewer TF hops. RViz has to
+        # transform this frame into its fixed frame to draw the marker, and on
+        # this stack the fixed frame usually IS base_link -- in which case the
+        # transform is the identity and cannot fail at all. From the gripper it
+        # was a lookup down the whole arm chain, refreshed only as fast as
+        # robot_state_publisher republishes /joint_states. See the stamp note
+        # in publish_markers() for the other half of that problem.
+        #
+        # THE OFFSET IS A VIEWING PREFERENCE, not geometry. 0.16 m was chosen to
+        # clear the jaws from the gripper frame; on base_link that height is
+        # inside the chassis, so the text is lifted to float above the deck
+        # instead. Both are parameters -- move it wherever it reads best.
+        self.declare_parameter("frame_id", "base_link")
+        self.declare_parameter("offset_xyz", [0.0, 0.0, 0.60])
         self.declare_parameter("text_height_m", 0.016)
         self.declare_parameter("marker_topic", "gripper_status_markers")
         self.declare_parameter("publish_rate_hz", 5.0)
@@ -240,7 +258,23 @@ class GripperStatusOverlay(Node):
 
         text = Marker()
         text.header.frame_id = self.frame_id
-        text.header.stamp = self.get_clock().now().to_msg()
+        # STAMP ZERO ON PURPOSE -- "the latest transform you have", not "the
+        # transform at this instant".
+        #
+        # This was self.get_clock().now(). RViz has to transform frame_id into
+        # the fixed frame AT THE MARKER'S STAMP, and the newest TF for this
+        # chain is only as fresh as robot_state_publisher's last publish from
+        # /joint_states. A marker stamped now() is therefore routinely a few
+        # milliseconds AHEAD of the newest transform, and tf2 refuses to
+        # extrapolate into the future -- so RViz drops the marker and logs a
+        # transform error. It comes and goes rather than failing outright
+        # because it is a race between this timer and that one, which is
+        # exactly what an intermittent TF error on a marker looks like.
+        #
+        # A zero stamp is the standard answer for a label pinned to a link: the
+        # text is telemetry, nothing here needs interpolating to an exact
+        # instant, and being one TF cycle stale is invisible.
+        text.header.stamp = Time()
         text.ns = "gripper_status"
         text.id = 0
         text.type = Marker.TEXT_VIEW_FACING
@@ -249,6 +283,11 @@ class GripperStatusOverlay(Node):
         text.pose.position.y = self.offset[1]
         text.pose.position.z = self.offset[2]
         text.pose.orientation.w = 1.0
+        # Re-transform every render from the latest TF instead of freezing the
+        # marker where it was when it arrived. Keeps the text glued to the
+        # gripper while the arm moves, and means a stale stamp can never strand
+        # it in mid-air.
+        text.frame_locked = True
         # Only z is read for TEXT_VIEW_FACING: it is the cap height of one line.
         text.scale.z = self.text_height
         text.color = ColorRGBA(r=colour[0], g=colour[1], b=colour[2], a=1.0)

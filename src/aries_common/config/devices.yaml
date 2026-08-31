@@ -116,6 +116,19 @@ servo_bus:
   # -- the commonest bridge on these adapters -- has no serial number, so it
   # gets usb-1a86_USB_Serial-if00-port0, a name every CH340 on earth shares.
   # by-id would be stable but not unique. Hence our own rule and our own name.
+  # BENCH ALTERNATIVE, 2026-08-31, while the adapter is dead. A Teensy running
+  # firmware/teensy_drill_sys can stand in as a transparent bridge (lib/servobus)
+  # and present the bus as a second USB serial device. That is a BENCH rig, not
+  # the rover's wire, so this stays pointed at the adapter -- pass the bridge
+  # explicitly instead:
+  #
+  #   python3 scripts/st3215_test.py --port \
+  #       /dev/serial/by-id/usb-Teensyduino_Dual_Serial_<serial>-if02 --scan
+  #
+  # -if02 is the SECOND CDC (usb_desc.h: CDC2_STATUS_INTERFACE 2). -if00 is
+  # micro-ROS's. Note "Dual_Serial", not "USB_Serial": USB_DUAL_SERIAL changes
+  # the product string and the PID, so a bridge board's by-id name differs from
+  # every other Teensy here.
   port: "/dev/aries_servo_bus"
   # 1 Mbaud is the ST3215 factory default.
   baud: 1000000

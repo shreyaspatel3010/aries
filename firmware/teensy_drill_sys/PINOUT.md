@@ -18,7 +18,8 @@ not flashed.
 | **Feed carriage** — moves the whole drill **up/down** | `FEED_*` | 15 / 40 / 41 | out, PWM 10 kHz + 2 dir | ⚠️ |
 | **Auger** — spins the cutting head | `AUGER_*` | 25 / 8 / 9 | out, PWM 10 kHz + 2 dir | ⚠️ |
 | **Sample bin actuator** — slides bin fore/aft | `BIN_*` | 22 / 19 / 18 | out, PWM 10 kHz + 2 dir | ⚠️ |
-| **Gripper servo** | `GRIPPER_SERVO` | 23 | out, servo | ✅ |
+| **Gripper — ST3215 bus servo** (default build) | `ST3215_BUS` | **1** | **bidirectional**, Serial1 TX, half duplex 1 Mbaud | ✅ |
+| **Gripper — four-bar hobby servo** (`-D GRIPPER_KIND_V2`) | `GRIPPER_SERVO` | **1** | out, servo pulses | ⚠️ retired gripper |
 | **Container lid servo** (sand box) | `LID_SERVO_SAND_BOX` | 38 | out, servo — **continuous rotation** | ⚠️ |
 | **Stack light** green / yellow / red | `STALIG_*` | 37 / 36 / 35 | out, active **LOW** | ✅ |
 | **Feed limit** bottom / top | `LIMIT_SWITCH1/2` | 7 / 6 | in, `INPUT_PULLUP` | ✅ |
@@ -224,15 +225,30 @@ The `static_assert` guards `kMap`. It does **not** guard `kScanPins` in
 and reports on `drill/pin_scan`. Those two lists have to stay disjoint and
 nothing anywhere checks that they are.
 
-**They are disjoint as of 2026-08-30**, apart from the two limit switches, which
+**They are disjoint as of 2026-08-31**, apart from the two limit switches, which
 are in both on purpose (they are reported alongside the free pins for
 comparison, and `LimitSwitch::init()` has already made them `INPUT_PULLUP`):
 
 ```
-kMap      6 7 8 9 13 15 16 17 18 19 22 23 25 28 29 30 31 32 33 34 35 36 37 38 40 41
-kScanPins 0 1 2 3 4 5 6 7 10 11 12 14 20 21 24 26 27 39
+kMap      1 6 7 8 9 13 15 16 17 18 19 22 25 28 29 30 31 32 33 34 35 36 37 38 40 41
+kScanPins 0 2 3 4 5 6 7 10 11 12 14 20 21 23 24 26 27 39
 overlap   6 7   <- LIMIT_SWITCH1/2, deliberate
 ```
+
+**Pin 1 is in `kMap` in BOTH builds** — it is the gripper pin either way, held
+by `ST3215_BUS` by default or by `GRIPPER_SERVO` under `-D GRIPPER_KIND_V2`.
+Whichever is not selected is `PIN_UNASSIGNED`, which the collision check
+exempts, so the lists above are the same in both configurations. Verified by
+preprocessing pins.h in each mode rather than by reading it.
+
+Two moves got it here:
+
+* Pin 1 left the scan list for `kMap` on 2026-08-31, when `ST3215_BUS` took it.
+* Pin 23 went the other way on 2026-09-01, when the four-bar servo moved off it
+  onto pin 1. "Add the pin you free, and remove the pin you take."
+
+Pin 0 stays in the scan list and stays free: it is Serial1's RX, and half
+duplex is the only mode that does not claim it.
 
 Getting there took two corrections in two days, in both directions:
 

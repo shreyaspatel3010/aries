@@ -2,7 +2,8 @@
 """Bench test for a Feetech ST3215 bus servo on a USB bus-servo adapter.
 
 Sweeps the horn 180 deg one way then 180 deg back, in position mode.
-Nothing is written to EPROM, so the servo's stored config is untouched.
+Nothing is written to EPROM, so the servo's stored config is untouched -- with
+two explicit exceptions, --mode and --factory-reset, which say so themselves.
 
 Runnable with any interpreter: the repo .venv has no pyserial, so if it is
 missing the script re-execs itself under /usr/bin/python3 (apt python3-serial).
@@ -10,6 +11,7 @@ missing the script re-execs itself under /usr/bin/python3 (apt python3-serial).
     python3 scripts/st3215_test.py
     python3 scripts/st3215_test.py --deg 90 --speed 400 --repeat 3
     python3 scripts/st3215_test.py --scan
+    python3 scripts/st3215_test.py --factory-reset --force   # after a servo swap
     python3 scripts/st3215_test.py --where     # position + state, moves nothing
     python3 scripts/st3215_test.py --goto 120 --dir ccw   # long way round
     python3 scripts/st3215_test.py --monitor    # torque off, back-drive by hand
@@ -56,6 +58,10 @@ except ImportError:
         "'pip install pyserial'.")
 
 PING, READ, WRITE = 0x01, 0x02, 0x03
+# Instruction 6 is "restore factory defaults". Not every STS firmware implements
+# it -- some accept the packet, answer, and change nothing -- so --factory-reset
+# never trusts it and always verifies, falling back to explicit EPROM writes.
+RESET = 0x06
 
 # SMS/STS control table
 R_MODE, R_TORQUE, R_ACC = 33, 40, 41
@@ -63,6 +69,13 @@ R_GOAL_POS, R_GOAL_SPEED = 42, 46
 R_PRES_POS, R_PRES_LOAD, R_VOLT, R_TEMP, R_MOVING = 56, 60, 62, 63, 66
 R_PRES_SPEED, R_PRES_CURR = 58, 69
 R_GOAL_TIME, R_LOCK = 44, 55
+R_ID, R_BAUD = 5, 6
+
+# Register 6 stores a CODE, not a rate. Factory default is code 0 = 1 Mbaud,
+# which is what devices.yaml expects the gripper servo to sit at.
+BAUD_CODES = {1000000: 0, 500000: 1, 250000: 2, 128000: 3,
+              115200: 4, 76800: 5, 57600: 6, 38400: 7}
+FACTORY_ID, FACTORY_BAUD = 1, 1000000
 
 STEPS_PER_REV = 4096
 CURRENT_LSB_MA = 6.5                 # present-current register unit
@@ -133,6 +146,12 @@ class Servo:
     def w16(self, addr, v):
         v &= 0xFFFF
         return self._txrx(WRITE, bytes([addr, v & 0xFF, (v >> 8) & 0xFF]), 0) is not None
+
+    def reset(self):
+        """Instruction 6: restore factory defaults. The servo reboots after
+        this, so the answer (if any) is the last thing it says at the old
+        settings -- reopen the port before talking to it again."""
+        return self._txrx(RESET, b"", 0) is not None
 
     def torque(self, on):
         """NOTE: torque does not stay off. Writing R_GOAL_POS re-enables it
@@ -353,6 +372,28 @@ DEVICES_YAML = REPO_ROOT / "src" / "aries_common" / "config" / "devices.yaml"
 # hand; they are chip IDs, so they change about never.
 BRIDGE_VIDS = ("1a86", "10c4", "0403")
 
+# TEENSY BUS-SERVO BRIDGE, temporary -- firmware/teensy_drill_sys/lib/servobus.
+# Tried only after a real adapter has not been found. The glob is narrow on
+# purpose:
+#
+#   Dual_Serial  the bridge firmware is built -D USB_DUAL_SERIAL, which changes
+#                the USB product string from "USB Serial". Nothing else here is
+#                built that way, so the name IS the capability -- a drill or
+#                science board cannot match it, and neither can a Teensy running
+#                anything else.
+#   -if02        the SECOND CDC interface. -if00 is the micro-ROS transport, and
+#                opening that would put servo packets into the agent's link.
+#
+# Unlike a CH340 -- whose by-id name is shared by every CH340 on earth, which is
+# why this script will not guess at one -- this name identifies a board somebody
+# deliberately flashed with the bridge. That is what makes it safe to pick.
+TEENSY_BRIDGE_GLOB = "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_*-if02"
+
+
+def teensy_bridges():
+    """Attached Teensy bus-servo bridges, by-id paths."""
+    return sorted(glob.glob(TEENSY_BRIDGE_GLOB))
+
 
 def devices_entry(key, default=None):
     """servo_bus.<key> from devices.yaml, best-effort.
@@ -429,12 +470,27 @@ def resolve_port(explicit):
               "devices.yaml and re-run scripts/setup_system.sh to pin one."
         )
 
+    # No adapter. Fall back to a Teensy running the bridge firmware, which is
+    # what stands in while the adapter is dead. Adapter first, always: plug a
+    # real one back in and it wins again with no edit anywhere.
+    bridged = teensy_bridges()
+    if len(bridged) == 1:
+        return bridged[0], None
+    if len(bridged) > 1:
+        return None, (
+            "More than one Teensy bus-servo bridge is attached:\n  "
+            + "\n  ".join(bridged)
+            + "\nRefusing to guess which one is on the servo bus -- unplug one, "
+              "or pass --port."
+        )
+
     if attached:
         listed = "\n  ".join(f"{dev} (usb {vid}:{pid})" if vid else f"{dev} (not USB)"
                              for dev, vid, pid in attached)
         return None, (
             "No USB-serial bridge that looks like a bus-servo adapter is "
-            f"attached. Serial ports that ARE here:\n  {listed}\n"
+            f"attached, and no Teensy bridge either. Serial ports that ARE "
+            f"here:\n  {listed}\n"
             "Pass --port explicitly if one of these is the adapter."
         )
     return None, (
@@ -443,6 +499,9 @@ def resolve_port(explicit):
         "servo bus; the adapter enumerates on USB alone but the servo will not "
         "answer without bus voltage).\nIf it IS plugged in, check it enumerated:"
         "\n  journalctl -k -n 20 | grep -i tty"
+        "\nNo Teensy bridge either — a board flashed with "
+        "firmware/teensy_drill_sys stands in for the adapter and would be found "
+        "automatically."
     )
 
 
@@ -526,6 +585,136 @@ def scan(port, baud, maxid=20):
     return hits
 
 
+def scan_all_bauds(port, maxid=20, skip=None):
+    """[(baud, [ids])] for every rate something answers on.
+
+    A servo that has just been swapped in carries whatever ID and baud it was
+    last programmed with, and a scan at the one configured rate cannot tell
+    "wrong baud" from "dead servo" -- both are silence. Sweeping is the only
+    way to tell those apart, so every path that has to FIND a servo (rather
+    than talk to a known one) uses this.
+    """
+    out = []
+    for baud in sorted(BAUD_CODES, reverse=True):
+        if baud == skip:
+            continue
+        ids = scan(port, baud, maxid)
+        if ids:
+            out.append((baud, ids))
+    return out
+
+
+def write_identity(port, baud, sid, new_id=FACTORY_ID, new_baud=FACTORY_BAUD):
+    """Set ID and baud by EPROM write. Returns an error string, or None.
+
+    Order is load-bearing. The ID write must go first, at the CURRENT baud,
+    because the moment the baud register changes the servo stops listening at
+    the rate this port is open on and the second write would be shouted into
+    the void. Then the port is reopened at the new rate to re-lock the EPROM,
+    which also proves the servo really did move.
+    """
+    sv = Servo(port, baud, sid)
+    try:
+        if not sv.ping():
+            return f"ID {sid} stopped answering at {baud} baud before the write."
+        sv.w8(R_LOCK, 0)
+        time.sleep(0.03)
+        if new_id != sid:
+            sv.w8(R_ID, new_id)
+            time.sleep(0.05)
+            sv.sid = new_id
+            if not sv.ping():
+                return f"ID write to {new_id} did not take at {baud} baud."
+        sv.w8(R_BAUD, BAUD_CODES[new_baud])
+        time.sleep(0.05)
+    finally:
+        sv.close()
+
+    # From here the servo is a different device as far as the port is
+    # concerned. Reopen at the new rate; lock the EPROM back down there.
+    time.sleep(0.2)
+    sv = Servo(port, new_baud, new_id)
+    try:
+        if not sv.ping():
+            return (f"after writing ID {new_id} / {new_baud} baud the servo did "
+                    f"not answer at the new settings.")
+        sv.w8(R_LOCK, 1)
+        time.sleep(0.03)
+    finally:
+        sv.close()
+    return None
+
+
+def factory_reset(port, maxid=20):
+    """Wipe the servo's EPROM back to factory defaults, then leave it at
+    ID 1 / 1 Mbaud -- the settings devices.yaml expects the gripper servo at.
+
+    Written for the swapped-servo case, so it finds the servo rather than being
+    told where it is: it sweeps every baud rate and every ID first.
+
+    DESTRUCTIVE. Factory defaults wipe the position-limit registers, the
+    position offset, the operating mode and any torque/current limits, so a
+    servo that had been calibrated in place comes back uncalibrated. That is
+    the point of the command, but it is why it demands --force.
+    """
+    print("Looking for the servo across every baud rate...")
+    found = scan_all_bauds(port, maxid)
+    if not found:
+        return ("Nothing answered on any baud rate (1M down to 38400) at any ID "
+                f"0-{maxid} on {port}.\nThe adapter is enumerated but the bus is "
+                "silent: check the servo's 3-pin lead and that the bus supply is on.")
+
+    total = [(b, i) for b, ids in found for i in ids]
+    if len(total) > 1:
+        listing = "; ".join(f"{b} baud: {ids}" for b, ids in found)
+        return (f"{len(total)} servos answered ({listing}).\nA factory reset sets "
+                "ID 1, so resetting them one at a time on a shared bus would end "
+                "with two servos at the same ID and neither addressable. Power "
+                "down all but the one to reset, then run this again.")
+
+    baud, sid = total[0]
+    print(f"Found ID {sid} at {baud} baud.")
+
+    sv = Servo(port, baud, sid)
+    before = {"mode": sv.r8(R_MODE), "pos": sv.r16(R_PRES_POS),
+              "volts": sv.r8(R_VOLT)}
+    print(f"  before reset: mode={before['mode']} pos={before['pos']} "
+          f"volts={None if before['volts'] is None else before['volts'] / 10.0}")
+    acked = sv.reset()
+    sv.close()
+    print(f"  reset instruction {'acknowledged' if acked else 'sent, no answer'}"
+          " -- verifying, the answer alone proves nothing.")
+
+    # The servo reboots on reset; give it time before deciding it is gone.
+    time.sleep(0.6)
+
+    if scan(port, FACTORY_BAUD, maxid) == [FACTORY_ID]:
+        print(f"Servo is at ID {FACTORY_ID} @ {FACTORY_BAUD} baud. Factory reset done.")
+        return 0
+
+    # Either the firmware ignored instruction 6, or it reset the settings
+    # without moving the identity. Both end here: find it again and write the
+    # identity explicitly.
+    print("  not at the factory identity yet; re-scanning to place it...")
+    again = scan_all_bauds(port, maxid)
+    total = [(b, i) for b, ids in again for i in ids]
+    if not total:
+        return ("The servo stopped answering at every baud rate after the reset. "
+                "Power-cycle the bus and re-run with --scan: an interrupted EPROM "
+                "write can leave it at a rate it will only settle on after a "
+                "clean boot.")
+    if len(total) > 1:
+        return f"More than one servo answered after the reset: {again}. Stopping."
+
+    baud, sid = total[0]
+    print(f"  found at ID {sid} @ {baud} baud; writing identity...")
+    err = write_identity(port, baud, sid)
+    if err:
+        return err
+    print(f"Servo is at ID {FACTORY_ID} @ {FACTORY_BAUD} baud. Factory reset done.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="ST3215 bench sweep test")
     ap.add_argument("--port", default=None,
@@ -552,6 +741,13 @@ def main():
     ap.add_argument("--mode", choices=("position", "wheel"),
                     help="switch operating mode. EPROM write, persists across "
                          "power cycles. wheel = continuous rotation.")
+    ap.add_argument("--factory-reset", action="store_true",
+                    help="restore the servo's EPROM to factory defaults and "
+                         "leave it at ID 1 / 1000000 baud. Finds the servo "
+                         "first by sweeping every baud rate and ID, so it works "
+                         "on a just-swapped servo whose settings are unknown. "
+                         "DESTRUCTIVE -- wipes position limits, offset, mode and "
+                         "torque limits; needs --force.")
     ap.add_argument("--pos", type=int, metavar="STEPS",
                     help="POSITION-MODE absolute move to a raw step count "
                          "(0-4095, 0 deg = step 0). This is the one that works "
@@ -563,7 +759,8 @@ def main():
                          "almost always a wrong target, and it drives the jaws "
                          "through their stops.")
     ap.add_argument("--force", action="store_true",
-                    help="allow a --pos move longer than --max-travel")
+                    help="confirm a destructive action: a --pos move longer "
+                         "than --max-travel, or a --factory-reset")
     ap.add_argument("--goto", type=float, metavar="DEG",
                     help="continuous-rotation move to an absolute angle (needs "
                          "wheel mode). Software-closed loop, so it can cross the "
@@ -583,13 +780,36 @@ def main():
                     help="how long --spin runs")
     args = ap.parse_args()
 
+    if args.factory_reset and not args.force:
+        return ("--factory-reset wipes the servo's stored configuration: "
+                "position limits, position offset, operating mode and torque "
+                "limits all go back to defaults, and the servo ends up at ID 1 "
+                "/ 1000000 baud.\nRe-run with --force if that is what you want.")
+
     args.port, why = resolve_port(args.port)
     if args.port is None:
         return why
 
+    if args.factory_reset:
+        return factory_reset(args.port)
+
     if args.scan:
-        print(f"IDs responding on {args.port} @ {args.baud}: "
-              f"{scan(args.port, args.baud) or 'none'}")
+        hits = scan(args.port, args.baud)
+        print(f"IDs responding on {args.port} @ {args.baud}: {hits or 'none'}")
+        if hits:
+            return 0
+        # Silence at the configured rate is ambiguous -- a servo at another
+        # baud looks exactly like a dead one. Say which it is rather than
+        # leaving the caller to guess.
+        print("Nothing there. Sweeping the other baud rates...")
+        other = scan_all_bauds(args.port, skip=args.baud)
+        if other:
+            for baud, ids in other:
+                print(f"  {baud} baud: IDs {ids}")
+            print("The servo is alive but not at the configured rate. "
+                  "--factory-reset --force puts it back to ID 1 @ 1000000.")
+        else:
+            print("  silent at every rate -- check the servo lead and bus power.")
         return 0
 
     sv = Servo(args.port, args.baud, args.id)

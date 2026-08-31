@@ -150,20 +150,61 @@ def resolve_science_serial(configured: str):
     return None, f"  -- {configured} is absent"
 
 
+# Teensy bus-servo bridge, TEMPORARY -- see firmware/teensy_drill_sys/lib/servobus.
+# A Teensy running that firmware puts its second USB serial device on the ST3215
+# bus, so it can stand in for the adapter. The glob is deliberately narrow:
+#
+#   Dual_Serial  the bridge firmware is built -D USB_DUAL_SERIAL, which changes
+#                the USB product string from "USB Serial". No OTHER Teensy here
+#                carries servobus, and none of them says Dual_Serial -- so the
+#                name IS the capability. A drill or science board cannot match.
+#   -if02        the SECOND CDC interface, which is the bridge. -if00 is the
+#                micro-ROS transport; matching it would push servo packets into
+#                the agent's link.
+SERVO_BUS_TEENSY_GLOB = "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_*-if02"
+
+
 def resolve_servo_bus(configured: str):
     """Find the ST3215 bus-servo adapter. Returns (port_or_None, note).
 
-    Unlike the Teensy there is no by-id fallback worth taking. /dev/aries_servo_bus
-    comes from 99-aries-servo-bus.rules matching this adapter's serial, and the
-    by-id name a CH340 would otherwise get (usb-1a86_USB_Serial-if00-port0) is
-    shared by every CH340 on earth -- stable but not unique. Guessing at one
-    would mean commanding whatever generic USB-serial device happened to be
-    plugged in. Better to fall back to mock and say so.
+    Unlike the Teensy there is no by-id fallback worth taking FOR THE ADAPTER.
+    /dev/aries_servo_bus comes from 99-aries-servo-bus.rules matching this
+    adapter's serial, and the by-id name a CH340 would otherwise get
+    (usb-1a86_USB_Serial-if00-port0) is shared by every CH340 on earth --
+    stable but not unique. Guessing at one would mean commanding whatever
+    generic USB-serial device happened to be plugged in.
+
+    A TEENSY BRIDGE IS DIFFERENT AND IS TRIED SECOND. Its by-id name carries
+    both the firmware's own signature (Dual_Serial) and a per-board serial
+    number, so there is nothing to guess at: a match is a board someone
+    deliberately flashed with the bridge firmware, not a coincidence. That is
+    the whole reason this fallback is safe and the CH340 one is not.
+
+    Order is adapter first, always. The bridge is a stopgap while the adapter
+    is dead; the moment a real adapter is plugged back in it wins, with no
+    config change and no argument.
     """
     if Path(configured).exists():
         return configured, ""
+
+    bridges = sorted(glob.glob(SERVO_BUS_TEENSY_GLOB))
+    if len(bridges) == 1:
+        return bridges[0], (f"  -- {configured} is absent; using the TEENSY BRIDGE at "
+                            f"{bridges[0]}. Temporary: it is a wire, not the adapter. "
+                            "Plug a real adapter in and it takes over automatically.")
+    if len(bridges) > 1:
+        # Never pick one. Two bridges means two boards that could each be on a
+        # different bus, and commanding the wrong one is a gripper that moves
+        # when it should not.
+        listed = ", ".join(bridges)
+        return None, (f"  -- {configured} is absent and MORE THAN ONE Teensy bridge is "
+                      f"attached ({listed}); refusing to guess. Unplug one, or pass "
+                      "servo_bus_port:= explicitly")
+
     return None, (f"  -- {configured} is absent; run scripts/setup_system.sh to install "
-                  "99-aries-servo-bus.rules, and check the adapter is plugged in")
+                  "99-aries-servo-bus.rules, and check the adapter is plugged in. "
+                  "(No Teensy bridge found either -- see "
+                  "firmware/teensy_drill_sys/lib/servobus.)")
 
 
 def build_ros2_control_yaml(arm_protocol: str, gripper_protocol: str) -> str:
