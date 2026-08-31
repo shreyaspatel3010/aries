@@ -14,6 +14,24 @@
     planning_link: "gripper_tcp"
     move_group_control_mode: "cartesian"
 
+    # Frame the joystick's Cartesian jog is read in. Both arm nodes honour it
+    # (rebel_servo_teleop_gamepad and rebel_movegroup_joystick).
+    #
+    #   "tool" - the axes of planning_link above (gripper_tcp). Its +Z runs out
+    #            of the jaws along the approach and X/Y sit across them, so the
+    #            left stick pushes the gripper the way it is pointing and the
+    #            rotations spin about the gripper's own axes through the TCP.
+    #            The stick means the same thing at every wrist pose, which is
+    #            what makes lining a grasp up on the gripper camera workable.
+    #   "base"  - planning_frame (base_link): +X is rover-forward and +Z is
+    #            world-up regardless of where the gripper points. This was the
+    #            behaviour before 2026-08-31.
+    #
+    # The Cartesian stick mapping FOLLOWS this key — "tool" transposes both
+    # sticks, "base" restores the pre-2026-08-31 layout. See the axis block
+    # further down, where both tables are written out.
+    cartesian_frame: "tool"
+
     # NOTE: every speed/motion value in this file is overridden at launch by
     # config/teleop_speeds.yaml, which is loaded after it. Retune there —
     # editing the numbers here has no effect. What this file still owns is the
@@ -132,12 +150,46 @@
     arm_controller_action_name: "/rebel_arm_trajectory_controller/follow_joint_trajectory"
     arm_controller_status_topic: "/rebel_arm_trajectory_controller/follow_joint_trajectory/_action/status"
 
-    axis_linear_x: 1
-    axis_linear_y: 0
-    axis_linear_z: 7
-    axis_angular_x: 3
-    axis_angular_y: 4
-    axis_angular_z: 6
+    # --- Cartesian stick mapping: SET BY cartesian_frame, NOT HERE ----------
+    # Canonical axes out of joy_layout_normalizer: 0/1 = left stick X/Y,
+    # 3/4 = right stick X/Y, 2/5 = triggers, 6/7 = D-pad. On both sticks the
+    # horizontal axis is the lower index (0, 3) and the vertical the higher
+    # (1, 4); ROS joy reports up and LEFT as +1.
+    #
+    # A pairing that reads correctly in one frame is wrong in the other, so
+    # both nodes pick the mapping from cartesian_frame above and the keys are
+    # left unset here. Change the frame and the sticks follow it:
+    #
+    #   cartesian_frame: "tool"  (both sticks transposed; the axes are the
+    #                             GRIPPER's)
+    #     left stick left/right  (0) -> tool X translate
+    #     left stick up/down     (1) -> tool Y translate
+    #     D-pad up/down          (7) -> tool Z translate, the approach in and
+    #                                   out of the jaws
+    #     right stick up/down    (4) -> rotate about tool X
+    #     right stick left/right (3) -> rotate about tool Y
+    #     D-pad left/right       (6) -> rotate about tool Z
+    #
+    #   cartesian_frame: "base"  (the pre-2026-08-31 layout, unchanged; the
+    #                             axes are the ROVER's)
+    #     left stick up/down     (1) -> base X translate, rover forward/back
+    #     left stick left/right  (0) -> base Y translate, rover left/right
+    #     D-pad up/down          (7) -> base Z translate, world up/down
+    #     right stick left/right (3) -> rotate about base X
+    #     right stick up/down    (4) -> rotate about base Y
+    #     D-pad left/right       (6) -> rotate about base Z
+    #
+    # Uncommenting any of the six keys below PINS that axis in both frames and
+    # takes it out of the switch. Do that only to override one axis; if an axis
+    # merely runs backwards, flip its sign in cartesian_directions above
+    # instead — that is a sign, not a pairing.
+    #
+    # axis_linear_x: 0
+    # axis_linear_y: 1
+    # axis_linear_z: 7
+    # axis_angular_x: 4
+    # axis_angular_y: 3
+    # axis_angular_z: 6
 
     axis_joint1: 0
     axis_joint2: 1

@@ -39,6 +39,11 @@ def generate_launch_description():
         default_value='servo',
         choices=['move_group', 'servo'],
         description='servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps')
+    cartesian_frame_arg = DeclareLaunchArgument(
+        'cartesian_frame',
+        default_value='tool',
+        choices=['tool', 'base'],
+        description="Frame the joystick Cartesian jog is read in: tool = the gripper's own axes (the stick pushes the gripper the way it is pointing), base = the rover's. Also picks the stick axis mapping, which differs between the two.")
     gazebo_gui_arg = DeclareLaunchArgument(
         'gazebo_gui', default_value='true', description='Start Gazebo with GUI')
     paused_arg = DeclareLaunchArgument(
@@ -139,6 +144,7 @@ def generate_launch_description():
             'joy_layout': LaunchConfiguration('joy_layout'),
             'joy_dev': LaunchConfiguration('joy_dev'),
             'joystick_control_mode': LaunchConfiguration('joystick_control_mode'),
+            'cartesian_frame': LaunchConfiguration('cartesian_frame'),
         }.items(),
     )
     
@@ -151,6 +157,7 @@ def generate_launch_description():
         joy_layout_arg,
         joy_dev_arg,
         joystick_control_mode_arg,
+        cartesian_frame_arg,
         gazebo_gui_arg,
         paused_arg,
         hardware_protocol_arg,

@@ -42,6 +42,12 @@ def generate_launch_description():
             default_value="servo",
             choices=["move_group", "servo"],
         ),
+        DeclareLaunchArgument(
+            "cartesian_frame",
+            default_value="tool",
+            choices=["tool", "base"],
+            description="Frame the joystick Cartesian jog is read in: tool = the gripper's own axes (the stick pushes the gripper the way it is pointing), base = the rover's. Also picks the stick axis mapping, which differs between the two.",
+        ),
         DeclareLaunchArgument("use_rover_joystick", default_value="true"),
         DeclareLaunchArgument("use_cmd_vel_relay", default_value="true"),
         DeclareLaunchArgument("use_sim_ekf", default_value="true"),
@@ -62,6 +68,7 @@ def generate_launch_description():
                 "joystick_control_mode": LaunchConfiguration(
                     "joystick_control_mode"
                 ),
+                "cartesian_frame": LaunchConfiguration("cartesian_frame"),
                 "use_rover_joystick": use_rover_joystick,
                 "use_cmd_vel_relay": use_cmd_vel_relay,
                 "use_sim_ekf": use_sim_ekf,

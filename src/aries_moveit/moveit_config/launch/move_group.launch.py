@@ -43,6 +43,7 @@ def opaque_func(context, *args, **kwargs):
     joy_layout = LaunchConfiguration("joy_layout")
     joy_dev = LaunchConfiguration("joy_dev")
     joystick_control_mode = LaunchConfiguration("joystick_control_mode")
+    cartesian_frame = LaunchConfiguration("cartesian_frame")
     servo_joystick_condition = IfCondition(PythonExpression([
         "'", use_joystick, "' == 'true' and '", joystick_control_mode, "' == 'servo'"
     ]))
@@ -338,7 +339,10 @@ def opaque_func(context, *args, **kwargs):
         namespace=namespace,
         name="rebel_servo_teleop_gamepad",
         parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file,
-                    *teleop_speed_params],
+                    *teleop_speed_params,
+                    # Last in the list so it beats the cartesian_frame
+                    # gamepad.yaml sets, which is only the default.
+                    {'cartesian_frame': cartesian_frame}],
         output="screen",
     )
 
@@ -349,7 +353,8 @@ def opaque_func(context, *args, **kwargs):
         namespace=namespace,
         name="rebel_movegroup_joystick",
         parameters=[{'use_sim_time': use_sim_time}, teleop_joy_twist_file,
-                    *teleop_speed_params],
+                    *teleop_speed_params,
+                    {'cartesian_frame': cartesian_frame}],
         output="screen",
     )
 
@@ -474,6 +479,12 @@ def generate_launch_description():
         choices=["move_group", "servo"],
         description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps",
     )
+    cartesian_frame_arg = DeclareLaunchArgument(
+        "cartesian_frame",
+        default_value="tool",
+        choices=["tool", "base"],
+        description="Frame the joystick Cartesian jog is read in: tool = the gripper's own axes (the stick pushes the gripper the way it is pointing), base = the rover's. Also picks the stick axis mapping, which differs between the two.",
+    )
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -532,6 +543,7 @@ def generate_launch_description():
     ld.add_action(joy_layout_arg)
     ld.add_action(joy_dev_arg)
     ld.add_action(joystick_control_mode_arg)
+    ld.add_action(cartesian_frame_arg)
     ld.add_action(hardware_protocol_arg)
 
     ld.add_action(OpaqueFunction(function=opaque_func))

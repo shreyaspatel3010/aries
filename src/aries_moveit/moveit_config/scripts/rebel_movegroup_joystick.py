@@ -44,6 +44,7 @@ class RebelMoveGroupJoystick(Node):
         self.declare_parameter("cartesian_step_m", 0.025)
         self.declare_parameter("angular_step_rad", 0.10)
         self.declare_parameter("cartesian_directions", [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        self.declare_parameter("cartesian_frame", "tool")
         self.declare_parameter("position_goal_tolerance", 0.015)
         self.declare_parameter("orientation_goal_tolerance", 0.15)
 
@@ -78,12 +79,23 @@ class RebelMoveGroupJoystick(Node):
         self.declare_parameter("axis_joint4", 3)
         self.declare_parameter("axis_joint5", 6)
         self.declare_parameter("axis_joint6", 7)
-        self.declare_parameter("axis_linear_x", 1)
-        self.declare_parameter("axis_linear_y", 0)
-        self.declare_parameter("axis_linear_z", 7)
-        self.declare_parameter("axis_angular_x", 3)
-        self.declare_parameter("axis_angular_y", 4)
-        self.declare_parameter("axis_angular_z", 6)
+        # The Cartesian axis mapping follows cartesian_frame: a pairing that
+        # reads correctly in one frame is wrong in the other, so switching the
+        # frame alone would leave a layout nobody chose. "tool" transposes both
+        # sticks (horizontal 0/3 -> first axis, vertical 1/4 -> second); "base"
+        # is the pre-2026-08-31 layout. Setting any of the six keys in a params
+        # file pins that axis in both frames.
+        axis_defaults = (
+            (0, 1, 7, 4, 3, 6)
+            if self._resolve_cartesian_frame() == "tool"
+            else (1, 0, 7, 3, 4, 6)
+        )
+        self.declare_parameter("axis_linear_x", axis_defaults[0])
+        self.declare_parameter("axis_linear_y", axis_defaults[1])
+        self.declare_parameter("axis_linear_z", axis_defaults[2])
+        self.declare_parameter("axis_angular_x", axis_defaults[3])
+        self.declare_parameter("axis_angular_y", axis_defaults[4])
+        self.declare_parameter("axis_angular_z", axis_defaults[5])
 
         self.declare_parameter("button_enable", 5)
         self.declare_parameter("button_rover_enable", 4)
@@ -115,6 +127,17 @@ class RebelMoveGroupJoystick(Node):
         self.cartesian_step_m = max(0.001, float(self.get_parameter("cartesian_step_m").value))
         self.angular_step_rad = max(0.001, float(self.get_parameter("angular_step_rad").value))
         self.cartesian_directions = self._float_list("cartesian_directions", 6)
+        # Frame the stick's Cartesian nudge is read in.
+        #   "tool" - planning_link's own axes (gripper_tcp: +Z out of the jaws
+        #            along the approach), so a nudge means the same thing to
+        #            the operator whatever the wrist is doing.
+        #   "base" - planning_frame (base_link), the old behaviour.
+        # The goal sent to /move_action is still a planning_frame pose either
+        # way; only the direction the step is taken in changes.
+        raw_frame = str(self.get_parameter("cartesian_frame").value).strip().lower()
+        self.cartesian_frame = self._resolve_cartesian_frame()
+        if raw_frame != self.cartesian_frame:
+            self.get_logger().warn(f"Unknown cartesian_frame={raw_frame!r}; using tool.")
         self.position_goal_tolerance = max(0.001, float(self.get_parameter("position_goal_tolerance").value))
         self.orientation_goal_tolerance = max(0.001, float(self.get_parameter("orientation_goal_tolerance").value))
 
@@ -216,13 +239,23 @@ class RebelMoveGroupJoystick(Node):
             raise ValueError(f"{name} must have {expected_len} entries, got {len(value)}")
         return value
 
+    def _resolve_cartesian_frame(self) -> str:
+        """cartesian_frame normalized to "tool"/"base"; anything else is "tool".
+
+        Read before the main parameter block because the Cartesian axis
+        defaults depend on it.
+        """
+        frame = str(self.get_parameter("cartesian_frame").value).strip().lower()
+        return frame if frame in ("tool", "base") else "tool"
+
     @staticmethod
     def _clamp01(value: float) -> float:
         return min(1.0, max(0.0, value))
 
     def _idle_status(self) -> str:
         if self.move_group_control_mode == "cartesian":
-            return "ARM MODE: MoveGroup Cartesian. Hold RB to move tool XYZ/rotation."
+            frame = "gripper axes" if self.cartesian_frame == "tool" else "rover axes"
+            return f"ARM MODE: MoveGroup Cartesian ({frame}). Hold RB to move tool XYZ/rotation."
         return "ARM MODE: MoveGroup planned joints. Hold RB to move arm."
 
     def _button_pressed(self, msg: Joy, button: int) -> bool:
@@ -366,20 +399,34 @@ class RebelMoveGroupJoystick(Node):
             )
             return
 
-        target_pose = Pose()
-        target_pose.position = Point(
-            x=current_pose.position.x + linear_values[0] * self.cartesian_directions[0] * self.cartesian_step_m,
-            y=current_pose.position.y + linear_values[1] * self.cartesian_directions[1] * self.cartesian_step_m,
-            z=current_pose.position.z + linear_values[2] * self.cartesian_directions[2] * self.cartesian_step_m,
-        )
-
+        step = [
+            linear_values[i] * self.cartesian_directions[i] * self.cartesian_step_m
+            for i in range(3)
+        ]
         roll = angular_values[0] * self.cartesian_directions[3] * self.angular_step_rad
         pitch = angular_values[1] * self.cartesian_directions[4] * self.angular_step_rad
         yaw = angular_values[2] * self.cartesian_directions[5] * self.angular_step_rad
         delta_q = self._rpy_to_quaternion(roll, pitch, yaw)
-        target_pose.orientation = self._normalize_quaternion(
-            self._multiply_quaternions(delta_q, current_pose.orientation)
+
+        if self.cartesian_frame == "tool":
+            # Read the stick in the tool's own axes: rotate the translation
+            # step by the current TCP orientation, and post-multiply the
+            # rotation so it is applied about the tool axes rather than the
+            # planning frame's. Pre-multiplying (the "base" branch) spins the
+            # tool about base_link's X/Y/Z, which is what made a wrist roll
+            # feel like it came from somewhere else once the arm was turned.
+            step = self._rotate_vector(current_pose.orientation, step)
+            new_orientation = self._multiply_quaternions(current_pose.orientation, delta_q)
+        else:
+            new_orientation = self._multiply_quaternions(delta_q, current_pose.orientation)
+
+        target_pose = Pose()
+        target_pose.position = Point(
+            x=current_pose.position.x + step[0],
+            y=current_pose.position.y + step[1],
+            z=current_pose.position.z + step[2],
         )
+        target_pose.orientation = self._normalize_quaternion(new_orientation)
 
         self._send_pose_goal(target_pose)
 
@@ -420,6 +467,22 @@ class RebelMoveGroupJoystick(Node):
             z=cr * cp * sy - sr * sp * cy,
             w=cr * cp * cy + sr * sp * sy,
         )
+
+    @staticmethod
+    def _rotate_vector(q: Quaternion, v: List[float]) -> List[float]:
+        """Rotate v by q (v' = q v q*), written out to avoid a numpy dependency."""
+        u = (q.x, q.y, q.z)
+        uv = (
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        )
+        uuv = (
+            u[1] * uv[2] - u[2] * uv[1],
+            u[2] * uv[0] - u[0] * uv[2],
+            u[0] * uv[1] - u[1] * uv[0],
+        )
+        return [v[i] + 2.0 * (q.w * uv[i] + uuv[i]) for i in range(3)]
 
     @staticmethod
     def _multiply_quaternions(a: Quaternion, b: Quaternion) -> Quaternion:

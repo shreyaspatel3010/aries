@@ -464,6 +464,7 @@ def launch_setup(context, *args, **kwargs):
                 "joy_layout": LaunchConfiguration("joy_layout"),
                 "joy_dev": LaunchConfiguration("joy_dev"),
                 "joystick_control_mode": LaunchConfiguration("joystick_control_mode"),
+                "cartesian_frame": LaunchConfiguration("cartesian_frame"),
                 "serial_port": LaunchConfiguration("serial_port"),
                 # The SECOND Teensy. Forwarded explicitly, like everything else
                 # here -- this include passes a named dict, so an argument that
@@ -531,6 +532,8 @@ def generate_launch_description():
         DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"]),
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"]),
+        DeclareLaunchArgument("cartesian_frame", default_value="tool", choices=["tool", "base"],
+                              description="Frame the joystick Cartesian jog is read in: tool = the gripper's own axes (the stick pushes the gripper the way it is pointing), base = the rover's. Also picks the stick axis mapping, which differs between the two."),
         DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port")),
         DeclareLaunchArgument("use_science", default_value="true",
                               description="Start the micro-ROS agent for the science board (the second Teensy)."),

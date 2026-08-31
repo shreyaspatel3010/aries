@@ -183,6 +183,17 @@ def generate_launch_description():
         )
     )
 
+    cartesian_frame_arg = DeclareLaunchArgument(
+        'cartesian_frame',
+        default_value='tool',
+        choices=['tool', 'base'],
+        description=(
+            "Frame the joystick Cartesian jog is read in: tool = the gripper's own "
+            'axes (the stick pushes the gripper the way it is pointing), base = the '
+            "rover's. Also picks the stick axis mapping, which differs between the two."
+        )
+    )
+
     use_sim_teleop_speeds_arg = DeclareLaunchArgument(
         'use_sim_teleop_speeds',
         default_value='true',
@@ -236,6 +247,7 @@ def generate_launch_description():
     joy_layout = LaunchConfiguration('joy_layout')
     joy_dev = LaunchConfiguration('joy_dev')
     joystick_control_mode = LaunchConfiguration('joystick_control_mode')
+    cartesian_frame = LaunchConfiguration('cartesian_frame')
     spawn_x = LaunchConfiguration('spawn_x')
     spawn_y = LaunchConfiguration('spawn_y')
     spawn_z = LaunchConfiguration('spawn_z')
@@ -505,6 +517,7 @@ def generate_launch_description():
             'joy_layout': joy_layout,
             'joy_dev': joy_dev,
             'joystick_control_mode': joystick_control_mode,
+            'cartesian_frame': cartesian_frame,
             'use_sim_teleop_speeds': LaunchConfiguration('use_sim_teleop_speeds'),
         }.items()
     )
@@ -546,6 +559,7 @@ def generate_launch_description():
         joy_layout_arg,
         joy_dev_arg,
         joystick_control_mode_arg,
+        cartesian_frame_arg,
         use_sim_teleop_speeds_arg,
         spawn_x_arg,
         spawn_y_arg,

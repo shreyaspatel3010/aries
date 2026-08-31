@@ -796,6 +796,7 @@ def launch_setup(context, *args, **kwargs):
     joy_layout = LaunchConfiguration("joy_layout")
     joy_dev = LaunchConfiguration("joy_dev")
     joystick_control_mode = LaunchConfiguration("joystick_control_mode")
+    cartesian_frame = LaunchConfiguration("cartesian_frame")
 
     # Where the pad is READ, separately from whether teleop is enabled.
     #
@@ -913,7 +914,10 @@ def launch_setup(context, *args, **kwargs):
         package="aries_moveit",
         executable="rebel_servo_teleop_gamepad",
         name="rebel_servo_teleop_gamepad",
-        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files],
+        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files,
+                    # Last in the list so it beats the cartesian_frame
+                    # gamepad.yaml sets, which is only the default.
+                    {"cartesian_frame": cartesian_frame}],
         output="screen",
     )
 
@@ -922,7 +926,8 @@ def launch_setup(context, *args, **kwargs):
         package="aries_moveit",
         executable="rebel_movegroup_joystick.py",
         name="rebel_movegroup_joystick",
-        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files],
+        parameters=[gamepad_file, teleop_speeds_file, *teleop_gripper_files,
+                    {"cartesian_frame": cartesian_frame}],
         output="screen",
     )
 
@@ -1040,6 +1045,7 @@ def generate_launch_description():
             DeclareLaunchArgument("joy_layout", default_value="auto", choices=["auto", "dongle", "bluetooth", "game_controller", "passthrough"], description="Normalize joystick layout before teleop nodes consume /joy"),
             DeclareLaunchArgument("joy_dev", default_value=device_str("joystick.device"), description="Joystick device used by joy_node and the layout normalizer"),
             DeclareLaunchArgument("joystick_control_mode", default_value="servo", choices=["move_group", "servo"], description="servo uses smooth Cartesian MoveIt Servo teleop with collision guard; move_group uses planned steps"),
+            DeclareLaunchArgument("cartesian_frame", default_value="tool", choices=["tool", "base"], description="Frame the joystick Cartesian jog is read in: tool = the gripper's own axes (the stick pushes the gripper the way it is pointing), base = the rover's. Also picks the stick axis mapping, which differs between the two."),
             DeclareLaunchArgument("serial_port", default_value=device_str("gripper.serial_port"), description="USB-serial port for the Teensy gripper controller"),
             DeclareLaunchArgument("use_science", default_value="true", description="Start the micro-ROS agent for the SECOND Teensy, the science board. Harmless when no board is fitted: the agent simply is not started and a note says why."),
             DeclareLaunchArgument("science_serial_port", default_value=device_str("science.serial_port"), description="USB-serial port for the Teensy science board. Empty until somebody fills in science.serial_port in devices.yaml."),

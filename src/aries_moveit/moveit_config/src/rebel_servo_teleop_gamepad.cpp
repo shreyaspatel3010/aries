@@ -131,6 +131,29 @@ private:
     collision_group_ = declareGet<std::string>("collision_check_group", "arm_with_gripper");
     planning_link_ = declareGet<std::string>("planning_link", "gripper_tcp");
 
+    // Which frame the stick's Cartesian twist is read in.
+    //   "tool" - the axes of planning_link_ (gripper_tcp): +Z out of the jaws
+    //            along the approach, X/Y across them, and the rotations spin
+    //            about those same axes through the TCP. What the operator sees
+    //            down the gripper camera is what the stick does, at any wrist
+    //            pose.
+    //   "base" - the group's root link (base_link), the old behaviour: +X is
+    //            rover-forward no matter where the gripper is pointing.
+    // Anything else falls back to "tool" with a warning rather than silently
+    // picking a frame.
+    {
+      const std::string frame =
+        declareGet<std::string>("cartesian_frame", "tool");
+      cartesian_frame_tool_ = (frame != "base");
+      if (frame != "base" && frame != "tool")
+      {
+        RCLCPP_WARN(
+          nh_->get_logger(),
+          "Unknown cartesian_frame='%s'; expected 'tool' or 'base'. Using 'tool'.",
+          frame.c_str());
+      }
+    }
+
     std::vector<std::string> default_names(DEFAULT_ARM_JOINTS.begin(), DEFAULT_ARM_JOINTS.end());
     auto names = declareGet<std::vector<std::string>>("joint_names", default_names);
     if (names.size() == 6)
@@ -204,12 +227,31 @@ private:
     button_gripper_close_ = declareGet<int>("button_gripper_close", 1);
     button_gripper_toggle_ = declareGet<int>("button_gripper_toggle", 0);
 
-    axis_linear_x_ = declareGet<int>("axis_linear_x", 1);
-    axis_linear_y_ = declareGet<int>("axis_linear_y", 0);
-    axis_linear_z_ = declareGet<int>("axis_linear_z", 7);
-    axis_angular_x_ = declareGet<int>("axis_angular_x", 3);
-    axis_angular_y_ = declareGet<int>("axis_angular_y", 4);
-    axis_angular_z_ = declareGet<int>("axis_angular_z", 6);
+    // The Cartesian axis mapping follows cartesian_frame, because the two
+    // frames want different sticks. A mapping that reads correctly in one is
+    // wrong in the other — under "base" the left stick's vertical axis is
+    // rover-forward, under "tool" the same pairing points across the jaws —
+    // so switching the frame alone would leave the operator with a layout
+    // nobody chose. Order: linear x, y, z then angular x, y, z.
+    //
+    //   tool - both sticks transposed against the old layout: the horizontal
+    //          axis (0, 3) drives the first Cartesian axis, the vertical
+    //          (1, 4) the second.
+    //   base - the pre-2026-08-31 layout, unchanged.
+    //
+    // These are DEFAULTS. Setting any of the six keys in a params file pins
+    // that axis in both frames; config/gamepad.yaml ships them commented out
+    // for exactly that reason.
+    const std::array<int, 6> axis_defaults =
+      cartesian_frame_tool_ ? std::array<int, 6>{0, 1, 7, 4, 3, 6}
+                            : std::array<int, 6>{1, 0, 7, 3, 4, 6};
+
+    axis_linear_x_ = declareGet<int>("axis_linear_x", axis_defaults[0]);
+    axis_linear_y_ = declareGet<int>("axis_linear_y", axis_defaults[1]);
+    axis_linear_z_ = declareGet<int>("axis_linear_z", axis_defaults[2]);
+    axis_angular_x_ = declareGet<int>("axis_angular_x", axis_defaults[3]);
+    axis_angular_y_ = declareGet<int>("axis_angular_y", axis_defaults[4]);
+    axis_angular_z_ = declareGet<int>("axis_angular_z", axis_defaults[5]);
 
     axis_joint1_ = declareGet<int>("axis_joint1", 0);
     axis_joint2_ = declareGet<int>("axis_joint2", 1);
@@ -457,7 +499,10 @@ private:
 
     if (active_mode_ == Mode::CARTESIAN)
     {
-      publishStatus("ARM MODE: Cartesian direct MoveIt IK + self-collision guard, 0.10 m/s (RB)");
+      publishStatus(
+        std::string("ARM MODE: Cartesian (") +
+        (cartesian_frame_tool_ ? "TOOL frame, gripper axes" : "BASE frame, rover axes") +
+        ") direct MoveIt IK + self-collision guard, 0.10 m/s (RB)");
     }
     else
     {
@@ -506,6 +551,40 @@ private:
     {
       publishStatus("Jacobian unavailable");
       return false;
+    }
+
+    // The twist above is in stick axes; the Jacobian reads it in ONE specific
+    // frame, and it is not the model frame. RobotState::getJacobian builds its
+    // reference transform from group->getJointModels()[0]->getParentLinkModel(),
+    // so the twist it consumes is expressed in the group's ROOT LINK frame —
+    // base_link for igus_rebel_arm. Feeding the raw stick values there is what
+    // made the jog world-fixed: "forward" meant rover-forward however the
+    // wrist was turned.
+    //
+    // For tool-frame jogging, re-express the commanded twist from gripper_tcp
+    // axes into that same root-link frame. Both halves rotate by the same R:
+    // the linear half so the TCP travels along the gripper's own axes, the
+    // angular half so the rotations are about those axes. The Jacobian's
+    // reference point is the tip origin (Vector3d::Zero() above), so the
+    // rotation stays centred on the TCP and does not add translation.
+    if (cartesian_frame_tool_)
+    {
+      const moveit::core::JointModel *root_joint =
+        joint_model_group_->getJointModels().empty()
+          ? nullptr
+          : joint_model_group_->getJointModels().front();
+      const moveit::core::LinkModel *root_link =
+        root_joint ? root_joint->getParentLinkModel() : nullptr;
+      const Eigen::Isometry3d root_tf =
+        root_link ? robot_state_->getGlobalLinkTransform(root_link)
+                  : Eigen::Isometry3d::Identity();
+
+      const Eigen::Matrix3d tool_to_root =
+        root_tf.linear().transpose() *
+        robot_state_->getGlobalLinkTransform(tip_link_model_).linear();
+
+      twist.head<3>() = tool_to_root * twist.head<3>();
+      twist.tail<3>() = tool_to_root * twist.tail<3>();
     }
 
     // Damped least squares is only *needed* near a singularity, but a constant
@@ -1217,6 +1296,7 @@ private:
   std::string planning_group_;
   std::string collision_group_;
   std::string planning_link_;
+  bool cartesian_frame_tool_ = true;
 
   double command_rate_hz_ = 80.0;
   double joy_timeout_sec_ = 0.35;
@@ -1255,11 +1335,11 @@ private:
   int button_gripper_close_ = 1;
   int button_gripper_toggle_ = 0;
 
-  int axis_linear_x_ = 1;
-  int axis_linear_y_ = 0;
+  int axis_linear_x_ = 0;
+  int axis_linear_y_ = 1;
   int axis_linear_z_ = 7;
-  int axis_angular_x_ = 3;
-  int axis_angular_y_ = 4;
+  int axis_angular_x_ = 4;
+  int axis_angular_y_ = 3;
   int axis_angular_z_ = 6;
 
   int axis_joint1_ = 0;
