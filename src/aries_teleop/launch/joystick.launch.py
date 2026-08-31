@@ -40,7 +40,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_joystick_controller", default_value="true",
                               description="Start the rover joystick controller that drives the ODrives."),
         DeclareLaunchArgument("use_drill_teleop", default_value="true",
-                              description="Start the LT-gated drill teleop (feed, sample bin, auger)."),
+                              description="Start the LT-gated drill teleop (feed, sample bin, auger, sand box lid, pump)."),
         DeclareLaunchArgument("joy_driver", default_value="game_controller_node",
                               choices=["game_controller_node", "joy_node"]),
         DeclareLaunchArgument("joy_layout", default_value="auto",

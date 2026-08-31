@@ -110,7 +110,9 @@
 // THE AUGER, THE PROVENANCE OF THESE NUMBERS IS NOT RECORDED here, and PINOUT.md
 // marks the row unconfirmed.
 //
-// 28, 29 and 30 are now free, and have been added to kScanPins in main.cpp.
+// 28, 29 and 30 were free for one day, and went into kScanPins in main.cpp
+// for it. THE PUMP TOOK ALL THREE ON 2026-08-30 and they came back out of
+// that list again -- see the pump block below. They are not scanned now.
 //
 // The numbers this replaced, 28 / 30 / 29, were confirmed from the bench on
 // 2026-08-26. Before that they were proposals (23/21/20, then 22/21/20);
