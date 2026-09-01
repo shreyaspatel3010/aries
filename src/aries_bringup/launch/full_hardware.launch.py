@@ -10,6 +10,7 @@ from launch.actions import (
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 from aries_common.comms import dds_launch_actions, local_address
@@ -136,6 +137,19 @@ def generate_launch_description():
             description="Depth rounding step. View-only stream; nothing plans on it.",
         ),
         DeclareLaunchArgument("front_camera_serial", default_value=device_str("cameras.front_serial")),
+        # The workstation's own health on /compute/status, for the dashboard's
+        # Compute panel. Nothing else consumes it and it touches no hardware, so
+        # it is safe to leave on; turn it off if you are running the dashboard
+        # against a different machine from the one you want reported.
+        DeclareLaunchArgument(
+            "use_compute_publisher", default_value="true",
+            description="Publish this computer's CPU/GPU/RAM/disk on /compute/status.",
+        ),
+        DeclareLaunchArgument(
+            "compute_publish_rate_hz", default_value="1.0",
+            description="Sample rate for /compute/status.",
+        ),
+
         DeclareLaunchArgument(
             "use_static_wheel_joint_publisher",
             default_value="false",
@@ -353,6 +367,17 @@ def generate_launch_description():
                 ])
             ),
             condition=IfCondition(LaunchConfiguration("use_science")),
+        ),
+
+        Node(
+            condition=IfCondition(LaunchConfiguration("use_compute_publisher")),
+            package="aries_bringup",
+            executable="compute_publisher.py",
+            name="compute_publisher",
+            output="screen",
+            parameters=[{
+                "publish_rate_hz": LaunchConfiguration("compute_publish_rate_hz"),
+            }],
         ),
 
         # Separate checker.

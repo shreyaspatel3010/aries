@@ -8,6 +8,7 @@ find_package(ament_cmake_python REQUIRED)
 install(
   PROGRAMS
     nodes/camera_downlink.py
+    nodes/compute_publisher.py
     nodes/downlink_report.py
     nodes/drill_driver.py
     nodes/full_hardware_checker.py
