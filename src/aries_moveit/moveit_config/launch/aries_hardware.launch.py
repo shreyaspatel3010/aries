@@ -163,6 +163,10 @@ def resolve_science_serial(configured: str):
 #                the agent's link.
 SERVO_BUS_TEENSY_GLOB = "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_*-if02"
 
+# The USB adapter's udev symlink. No longer what devices.yaml points at, so it
+# is a fallback now rather than the configured path -- see resolve_servo_bus.
+ADAPTER_SYMLINK = "/dev/aries_servo_bus"
+
 
 def resolve_servo_bus(configured: str):
     """Find the ST3215 bus-servo adapter. Returns (port_or_None, note).
@@ -180,12 +184,23 @@ def resolve_servo_bus(configured: str):
     deliberately flashed with the bridge firmware, not a coincidence. That is
     the whole reason this fallback is safe and the CH340 one is not.
 
-    Order is adapter first, always. The bridge is a stopgap while the adapter
-    is dead; the moment a real adapter is plugged back in it wins, with no
-    config change and no argument.
+    ORDER CHANGED 2026-09-01, when devices.yaml stopped pointing at the adapter.
+    This used to read "adapter first, always", which was true only because the
+    adapter's path WAS `configured`. Now that servo_bus.port names the bridge,
+    the configured path is checked first as it is everywhere else in this file --
+    an explicit setting wins -- and ADAPTER_SYMLINK is tried next so a real
+    adapter plugged into a machine whose bridge is absent is still found rather
+    than reported missing. It no longer takes over from a bridge that is present:
+    put servo_bus.port back to /dev/aries_servo_bus for that, which is the same
+    edit that retires the bridge anyway.
     """
     if Path(configured).exists():
         return configured, ""
+
+    if configured != ADAPTER_SYMLINK and Path(ADAPTER_SYMLINK).exists():
+        return ADAPTER_SYMLINK, (f"  -- {configured} is absent; using the ADAPTER at "
+                                 f"{ADAPTER_SYMLINK}. If the bridge has been retired, "
+                                 "point servo_bus.port back at it.")
 
     bridges = sorted(glob.glob(SERVO_BUS_TEENSY_GLOB))
     if len(bridges) == 1:

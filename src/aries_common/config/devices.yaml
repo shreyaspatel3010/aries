@@ -27,9 +27,24 @@ gripper:
   # Always the by-id path: /dev/ttyACM* numbering moves when another board is
   # plugged in, and a swapped board that still enumerates silently resolves to
   # mock hardware instead of failing.
-  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_20379650-if00"
-  # Serial was 16739090 until 2026-08-26. The board was swapped, and the old
-  # number stayed here long enough to be worth a warning: a by-id path that no
+  #
+  # "Dual_Serial", NOT "USB_Serial", and that is not a typo. This board is built
+  # with -D USB_DUAL_SERIAL (platformio.ini), which is what puts the ST3215 bus
+  # bridge on a second CDC -- see lib/servobus and the `servo_bus:` note below.
+  # That flag changes the USB descriptor: product ID 0x0483 -> 0x048B, product
+  # name "USB Serial" -> "Dual Serial". by-id names are built from the product
+  # name, so the board's path changes with the build. Drop the flag and this
+  # line has to become usb-Teensyduino_USB_Serial_20385500-if00 in the same
+  # breath, or the gripper silently resolves to mock hardware.
+  #
+  # -if00 is micro-ROS's CDC. -if02 is the second one (the bus bridge), and it
+  # belongs to `servo_bus:`, not here -- ONE path on this line. It briefly held
+  # both, space-separated, which is not a path at all: Path(...).exists() is
+  # false, so the launch fell through to its unclaimed-Teensy fallback and only
+  # worked by luck.
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if00"
+  # Serial history: 16739090 until 2026-08-26, then 20379650, and 20385500
+  # since 2026-09-01. Each swap is worth a warning: a by-id path that no
   # longer exists does NOT fail, it resolves the gripper to mock_hardware, and
   # the launch log, list_controllers and the checker all still read healthy
   # while nothing reaches the servo. `ros2 control list_hardware_components`
@@ -65,10 +80,13 @@ science:
   #     claimed by the science agent instead. The launch refuses to guess
   #     between two unclaimed Teensys precisely because of this.
   #
-  # Always the by-id path. Both boards enumerate with the same vendor and
-  # product ID (16c0:0483) and differ only by serial number, so /dev/ttyACM*
-  # would be assignment order -- plug the two in the other way round and they
-  # swap silently.
+  # Always the by-id path, because /dev/ttyACM* is assignment order -- plug the
+  # two boards in the other way round and they swap silently.
+  #
+  # The two happen to differ by product ID as well right now (this one 16c0:0483,
+  # the drill board 16c0:048b, because that one is built -D USB_DUAL_SERIAL), but
+  # do NOT lean on that: it is a property of the BUILD, not of the board. Flash
+  # the same firmware to both and they are identical but for the serial number.
   serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
 
 rover:
@@ -90,52 +108,68 @@ imu:
   port: "/dev/microstrain_main"
 
 servo_bus:
-  # Feetech ST3215 bus-servo adapter (URT-1 or the Waveshare driver board).
+  # The SECONDARY gripper's wire (gripper_type:=st3215): one Feetech ST3215 on a
+  # one-wire half-duplex TTL bus at 1 Mbaud, direct-driving the rack-and-pinion.
+  # st3215_gripper_hardware opens this port itself from inside ros2_control -- it
+  # does NOT go through micro-ROS, which is the whole reason it is a separate
+  # gripper_hardware_protocol. scripts/st3215_test.py opens the same port for
+  # bench work and for the closed_steps calibration.
   #
-  # NO LONGER BENCH-ONLY, as of 2026-08-28. This is the wire to the SECONDARY
-  # gripper (gripper_type:=st3215), whose single ST3215 direct-drives the
-  # rack-and-pinion. st3215_gripper_hardware opens this port itself from inside
-  # ros2_control -- it does NOT go through the Teensy or the micro-ROS agent,
-  # which is the whole reason it is a separate gripper_hardware_protocol.
-  # scripts/st3215_test.py still uses it too, for bench work and for the
-  # closed_steps calibration.
+  # THIS IS THE TEENSY BRIDGE, NOT THE USB ADAPTER, as of 2026-09-01.
   #
-  # ONE PROCESS AT A TIME. A bus servo answers whoever asked last, and two
-  # openers on one port interleave replies -- which is not a clean failure,
-  # because a mismatched reply still verifies as a valid packet for the OTHER
-  # request. Stop the stack before running st3215_test.py against a live rover.
+  # The URT-1/Waveshare adapter died on 2026-08-31 (USB -71 on every port, board
+  # running hot). The drill Teensy stands in for it: firmware/teensy_drill_sys is
+  # built -D USB_DUAL_SERIAL, so it presents a SECOND CDC device on the same
+  # cable, and lib/servobus relays bytes between that device and Serial1 in
+  # half-duplex on pin 1. It is a wire, not a protocol -- nothing in it parses an
+  # STS packet -- so every host-side tool works unchanged once pointed here.
   #
-  # /dev/aries_servo_bus is a symlink from 99-aries-servo-bus.rules, which
-  # scripts/setup_system.sh installs. Without it the adapter is /dev/ttyUSB0 or
-  # /dev/ttyACM0 depending on which bridge chip the board carries and on what
-  # else was plugged in first.
+  # -if02 IS THE BRIDGE. -if00 on the same board is micro-ROS's transport and is
+  # pinned under `gripper:` above; pointing this at -if00 pushes servo packets
+  # into the agent's link and breaks both. Same physical board, same USB cable,
+  # two different CDC interfaces.
   #
-  # NOT A by-id PATH, unlike the Teensy above, and the reason is worth keeping:
-  # udev's /dev/serial/by-id/ names are built from ID_SERIAL (60-serial.rules),
-  # which for a chip with no iSerialNumber is just vendor_model. A plain CH340
-  # -- the commonest bridge on these adapters -- has no serial number, so it
+  # THE PATH IS A PROPERTY OF THE BUILD. "Dual_Serial" comes from
+  # -D USB_DUAL_SERIAL changing the USB product name; drop that flag and this
+  # board presents ONE CDC, there is no -if02 at all, and this line has to go
+  # back to the adapter. See the note under `gripper:`.
+  #
+  # WHEN THE REPLACEMENT ADAPTER ARRIVES: put this back to /dev/aries_servo_bus,
+  # then delete firmware/teensy_drill_sys/lib/servobus, its three lines in
+  # main.cpp, and -D USB_DUAL_SERIAL -- and fix `gripper.serial_port` in the same
+  # breath, because dropping the flag renames that path too. The bus wire
+  # currently runs the length of the rover, past three H-bridges, to reach a
+  # servo a short adapter lead could reach directly; that is why this is a
+  # stopgap and not the design.
+  #
+  # /dev/aries_servo_bus is still the ADAPTER's name: a symlink from
+  # 99-aries-servo-bus.rules, which scripts/setup_system.sh installs. It is not a
+  # by-id path, and that is deliberate -- udev builds by-id names from ID_SERIAL,
+  # which for a chip with no iSerialNumber is just vendor_model, so a plain CH340
   # gets usb-1a86_USB_Serial-if00-port0, a name every CH340 on earth shares.
-  # by-id would be stable but not unique. Hence our own rule and our own name.
-  # BENCH ALTERNATIVE, 2026-08-31, while the adapter is dead. A Teensy running
-  # firmware/teensy_drill_sys can stand in as a transparent bridge (lib/servobus)
-  # and present the bus as a second USB serial device. That is a BENCH rig, not
-  # the rover's wire, so this stays pointed at the adapter -- pass the bridge
-  # explicitly instead:
+  # Stable but not unique. Hence our own rule and our own name. The Teensy has a
+  # real serial number, so by-id IS unique for it and no rule is needed.
   #
-  #   python3 scripts/st3215_test.py --port \
-  #       /dev/serial/by-id/usb-Teensyduino_Dual_Serial_<serial>-if02 --scan
-  #
-  # -if02 is the SECOND CDC (usb_desc.h: CDC2_STATUS_INTERFACE 2). -if00 is
-  # micro-ROS's. Note "Dual_Serial", not "USB_Serial": USB_DUAL_SERIAL changes
-  # the product string and the PID, so a bridge board's by-id name differs from
-  # every other Teensy here.
-  port: "/dev/aries_servo_bus"
+  # ONE PROCESS AT A TIME, unchanged by the bridge. A bus servo answers whoever
+  # asked last, and two openers on one port interleave replies -- not a clean
+  # failure, because a mismatched reply still verifies as a valid packet for the
+  # OTHER request. Stop the stack before running st3215_test.py against a live
+  # rover. Worth saying twice for the bridge: a contended port here does not just
+  # interleave, it returns stale bytes that look like plausible replies and makes
+  # pyserial raise "device reports readiness to read but returned no data".
+  port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if02"
   # 1 Mbaud is the ST3215 factory default.
   baud: 1000000
   # Bus ID of the servo that drives the secondary gripper. 1 is the factory
   # default and this bus has exactly one servo on it; `st3215_test.py --scan`
   # is what to check it with if the gripper does not answer.
   gripper_servo_id: 1
+  # THE DEAD ADAPTER'S SERIAL, kept deliberately. It is no longer on the control
+  # path -- `port:` above is the Teensy bridge -- but setup_system.sh still uses
+  # this to build 99-aries-servo-bus.rules, so the symlink reappears the moment a
+  # working adapter of the same unit is plugged back in. Blank it only if the
+  # REPLACEMENT is a different unit; then read the new serial off it as below.
+  #
   # Set, so the rule is a single serial-matched line rather than a chip match.
   # Empty it to fall back to matching any CH340/CH343/CP210x/FT232 bridge --
   # unambiguous on Aries (the Teensy is 16c0:04xx and the IMU 199b/0483, so no
