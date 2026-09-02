@@ -58,6 +58,15 @@ def generate_launch_description():
         description='Launch RViz with MoveIt interface'
     )
 
+    use_gripper_overlay_arg = DeclareLaunchArgument(
+        'use_gripper_overlay',
+        default_value='true',
+        choices=['true', 'false'],
+        description='Publish the live ST3215 telemetry panel on '
+                    '/gripper_status_markers. Independent of use_gui: the RViz '
+                    'that draws it can be on another machine.'
+    )
+
     micro_ros_device_arg = DeclareLaunchArgument(
         'micro_ros_device',
         default_value=default_teensy_device(),
@@ -274,7 +283,7 @@ def generate_launch_description():
     # unlike the arc overlay above it needs no per-gripper tables; on a mock
     # gripper it says NO TELEMETRY.
     gripper_status_overlay_node = Node(
-        condition=IfCondition(LaunchConfiguration('use_gui')),
+        condition=IfCondition(LaunchConfiguration('use_gripper_overlay')),
         package="aries_moveit",
         executable="gripper_status_overlay.py",
         name="gripper_status_overlay",
@@ -299,6 +308,7 @@ def generate_launch_description():
         gripper_type_arg,
         finger_type_arg,
         use_gui_arg,
+        use_gripper_overlay_arg,
         micro_ros_device_arg,
         micro_ros_agent_node,
         ros2_control_node,

@@ -453,6 +453,10 @@ def launch_setup(context, *args, **kwargs):
             ),
             launch_arguments={
                 "use_gui": LaunchConfiguration("use_gui"),
+                # Forwarded separately from use_gui on purpose: the RViz
+                # that draws this panel is at the base station in the
+                # field, where use_gui here is false.
+                "use_gripper_overlay": LaunchConfiguration("use_gripper_overlay"),
                 "gripper_type": LaunchConfiguration("gripper_type"),
                 "finger_type": LaunchConfiguration("finger_type"),
                 "arm_hardware_protocol": LaunchConfiguration("arm_hardware_protocol"),
@@ -518,6 +522,8 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_gui", default_value="true"),
+        DeclareLaunchArgument("use_gripper_overlay", default_value="true", choices=["true", "false"],
+                              description="Publish the live ST3215 telemetry panel on /gripper_status_markers. Independent of use_gui so the panel survives a headless rover with RViz at the base station."),
         DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"]),
         DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance"]),
         DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"]),

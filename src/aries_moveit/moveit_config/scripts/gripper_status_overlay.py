@@ -3,15 +3,15 @@
 
 Draws, floating just above the gripper and following the arm:
 
-    ST3215 GRIPPER          OK / DANGER / CUTOFF
-    gap      42.1 mm   (cmd 40.0)
-    joint    -2.031 rad / -116.4 deg   step 2016
-    tcp       0.412  0.031  0.287 m    (base_link)
-    load       18 %   0.53 Nm
-    current   210 mA  (cutoff 1500)
-    voltage   11.9 V  (11.0 - 14.0)
-    temp        38 C  (cutoff 70)
-    status    0x00 none
+    ST3215 GRIPPER  OK / DANGER / CUTOFF
+    gap  42.1 mm  (cmd 40.0)
+    joint  -2.031 rad  -116.4 deg  step 2016
+    tcp  0.412 0.031 0.287 m  (base_link)
+    load  18 %  0.53 Nm
+    current  210 mA  (cutoff 1500)
+    voltage  11.9 V  (11.0 - 14.0)
+    temp  38 C  (cutoff 70)
+    status  0x00 none
 
 The numbers come from the hardware component, which is the only thing that can
 read them: it owns the serial port, so nothing else can ask the servo. It
@@ -96,9 +96,18 @@ class GripperStatusOverlay(Node):
         # clear the jaws from the gripper frame; on base_link that height is
         # inside the chassis, so the text is lifted to float above the deck
         # instead. Both are parameters -- move it wherever it reads best.
+        # 0.026 m cap height, up from 0.016. RViz draws this in WORLD units, so
+        # the panel is sized against the rover next to it rather than against
+        # the window: at 0.016 it was legible only zoomed right in, which is
+        # not how anyone drives. 0.026 is roughly one line per 40 mm of rover
+        # and stays readable at the whole-robot view the operator actually
+        # uses. The offset went up with it -- a taller block hung at 0.60 m
+        # reached down into the chassis and the arm, and text that is half
+        # behind a mesh is what reads as "scattered": the panel is depth
+        # tested, so occluded lines simply are not drawn.
         self.declare_parameter("frame_id", "base_link")
-        self.declare_parameter("offset_xyz", [0.0, 0.0, 0.60])
-        self.declare_parameter("text_height_m", 0.016)
+        self.declare_parameter("offset_xyz", [0.0, 0.0, 0.85])
+        self.declare_parameter("text_height_m", 0.026)
         self.declare_parameter("marker_topic", "gripper_status_markers")
         self.declare_parameter("publish_rate_hz", 5.0)
         # Substring matched against DiagnosticStatus.name. The hardware
@@ -177,7 +186,7 @@ class GripperStatusOverlay(Node):
         """(text, colour) for the panel, from whatever keys are present."""
         if self.status is None or self.status_stamp is None:
             return STALE_STYLE[0], STALE_STYLE[1], [
-                "ST3215 GRIPPER     NO TELEMETRY",
+                "ST3215 GRIPPER  NO TELEMETRY",
                 "",
                 "nothing is publishing gripper diagnostics.",
                 "expected on mock or sim hardware; on the rover it",
@@ -188,7 +197,7 @@ class GripperStatusOverlay(Node):
         if age > self.stale_after:
             label, colour = STALE_STYLE
             return label, colour, [
-                f"ST3215 GRIPPER     STALE {age:.0f}s",
+                f"ST3215 GRIPPER  STALE {age:.0f}s",
                 "",
                 "the gripper component stopped publishing.",
                 "last message:",
@@ -196,13 +205,22 @@ class GripperStatusOverlay(Node):
             ]
 
         label, colour = LEVEL_STYLE.get(self.status.level, STALE_STYLE)
-        out = [f"ST3215 GRIPPER     {label}"]
+        out = [f"ST3215 GRIPPER  {label}"]
 
         def row(label, value, unit, extra=""):
-            # Padded into columns. RViz's font is proportional, so this lines
-            # up approximately rather than exactly - still far easier to scan
-            # than ragged text, and the alternative is a font RViz does not have.
-            out.append(f"{label:<8}{value:>7} {unit:<2}  {extra}".rstrip())
+            # NOT padded into columns any more. The columns were built with
+            # spaces ("{label:<8}{value:>7}"), and RViz's font is proportional:
+            # a space is far narrower than a digit, so "gap" + 5 spaces and
+            # "current" + 1 space do not end at the same x. Every value started
+            # at its own offset and the panel read as loose fragments rather
+            # than a block -- the alignment was costing exactly what it was
+            # supposed to buy.
+            #
+            # Two spaces between fields instead, so the eye groups each row as
+            # one "label value unit" unit. Ragged on purpose beats ragged by
+            # accident, and the only real fix -- a monospaced font -- is not
+            # something a marker can ask for.
+            out.append("  ".join(p for p in (label, f"{value} {unit}".strip(), extra) if p))
 
         gap = self.value("gap_mm")
         cmd_gap = self.value("command_gap_mm")
@@ -212,13 +230,13 @@ class GripperStatusOverlay(Node):
         q = self.value("position_rad")
         if q is not None:
             row("joint", q, "rad",
-                f"{self.value('position_deg')} deg   step {self.value('position_steps')}")
+                f"{self.value('position_deg')} deg  step {self.value('position_steps')}")
 
         if self.show_tcp:
             tcp = self.tcp_pose()
             if tcp is not None:
-                row("tcp", f"{tcp[0]:.3f}", "m",
-                    f"{tcp[1]:.3f} {tcp[2]:.3f}   ({self.reference_frame})")
+                row("tcp", f"{tcp[0]:.3f} {tcp[1]:.3f} {tcp[2]:.3f}", "m",
+                    f"({self.reference_frame})")
 
         load = self.value("load_percent")
         if load is not None:
@@ -248,7 +266,7 @@ class GripperStatusOverlay(Node):
         # and it is the only thing that matters when it is there.
         if self.status.level != DiagnosticStatus.OK and self.status.message:
             out.append("")
-            out.extend(wrap(self.status.message, 58))
+            out.extend(wrap(self.status.message, 46))
 
         return label, colour, out
 

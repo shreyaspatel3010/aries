@@ -447,6 +447,7 @@ def launch_setup(context, *args, **kwargs):
     finger_type = LaunchConfiguration("finger_type").perform(context)
     serial_port = LaunchConfiguration("serial_port").perform(context)
     use_gui = LaunchConfiguration("use_gui").perform(context)
+    use_gripper_overlay = LaunchConfiguration("use_gripper_overlay")
     suppress_rebel_logs = LaunchConfiguration("suppress_rebel_logs").perform(context).lower() in ("1", "true", "yes", "on")
     suppress_moveit_execution_logs = LaunchConfiguration("suppress_moveit_execution_logs").perform(context).lower() in ("1", "true", "yes", "on")
 
@@ -1019,10 +1020,20 @@ def launch_setup(context, *args, **kwargs):
     # component publishes on /diagnostics - so it is right on every gripper and
     # says NO TELEMETRY on the ones that publish nothing.
     #
-    # Gated on use_gui because it exists only to be looked at; /diagnostics is
-    # published by the hardware component either way.
+    # NOT gated on use_gui, which is the whole point: in the field use_gui is
+    # false here because RViz runs at the BASE STATION (rover_field.launch.py),
+    # and this node is what feeds that RViz. Gating it on use_gui meant
+    # the panel was blank over the link with no error anywhere -- the display
+    # was subscribed and /gripper_status_markers simply had no publisher,
+    # because the only thing that publishes it had never been started.
+    #
+    # Running it headless costs nothing: it is a 5 Hz text marker, and DDS puts
+    # nothing on the wire while no RViz is subscribed. use_gripper_overlay is
+    # there to turn it off deliberately, not as a side effect of where the
+    # screen happens to be. /diagnostics is published by the hardware component
+    # either way.
     gripper_status_overlay_node = Node(
-        condition=IfCondition(use_gui),
+        condition=IfCondition(use_gripper_overlay),
         package="aries_moveit",
         executable="gripper_status_overlay.py",
         name="gripper_status_overlay",
@@ -1081,6 +1092,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_gui", default_value="true", description="Launch RViz with MoveIt interface"),
+            DeclareLaunchArgument("use_gripper_overlay", default_value="true", choices=["true", "false"], description="Publish the live ST3215 telemetry panel on /gripper_status_markers. Deliberately NOT tied to use_gui: the RViz that draws it may be at the base station, and with use_gui false here that is the only place it can be drawn."),
             DeclareLaunchArgument("gripper_type", default_value="st3215", choices=["st3215"], description="Which gripper is bolted to the flange. Only the ST3215 rack-and-pinion exists; v2 and the older four-bars are retired to aries/urdf/legacy/. Accepted-and-narrowed because a dozen launch files pass it down."),
             DeclareLaunchArgument("finger_type", default_value="bucket", choices=["bucket", "maintenance"], description="Swappable fingertip mesh; must match the pair bolted to the racks"),
             DeclareLaunchArgument("arm_hardware_protocol", default_value="auto", choices=["auto", "rebel", "mock_hardware", "gazebo"], description="Hardware protocol for arm backend"),

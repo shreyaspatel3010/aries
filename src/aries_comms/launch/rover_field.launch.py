@@ -130,12 +130,26 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_gui", default_value="false",
             description="RViz on the rover. false is the field default; RViz "
-                        "belongs at the base station.",
+                        "belongs at the base station. It no longer takes the "
+                        "gripper telemetry panel down with it -- that node has "
+                        "its own use_gripper_overlay, default true.",
         ),
         DeclareLaunchArgument(
             "use_joystick", default_value="true",
             description="Run the teleop consumers here. Almost never false: "
                         "this is what actually moves the robot.",
+        ),
+        DeclareLaunchArgument(
+            "cartesian_frame", default_value="tool", choices=["tool", "base"],
+            # Declared here, with the same default full_hardware uses, because
+            # this is the launch the field operator actually types -- and the
+            # consumers it reaches are the two arm teleop nodes running HERE,
+            # on the rover, not the pad driver at the base station.
+            description="Frame the joystick Cartesian jog is read in: tool = "
+                        "the gripper's own axes (the stick pushes the gripper "
+                        "the way it is pointing), base = the rover's. Also "
+                        "picks the stick axis mapping, which differs between "
+                        "the two.",
         ),
         DeclareLaunchArgument(
             "enable_camera_downlink", default_value="true",

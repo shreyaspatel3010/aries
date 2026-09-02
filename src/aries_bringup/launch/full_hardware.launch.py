@@ -53,6 +53,8 @@ def generate_launch_description():
         )),
 
         DeclareLaunchArgument("use_gui", default_value="true"),
+        DeclareLaunchArgument("use_gripper_overlay", default_value="true", choices=["true", "false"],
+                              description="Publish the live ST3215 telemetry panel on /gripper_status_markers. Independent of use_gui so the panel survives a headless rover with RViz at the base station."),
         DeclareLaunchArgument("use_joystick", default_value="true"),
         # Whether the pad is READ on this machine, separately from whether the
         # teleop nodes run here. Set false on the rover when the operator holds
@@ -212,6 +214,7 @@ def generate_launch_description():
             ),
             launch_arguments={
                 "use_gui": LaunchConfiguration("use_gui"),
+                "use_gripper_overlay": LaunchConfiguration("use_gripper_overlay"),
                 "use_joystick": LaunchConfiguration("use_joystick"),
                 "use_joy_node": LaunchConfiguration("use_joy_node"),
                 "joy_driver": LaunchConfiguration("joy_driver"),
