@@ -44,6 +44,14 @@
     <exec_depend>tf2_ros</exec_depend>
     <exec_depend>visualization_msgs</exec_depend>
     <exec_depend>diagnostic_msgs</exec_depend>
+    <!-- Screen-fixed telemetry HUD (scripts/gripper_status_overlay.py).
+         The msgs package is what the rover publishes; the plugins package is
+         what DRAWS it, so it is only needed on a machine that runs RViz: the
+         base station in the field. Both are listed here because this package
+         owns both ends, the publisher and the .rviz configs that display it.
+         The node degrades to the world marker alone if they are missing. -->
+    <exec_depend>rviz_2d_overlay_msgs</exec_depend>
+    <exec_depend>rviz_2d_overlay_plugins</exec_depend>
     <exec_depend>xacro</exec_depend>
 
     <exec_depend>joint_trajectory_controller</exec_depend>

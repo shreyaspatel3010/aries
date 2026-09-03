@@ -18,6 +18,11 @@ Visualization Manager:
       Topic:
         Value: /gripper_status_markers
       Value: true
+    - Class: rviz_2d_overlay_plugins/TextOverlay
+      Name: GripperHUD
+      Topic:
+        Value: /gripper_status_hud
+      Value: true
     - Class: moveit_rviz_plugin/MotionPlanning
       Name: MotionPlanning
       Planned Path:
