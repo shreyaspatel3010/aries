@@ -126,8 +126,8 @@ load_cells:
     cell:
       sand_box:
         # From the embedded team's SAND_BOX_SF. Provisional - see above.
-        scale: 20.0       # counts per kg
-        offset: 0.0       # counts with the box empty - `tare` gives you this
+        scale: 17.173913043       # counts per kg
+        offset: 430286.6       # counts with the box empty - `tare` gives you this
         invert: false
         # A moving average over this many conversions. Eight at 10 SPS is 0.8 s
         # of lag, which is nothing on a box being filled by hand and takes the
@@ -141,8 +141,8 @@ load_cells:
       stone_box:
         # From the embedded team's ROCK_BOX_SF (`rock_box` is their name for
         # this box). Provisional - see above.
-        scale: 21.0
-        offset: 0.0
+        scale: 16.739130435
+        offset: 246932.1
         invert: false
         filter_samples: 8
         raw_min: -8388608.0
@@ -153,8 +153,8 @@ load_cells:
         # how it is bolted in. Carried here as a positive scale plus
         # invert: true, which is where this package keeps that sign - see step
         # 4 above. Provisional - see above.
-        scale: 30.0
-        offset: 0.0
+        scale: 16.788321168
+        offset: 40875.6
         invert: true
         # The same as the boxes', deliberately. This cell is bolted to the
         # drill frame and the frame rings, which argues for a longer average --
