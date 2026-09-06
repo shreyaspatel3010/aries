@@ -24,27 +24,38 @@ from pathlib import Path
 DEFAULTS = {
     "arm": {"host": "192.168.3.11", "port": 3920},
     "gripper": {
-        # Keep in step with devices.yaml. 16739090 stood here long after that
-        # board became the SCIENCE board, so a fallback to these defaults would
-        # have pointed the gripper, the drill and the stack light at a board
-        # answering as the science module. "Dual_Serial" is the -D USB_DUAL_SERIAL
-        # build's USB product name -- see the note in devices.yaml.
-        "serial_port": "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if00",
+        # Keep in step with devices.yaml -- these two blocks have been SWAPPED
+        # relative to it before, which is the worst possible drift: a fallback
+        # to these defaults then points the gripper, the drill and the stack
+        # light at the board answering as the science module. Re-pinned to
+        # 16739090 on 2026-09-06, verified against the connected board and
+        # flashed from firmware/teensy_drill_sys.
+        #
+        # "Dual_Serial", not "USB_Serial": that half of the name comes from the
+        # -D USB_DUAL_SERIAL BUILD flag, not from the board, and a by-id path
+        # that does not exist resolves the gripper to mock_hardware without
+        # failing. See the note in devices.yaml.
+        "serial_port": "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_16739090-if00",
     },
     "science": {
-        "serial_port": "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00",
+        # NOT verified against hardware -- that board was not connected on
+        # 2026-09-06. Mirrors devices.yaml, which carries the same caveat.
+        "serial_port": "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if00",
     },
     "rover": {"can_interface": "can0", "can_bitrate": 250000},
     "imu": {"port": "/dev/microstrain_main"},
     # The SECONDARY gripper's wire, and the port scripts/st3215_test.py opens.
-    # Since 2026-09-01 this is the drill Teensy's SECOND CDC acting as a bridge
-    # (lib/servobus), not the USB adapter, which died on 2026-08-31. -if02, never
-    # -if00: -if00 is micro-ROS's transport on the same board. See devices.yaml.
+    # Back to the USB servo driver's udev symlink on 2026-09-06, after the
+    # 2026-09-01..09-06 spell on the drill Teensy's second CDC (lib/servobus).
+    # The bridge remains a FALLBACK in resolve_servo_bus(), not the config.
+    # See devices.yaml.
     "servo_bus": {
-        "port": "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if02",
+        "port": "/dev/aries_servo_bus",
         "baud": 1000000,
         "gripper_servo_id": 1,
-        "serial": "",
+        # The fitted CH343's USB serial, read from the hardware 2026-09-06.
+        # Only setup_system.sh uses it, to generate 99-aries-servo-bus.rules.
+        "serial": "5B61034961",
     },
     "cameras": {
         "gripper_serial": "216322070216",

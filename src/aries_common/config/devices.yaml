@@ -42,18 +42,28 @@ gripper:
   # both, space-separated, which is not a path at all: Path(...).exists() is
   # false, so the launch fell through to its unclaimed-Teensy fallback and only
   # worked by luck.
-  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if00"
-  # Serial history: 16739090 until 2026-08-26, then 20379650, and 20385500
-  # since 2026-09-01. Each swap is worth a warning: a by-id path that no
-  # longer exists does NOT fail, it resolves the gripper to mock_hardware, and
-  # the launch log, list_controllers and the checker all still read healthy
-  # while nothing reaches the servo. `ros2 control list_hardware_components`
-  # is the one that tells the truth.
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_16739090-if00"
+  # PINNED 2026-09-06 to the board physically connected and flashed on that
+  # date, and VERIFIED rather than assumed. The serial was already 16739090
+  # here; what was wrong was the product-name half -- this line read
+  # "USB_Serial_16739090", a path that does not exist, because the board is
+  # built -D USB_DUAL_SERIAL and therefore enumerates as "Dual_Serial". See
+  # the build-flag note above: that flag renames the path, and a by-id path
+  # that does not exist does NOT fail -- it resolves the gripper to
+  # mock_hardware while the launch log, list_controllers and the checker all
+  # still read healthy. `ros2 control list_hardware_components` tells the truth.
   #
-  # THAT OLD BOARD IS NOW THE SCIENCE BOARD -- 16739090 appears again under
-  # `science:` below. So a stale 16739090 here is no longer merely a dead path:
-  # it would point the gripper, the drill and the stack light at a board that
-  # is answering as the science module.
+  # HOW THIS BOARD WAS IDENTIFIED, since the two Teensys differ only by serial
+  # number and swapping them is silent: it enumerates as 16c0:048b "Dual
+  # Serial" with two CDCs (-if00 and -if02). Only teensy_drill_sys is built
+  # -D USB_DUAL_SERIAL; teensy_science_sys is not, and presents ONE CDC as
+  # 16c0:0483. So this board carries the drill build, and the product ID is
+  # the check to repeat after any swap -- but ONLY while the two firmwares
+  # keep different USB flags. Flash the same build to both and this tell is
+  # gone and the serial number is all that is left.
+  #
+  # Serial history: 16739090 until 2026-08-26, then 20379650, then 20385500
+  # from 2026-09-01, and back to 16739090 on 2026-09-06.
 
 science:
   # THE SECOND TEENSY. A separate board from the `gripper` one above, on its own
@@ -66,19 +76,22 @@ science:
   #
   # FILLED IN 2026-08-30, from the board connected on its own at the time.
   #
-  # THIS IS THE BOARD THAT USED TO BE THE GRIPPER/DRILL TEENSY. Serial 16739090
-  # is the number recorded a few lines up as the drill board's until it was
-  # swapped for 20379650 on 2026-08-26 -- so the old board has been repurposed
-  # as the science board rather than a new one being fitted. Worth knowing for
-  # two reasons:
+  # NOT VERIFIED AGAINST HARDWARE. On 2026-09-06 only the drill board
+  # (16739090) was connected, so 20385500 below is inherited from the previous
+  # edit and nobody has confirmed it against the board in the science module.
+  # Plug that board in ALONE and check `ls /dev/serial/by-id/` before trusting
+  # this line.
   #
-  #   * It may still be carrying drill firmware. A board flashed with
-  #     teensy_drill_sys answers /gripper/state and drill/limits and publishes
-  #     no /science/telemetry at all, which looks exactly like a science board
-  #     that is not working. Flash it: firmware/teensy_science_sys/flash.sh
-  #   * If 16739090 is ever plugged in expecting the DRILL, it will now be
-  #     claimed by the science agent instead. The launch refuses to guess
-  #     between two unclaimed Teensys precisely because of this.
+  # An earlier version of this comment claimed the science board was serial
+  # 16739090, the retired drill board. That is now WRONG and was contradicted
+  # by this block's own value: 16739090 is the drill board again, pinned under
+  # `gripper:` above and flashed with teensy_drill_sys on 2026-09-06. Do not
+  # point this block at 16739090 -- the two agents would fight over one board.
+  #
+  # If this board reports no /science/telemetry, check what it is carrying
+  # first: a board flashed with teensy_drill_sys answers /gripper/state and
+  # drill/limits instead, which looks exactly like a science board that is
+  # broken. Flash it: firmware/teensy_science_sys/flash.sh
   #
   # Always the by-id path, because /dev/ttyACM* is assignment order -- plug the
   # two boards in the other way round and they swap silently.
@@ -87,7 +100,8 @@ science:
   # the drill board 16c0:048b, because that one is built -D USB_DUAL_SERIAL), but
   # do NOT lean on that: it is a property of the BUILD, not of the board. Flash
   # the same firmware to both and they are identical but for the serial number.
-  serial_port: "/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"
+ 
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if00"
 
 rover:
   # SocketCAN interface to the six ODrives. The bitrate has to match the
@@ -115,19 +129,27 @@ servo_bus:
   # gripper_hardware_protocol. scripts/st3215_test.py opens the same port for
   # bench work and for the closed_steps calibration.
   #
-  # THIS IS THE TEENSY BRIDGE, NOT THE USB ADAPTER, as of 2026-09-01.
+  # THE USB SERVO DRIVER, NOT THE TEENSY BRIDGE, as of 2026-09-06.
   #
-  # The URT-1/Waveshare adapter died on 2026-08-31 (USB -71 on every port, board
-  # running hot). The drill Teensy stands in for it: firmware/teensy_drill_sys is
-  # built -D USB_DUAL_SERIAL, so it presents a SECOND CDC device on the same
-  # cable, and lib/servobus relays bytes between that device and Serial1 in
-  # half-duplex on pin 1. It is a wire, not a protocol -- nothing in it parses an
-  # STS packet -- so every host-side tool works unchanged once pointed here.
+  # Reverted on a change of plan: the gripper is driven from the servo driver
+  # again, so this points back at the adapter symlink and the Teensy bridge is
+  # no longer on the control path.
   #
-  # -if02 IS THE BRIDGE. -if00 on the same board is micro-ROS's transport and is
-  # pinned under `gripper:` above; pointing this at -if00 pushes servo packets
-  # into the agent's link and breaks both. Same physical board, same USB cable,
-  # two different CDC interfaces.
+  # History: the URT-1/Waveshare adapter died on 2026-08-31 (USB -71 on every
+  # port, board running hot) and from 2026-09-01 the drill Teensy stood in for
+  # it -- built -D USB_DUAL_SERIAL, it presents a SECOND CDC on the same cable
+  # and lib/servobus relays bytes between that CDC and Serial1 in half-duplex on
+  # pin 1. It is a wire, not a protocol, so host-side tools worked unchanged.
+  #
+  # THE BRIDGE IS STILL IN THE FIRMWARE and is still a FALLBACK, not dead code:
+  # resolve_servo_bus() in aries_hardware.launch.py tries this port first, then
+  # /dev/aries_servo_bus, then a lone Teensy -if02. So an adapter that fails
+  # again degrades to the bridge instead of stopping the gripper. Retiring the
+  # bridge for real is a separate job -- delete lib/servobus, its three lines in
+  # main.cpp and -D USB_DUAL_SERIAL, RE-PIN gripper.serial_port from
+  # "Dual_Serial" to "USB_Serial", and RE-FLASH, all in one go. Do not do the
+  # rename without the reflash: the running board would still present the old
+  # name and the gripper would resolve to mock_hardware without failing.
   #
   # THE PATH IS A PROPERTY OF THE BUILD. "Dual_Serial" comes from
   # -D USB_DUAL_SERIAL changing the USB product name; drop that flag and this
@@ -157,34 +179,43 @@ servo_bus:
   # rover. Worth saying twice for the bridge: a contended port here does not just
   # interleave, it returns stale bytes that look like plausible replies and makes
   # pyserial raise "device reports readiness to read but returned no data".
-  port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_20385500-if02"
+  # The adapter's udev symlink, from 99-aries-servo-bus.rules. NOT a by-id path:
+  # see the note below on why a CH340's by-id name is stable but not unique.
+  # If this symlink never appears, the rule did not match -- check `serial:`
+  # below against the adapter actually fitted, then run scripts/setup_system.sh.
+  port: "/dev/aries_servo_bus"
   # 1 Mbaud is the ST3215 factory default.
   baud: 1000000
   # Bus ID of the servo that drives the secondary gripper. 1 is the factory
   # default and this bus has exactly one servo on it; `st3215_test.py --scan`
   # is what to check it with if the gripper does not answer.
   gripper_servo_id: 1
-  # THE DEAD ADAPTER'S SERIAL, kept deliberately. It is no longer on the control
-  # path -- `port:` above is the Teensy bridge -- but setup_system.sh still uses
-  # this to build 99-aries-servo-bus.rules, so the symlink reappears the moment a
-  # working adapter of the same unit is plugged back in. Blank it only if the
-  # REPLACEMENT is a different unit; then read the new serial off it as below.
-  #
-  # Set, so the rule is a single serial-matched line rather than a chip match.
-  # Empty it to fall back to matching any CH340/CH343/CP210x/FT232 bridge --
-  # unambiguous on Aries (the Teensy is 16c0:04xx and the IMU 199b/0483, so no
-  # Aries device can lose its symlink to this rule) but these ARE the commonest
-  # USB-serial chips there are, so a second generic adapter on the bench would
-  # collide. To read the serial off a different adapter:
+  # THE FITTED DRIVER'S SERIAL, read off the hardware on 2026-09-06 with the
+  # unit connected:
   #
   #   udevadm info -a -n /dev/ttyACM0 | grep -m1 'ATTRS{serial}'
+  #   ATTRS{serial}=="5B61034961"
   #
-  # OUR UNIT IS A CH343, NOT A CH340: 1a86:55d3, "USB Single Serial", and it
-  # binds cdc_acm -- so it appears as /dev/ttyACM*, NOT ttyUSB*, and unlike a
-  # CH340 it does report an iSerialNumber. Verified from the kernel log on
-  # 2026-08-28. A replacement adapter may well be a CH340 instead, which is why
-  # the chip-match fallback and the note above are still worth keeping.
-  serial: "5B3D050517"
+  # Set, so setup_system.sh emits a single serial-matched rule line rather than
+  # the broad chip match (`if [ -n "$SERVO_BUS_SERIAL" ]`). Prefer this whenever
+  # the serial is readable: the chip-match fallback matches ANY
+  # CH340/CH343/CP210x/FT232, and while no other Aries device can lose its
+  # symlink to it (the Teensy is 16c0:04xx, the IMU 199b/0483), a second generic
+  # USB-serial adapter on the bench collides and the winner is undefined.
+  #
+  # THIS IS A DIFFERENT PHYSICAL UNIT from the one that died on 2026-08-31,
+  # whose serial was 5B3D050517. That dead serial stayed in the installed udev
+  # rule until 2026-09-06, which is exactly why /dev/aries_servo_bus never
+  # appeared for the replacement: the rule matched a device that was not there.
+  # AFTER EDITING THIS LINE, RE-RUN scripts/setup_system.sh -- the rule is a
+  # generated file and nothing else regenerates it.
+  #
+  # Same chip family as the dead unit: a CH343, 1a86:55d3 "USB Single Serial".
+  # It binds cdc_acm, so it appears as /dev/ttyACM*, NOT ttyUSB*, and unlike a
+  # plain CH340 it does report an iSerialNumber -- which is the only reason
+  # there is anything to pin here. A CH340 replacement would land on ttyUSB*
+  # and might report no serial at all, leaving the chip match as the only option.
+  serial: "5B61034961"
 
 cameras:
   # D435i camera serials as librealsense reports them — what the driver matches

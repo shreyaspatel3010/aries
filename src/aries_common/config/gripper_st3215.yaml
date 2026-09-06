@@ -62,10 +62,10 @@
 
 # Servo step with the jaws closed. This is q = +0.07 rad, the angle this whole
 # stack calls "closed". Measured 2026-08-29.
-closed_steps: 3980
+closed_steps: 3658
 
 # Servo step at the open mechanical stop. Commands stop margin_steps short of it.
-open_stop_steps: 630
+open_stop_steps: 1742
 
 # Does a rising step count OPEN the jaws?
 invert: false

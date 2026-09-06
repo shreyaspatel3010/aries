@@ -144,7 +144,12 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("drive_command_timeout_s", default_value="0.25"),
-        DeclareLaunchArgument("drive_max_linear_mps", default_value="0.45"),
+        # Headroom above rover_cmd_vel_joystick's max_linear (0.70), kept
+        # equal to cmd_vel_odrive_bridge.yaml. This argument is forwarded into
+        # the bridge and OVERRIDES that file, so anything lower here clips the
+        # teleop peak instead of clamping only out-of-range commands: at 0.45
+        # the pad asked for 0.70 and the rover drove 0.45, with nothing logged.
+        DeclareLaunchArgument("drive_max_linear_mps", default_value="0.75"),
         DeclareLaunchArgument("drive_max_angular_rps", default_value="2.10"),
         DeclareLaunchArgument("drive_max_wheel_rps", default_value="1.50"),
         DeclareLaunchArgument("drive_wheel_accel_rps2", default_value="3.0"),

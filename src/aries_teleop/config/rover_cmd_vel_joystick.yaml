@@ -16,14 +16,18 @@ rover_cmd_vel_joystick:
     invert_angular: false
 
     deadzone: 0.08
-    max_linear: 0.45
+    # Linear speed and its ramp match aries_teleop/config/joystick.yaml, so
+    # the sim pad reaches the same 0.70 m/s the hardware does. accel_limit is
+    # scaled with the speed (0.80 -> 1.25 for 0.45 -> 0.70) to hold the ramp to
+    # top speed at ~0.55 s rather than stretching it to 0.88 s.
+    max_linear: 0.70
     max_angular: 1.40
-    accel_limit: 0.80
+    accel_limit: 1.25
     angular_accel_limit: 2.00
     # Same jerk-to-acceleration ratio as the real rover in joystick.yaml, so
     # the ease-in feels the same in simulation. Left at 30 Hz: there is no
     # ODrive bridge here, so nothing downstream to be an exact multiple of.
-    jerk_limit: 5.0
+    jerk_limit: 8.0
     angular_jerk_limit: 13.0
     publish_rate_hz: 30.0
 
