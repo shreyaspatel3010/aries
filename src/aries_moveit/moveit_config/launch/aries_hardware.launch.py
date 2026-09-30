@@ -505,9 +505,24 @@ def launch_setup(context, *args, **kwargs):
 
     if gripper_type == "st3215":
         found_port, serial_note = resolve_servo_bus(servo_bus_port)
+        # THE RESOLVED PORT HAS TO GO BACK INTO servo_bus_port, exactly as the
+        # Teensy's does above, because servo_bus_port is what is handed to xacro
+        # and thence to the component. Without this line found_port decided only
+        # st3215-vs-mock and was then thrown away: a fallback would announce
+        # "using the TEENSY BRIDGE at ...-if02" in the log while the component
+        # was told to open the configured path that resolve_servo_bus had just
+        # found missing. It opened nothing, inhibited with "cannot open
+        # /dev/aries_servo_bus", and the launch line above it said the opposite.
+        # Both fallbacks in resolve_servo_bus were dead this way, not just the
+        # bridge one.
+        if found_port:
+            servo_bus_port = found_port
         if gripper_hardware_protocol in ("auto", "rebel"):
             gripper_hardware_protocol = "st3215" if found_port else "mock_hardware"
         live_protocol = "st3215"
+        # The port that will actually be OPENED, which after the line above is
+        # the resolved one. Reporting the configured path here would name a
+        # device nothing is going to touch whenever a fallback wins.
         device_note = f"servo_bus={servo_bus_port} id={servo_id}"
     else:
         serial_note = teensy_note

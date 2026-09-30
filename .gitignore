@@ -4,6 +4,7 @@ log/
 .colcon_release/
 .colcon_cache/
 .colcon_install_cache/
+erc pic/
 
 CMakeFiles/
 CMakeCache.txt

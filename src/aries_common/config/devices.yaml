@@ -42,16 +42,29 @@ gripper:
   # both, space-separated, which is not a path at all: Path(...).exists() is
   # false, so the launch fell through to its unclaimed-Teensy fallback and only
   # worked by luck.
-  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_16739090-if00"
+  serial_port: "/dev/serial/by-id/usb-Teensyduino_Dual_Serial_19324980-if00"
   # PINNED 2026-09-06 to the board physically connected and flashed on that
-  # date, and VERIFIED rather than assumed. The serial was already 16739090
-  # here; what was wrong was the product-name half -- this line read
-  # "USB_Serial_16739090", a path that does not exist, because the board is
-  # built -D USB_DUAL_SERIAL and therefore enumerates as "Dual_Serial". See
-  # the build-flag note above: that flag renames the path, and a by-id path
-  # that does not exist does NOT fail -- it resolves the gripper to
-  # mock_hardware while the launch log, list_controllers and the checker all
-  # still read healthy. `ros2 control list_hardware_components` tells the truth.
+  # date, and VERIFIED rather than assumed: this exact string was read out of
+  # `ls /dev/serial/by-id/` AFTER the flash, not predicted from the serial.
+  #
+  # 19324980 is a serial this file had never seen. This line previously read
+  # 16739090, and no board with that serial was on the bus at all -- so the
+  # configured path did not exist. That is not a clean failure: a by-id path
+  # that does not exist resolves the gripper to mock_hardware while the launch
+  # log, list_controllers and the checker all still read healthy.
+  # `ros2 control list_hardware_components` tells the truth.
+  #
+  # flash.sh still flashed the board, and did so correctly -- with its
+  # configured path absent it falls back to "the only Teensy present that no
+  # other block claims", which this one was. Do not read a successful flash as
+  # evidence that this line was right.
+  #
+  # "Dual_Serial", NOT "USB_Serial", and that is not a typo. The board went
+  # INTO this flash as usb-Teensyduino_USB_Serial_19324980-if00 (16c0:0483,
+  # one CDC) and came OUT of it as Dual_Serial with two (16c0:048b, -if00 and
+  # -if02), because teensy_drill_sys is built -D USB_DUAL_SERIAL. The path is
+  # a property of the BUILD: re-pinning without re-flashing, or re-flashing
+  # with the flag dropped and not re-pinning, breaks this line either way.
   #
   # HOW THIS BOARD WAS IDENTIFIED, since the two Teensys differ only by serial
   # number and swapping them is silent: it enumerates as 16c0:048b "Dual
@@ -63,7 +76,8 @@ gripper:
   # gone and the serial number is all that is left.
   #
   # Serial history: 16739090 until 2026-08-26, then 20379650, then 20385500
-  # from 2026-09-01, and back to 16739090 on 2026-09-06.
+  # from 2026-09-01, back to 16739090 earlier on 2026-09-06, and 19324980
+  # from 2026-09-06 -- this board, flashed and pinned in the same operation.
 
 science:
   # THE SECOND TEENSY. A separate board from the `gripper` one above, on its own
